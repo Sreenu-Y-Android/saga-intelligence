@@ -13,8 +13,10 @@ const youtubeService = require('./youtube.service');
 const { archiveTwitterMedia } = require('./contentS3Service');
 const { generateComplaintCode } = require('./complaintCodeService');
 const { syncLegacyFieldsFromWorkflow } = require('./grievanceWorkflowService');
+const { yieldToInteractive } = require('./apiPriorityGate');
 const { analyzeContent } = require('./analysisService');
 const translationService = require('./translationService');
+const { OUR_LEADERS, OPPOSITION_LEADERS } = require('../config/politicalData');
 
 const LOCATION_SERVICE_URL = process.env.LOCATION_SERVICE_URL || 'http://178.255.44.130:5003';
 const locationExtractionService = require('./locationExtractionService');
@@ -955,7 +957,9 @@ const upsertXGrievancesForSource = async (source, startDate = null, endDate = nu
     const complaintCodeFn = deps.complaintCodeFn || generateComplaintCode;
 
     const mentions = await searchMentionsFn(source.handle, 100, startDate, endDate);
+    const relevanceTerms = await getRelevanceTerms();
     let newCount = 0;
+    let skippedIrrelevant = 0;
 
     for (const mention of mentions) {
         const postDate = toSafeDate(mention.created_at);
@@ -963,6 +967,13 @@ const upsertXGrievancesForSource = async (source, startDate = null, endDate = nu
 
         const existing = await GrievanceModel.findOne({ tweet_id: mention.tweet_id });
         if (existing) continue;
+
+        // Strict: only a real handle mention or a tracked keyword lets a post through —
+        // no language/script leniency for anything else.
+        if (!textMatchesAnyKeyword(mention.text, relevanceTerms)) {
+            skippedIrrelevant += 1;
+            continue;
+        }
 
         const preparedMention = await archiveMentionFn(mention, archiveMediaFn);
         if (preparedMention.upload_failures > 0) {
@@ -1012,11 +1023,19 @@ const upsertXGrievancesForSource = async (source, startDate = null, endDate = nu
         newCount += 1;
     }
 
+    if (skippedIrrelevant > 0) {
+        console.log(`[Grievance][${source.handle}] Skipped ${skippedIrrelevant} irrelevant mention(s) (ASCII-art/off-topic-language noise)`);
+    }
+
     return { newCount, totalFetched: mentions.length };
 };
 
 const upsertFacebookGrievancesForSource = async (source, startDate = null, endDate = null) => {
     const posts = await rapidApiFacebookService.fetchPagePosts(source.handle, 40, source.display_name);
+    // The page's own posts are kept unconditionally (this is the tracked
+    // official source itself). Public comments are search-like noise the
+    // same way X mentions are, so they go through the same relevance check.
+    const relevanceTerms = await getRelevanceTerms();
     let newCount = 0;
     let totalFetched = 0;
 
@@ -1100,6 +1119,11 @@ const upsertFacebookGrievancesForSource = async (source, startDate = null, endDa
             const canonicalCommentId = `facebook:comment:${commentId}`;
             const existingComment = await Grievance.findOne({ tweet_id: canonicalCommentId });
             if (existingComment) continue;
+
+            if (!textMatchesAnyKeyword(commentText, relevanceTerms)) {
+                console.log(`[Grievance][FB] Skipping irrelevant comment ${commentId} — no known keyword/candidate found in text`);
+                continue;
+            }
 
             const commentUrl = postUrl.includes('?')
                 ? `${postUrl}&comment_id=${encodeURIComponent(commentId)}`
@@ -1192,6 +1216,10 @@ const fetchAllGrievances = async (startDate = null, endDate = null) => {
 
         // --- Source-based fetching (mentions via @handle) ---
         for (const source of sources) {
+            // Pause between sources while a Frequent Engagers analysis is
+            // actively using the shared RapidAPI key — this is a background
+            // batch job, that's interactive and user-waited-on.
+            await yieldToInteractive();
             const result = await upsertGrievancesForSource(source, startDate, endDate);
             totalNew += result.newCount;
 
@@ -1205,67 +1233,30 @@ const fetchAllGrievances = async (startDate = null, endDate = null) => {
         }
 
         // --- Keyword-based X/Twitter fetching ---
+        // Delegates to fetchKeywordGrievances, which enforces textMatchesAnyKeyword()
+        // relevance filtering — X "Top" search routinely returns loosely-related
+        // results that never actually contain the searched term.
         let keywordNew = 0;
         try {
-            const keywords = await Keyword.find({ is_active: true });
-            if (keywords.length > 0) {
-                console.log(`[FetchAll][X-Keywords] Fetching tweets for ${keywords.length} active keywords`);
-                const seenIds = new Set();
-
-                for (const kw of keywords) {
-                    const rawKeyword = kw.keyword;
-                    // Generate variants: @base, #base, plain text
-                    const base = rawKeyword.trim().replace(/^[@#]+/, '').trim();
-                    const variants = base ? [...new Set([`@${base}`, `#${base}`, base])] : [rawKeyword.trim()];
-
-                    for (const variant of variants) {
-                        try {
-                            console.log(`[FetchAll][X-Keywords] Searching: "${variant}"`);
-                            const xTweets = await rapidApiXService.searchTweets(variant);
-                            console.log(`[FetchAll][X-Keywords] Found ${xTweets.length} for "${variant}"`);
-
-                            for (const tweet of xTweets) {
-                                const canonicalId = `x:keyword:${tweet.id}`;
-                                if (seenIds.has(canonicalId)) continue;
-                                seenIds.add(canonicalId);
-
-                                const post = {
-                                    tweet_id: canonicalId,
-                                    text: tweet.text || '',
-                                    url: tweet.url || `https://x.com/${tweet.author_handle}/status/${tweet.id}`,
-                                    created_at: tweet.created_at,
-                                    author: {
-                                        handle: tweet.author_handle || 'x_user',
-                                        display_name: tweet.author || tweet.author_handle || 'X User',
-                                        profile_image_url: tweet.author_avatar || '',
-                                        is_verified: tweet.verified || false,
-                                        follower_count: 0
-                                    },
-                                    media: tweet.media || [],
-                                    engagement: {
-                                        likes: parseInt(tweet.metrics?.like) || 0,
-                                        retweets: parseInt(tweet.metrics?.retweet) || 0,
-                                        replies: parseInt(tweet.metrics?.reply) || 0,
-                                        views: parseInt(tweet.metrics?.views) || 0,
-                                        quotes: parseInt(tweet.metrics?.quote) || 0
-                                    }
-                                };
-                                const created = await createGrievanceFromPost(post, 'x', rawKeyword);
-                                if (created) keywordNew++;
-                            }
-                        } catch (err) {
-                            console.error(`[FetchAll][X-Keywords] Error for "${variant}": ${err.message}`);
-                        }
-                    }
-                }
-                console.log(`[FetchAll][X-Keywords] Total new from keywords: ${keywordNew}`);
-            }
+            const xResult = await fetchKeywordGrievances('x');
+            keywordNew = xResult?.newGrievances || 0;
+            console.log(`[FetchAll][X-Keywords] Total new from keywords: ${keywordNew}`);
         } catch (kwErr) {
             console.error(`[FetchAll][X-Keywords] Keyword fetch failed: ${kwErr.message}`);
         }
 
-        totalNew += keywordNew;
-        return { newGrievances: totalNew, fromSources: totalNew - keywordNew, fromKeywords: keywordNew };
+        // --- Keyword-based Facebook fetching ---
+        let fbKeywordNew = 0;
+        try {
+            const fbResult = await fetchKeywordGrievances('facebook');
+            fbKeywordNew = fbResult?.newGrievances || 0;
+            console.log(`[FetchAll][FB-Keywords] Total new from keywords: ${fbKeywordNew}`);
+        } catch (fbErr) {
+            console.error(`[FetchAll][FB-Keywords] Keyword fetch failed: ${fbErr.message}`);
+        }
+
+        totalNew += keywordNew + fbKeywordNew;
+        return { newGrievances: totalNew, fromSources: totalNew - keywordNew - fbKeywordNew, fromKeywords: keywordNew + fbKeywordNew };
     } catch (error) {
         throw error;
     }
@@ -1694,6 +1685,53 @@ const createGrievanceFromPost = async (post, platform, taggedKeyword) => {
  * matching keywords from the Keyword model.
  * @param {string|null} platformFilter - 'facebook', 'instagram', 'youtube', or null for all
  */
+/**
+ * Search APIs (X "Top" search, YouTube, Facebook) routinely return semantically
+ * "related" results that never actually contain the searched term — retweets
+ * of a reply, recommended videos, near-miss matches, etc. Relevance is checked
+ * against the FULL known-keyword universe, not just the single term that was
+ * searched — a hit is kept if it contains that term, any other active Settings
+ * keyword, or any tracked candidate's name/handle (ours or opposition). This
+ * avoids discarding genuinely relevant posts that happen to match a different
+ * known term than the one that triggered the search.
+ */
+const buildCandidateRelevanceTerms = () => {
+    const terms = new Set();
+    for (const leader of [...OUR_LEADERS, ...OPPOSITION_LEADERS]) {
+        if (leader.name) terms.add(leader.name);
+        if (leader.shortName) terms.add(leader.shortName);
+        (leader.handles_normalized || []).forEach((h) => h && terms.add(h));
+    }
+    return [...terms];
+};
+
+// NFC-normalize before comparing so Telugu text typed/stored in a different
+// Unicode composition (decomposed matras, etc.) than the scraped post text
+// still matches instead of silently failing an `includes()` check.
+const normalizeForMatch = (value) => String(value || '').normalize('NFC').toLowerCase();
+
+const textMatchesAnyKeyword = (text, terms) => {
+    if (!text || !terms?.length) return false;
+    const normalizedText = normalizeForMatch(text);
+    return terms.some((term) => {
+        const t = normalizeForMatch(term).trim();
+        if (!t) return false;
+        return normalizedText.includes(t) ||
+            normalizedText.includes(`@${t}`) ||
+            normalizedText.includes(`#${t}`);
+    });
+};
+
+/** Shared relevance universe: active Settings keywords + every tracked candidate. */
+const getRelevanceTerms = async () => {
+    const keywords = await Keyword.find({ is_active: true }).select('keyword').lean();
+    return [...new Set([
+        ...keywords.map((k) => k.keyword).filter(Boolean),
+        ...buildCandidateRelevanceTerms()
+    ])];
+};
+
+
 const fetchKeywordGrievances = async (platformFilter = null) => {
     try {
         const keywords = await Keyword.find({ is_active: true });
@@ -1709,11 +1747,23 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
         const runX = !platformFilter || platformFilter === 'x' || platformFilter === 'twitter';
         console.log(`[KeywordFetch] Platforms: FB=${runFB} IG=${runIG} YT=${runYT} X=${runX}`);
 
+        // Relevance universe: every active Settings keyword + every tracked
+        // candidate's name/handle (ours + opposition). A search hit is kept if
+        // it matches ANY of these, not just the single term that was searched.
+        const relevanceTerms = [...new Set([
+            ...keywords.map((k) => k.keyword).filter(Boolean),
+            ...buildCandidateRelevanceTerms()
+        ])];
+        console.log(`[KeywordFetch] Relevance universe: ${relevanceTerms.length} terms (${keywords.length} settings keywords + candidates)`);
+
         let totalNew = 0;
         let keywordsSearched = 0;
         const seenTweetIds = new Set();
 
         for (const kw of keywords) {
+            // Pause between keywords while a Frequent Engagers analysis is
+            // actively using the shared RapidAPI key.
+            await yieldToInteractive();
             const rawKeyword = (kw.keyword || '').trim();
             if (!rawKeyword) continue;
             keywordsSearched++;
@@ -1740,6 +1790,11 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                                 const canonicalId = `facebook:keyword:${postId}`;
                                 if (seenTweetIds.has(canonicalId)) continue;
                                 seenTweetIds.add(canonicalId);
+
+                                if (!textMatchesAnyKeyword(fbPost.text, relevanceTerms)) {
+                                    console.log(`[KeywordFetch][FB] Skipping irrelevant post ${postId} — no known keyword/candidate found in text`);
+                                    continue;
+                                }
 
                                 const fbMedia = (fbPost.media || []).map(m => {
                                     if (typeof m === 'string') {
@@ -1785,6 +1840,11 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                                 const canonicalId = `x:keyword:${tweet.id}`;
                                 if (seenTweetIds.has(canonicalId)) continue;
                                 seenTweetIds.add(canonicalId);
+
+                                if (!textMatchesAnyKeyword(tweet.text, relevanceTerms)) {
+                                    console.log(`[KeywordFetch][X] Skipping irrelevant tweet ${tweet.id} — no known keyword/candidate found in text`);
+                                    continue;
+                                }
 
                                 const post = {
                                     tweet_id: canonicalId,
@@ -1840,6 +1900,11 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                             if (seenTweetIds.has(canonicalId)) continue;
                             seenTweetIds.add(canonicalId);
 
+                            if (!textMatchesAnyKeyword(igPost.text, relevanceTerms)) {
+                                console.log(`[KeywordFetch][IG] Skipping irrelevant post ${postId} — no known keyword/candidate found in text`);
+                                continue;
+                            }
+
                             const igMedia = (igPost.media || []).map(m => ({
                                 type: m.type || 'photo', url: m.url, preview_url: m.url
                             }));
@@ -1880,6 +1945,12 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                                 seenTweetIds.add(canonicalId);
 
                                 const text = `${video.title || ''} \n\n${video.description || ''} `.trim();
+
+                                if (!textMatchesAnyKeyword(text, relevanceTerms)) {
+                                    console.log(`[KeywordFetch][YT] Skipping irrelevant video ${videoId} — no known keyword/candidate found in title/description`);
+                                    continue;
+                                }
+
                                 const thumbnail = video.thumbnails?.high?.url || video.thumbnails?.medium?.url || video.thumbnails?.default?.url || '';
 
                                 const post = {
@@ -1928,6 +1999,8 @@ module.exports = {
     extractAndSaveLocation,
     reprocessMahbubnagarMappedGrievances,
     fetchKeywordGrievances,
+    textMatchesAnyKeyword,
+    getRelevanceTerms,
     __private: {
         archiveMentionMediaForStorage,
         upsertXGrievancesForSource

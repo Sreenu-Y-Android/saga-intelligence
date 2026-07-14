@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
-    ChevronDown, X as XIcon, Globe, Plus, MapPin, Search, Trash2
+    ChevronDown, X as XIcon, Globe, Plus, MapPin, Search, Trash2, Calendar as CalendarIcon
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -8,7 +8,13 @@ import {
     DropdownMenu, DropdownMenuContent, DropdownMenuItem,
     DropdownMenuTrigger, DropdownMenuLabel, DropdownMenuSeparator
 } from '../ui/dropdown-menu';
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
+import { Calendar as CalendarComponent } from '../ui/calendar';
+import { format } from 'date-fns';
 import { cn } from '../../lib/utils';
+
+// Display filters may only look back this many days
+const DATE_FILTER_MAX_RANGE_DAYS = 90;
 
 /* ═══════════════════════════════════════════════════════════════ */
 /*                  PLATFORM ICONS & COMPONENTS                   */
@@ -50,10 +56,19 @@ export const GrievanceTopNavbar = ({
     locationFilter = null,
     onLocationChange,
     uniqueLocations = [],
+    dateRange = { from: null, to: null },
+    onDateRangeChange,
 }) => {
     const [isHandleDropdownOpen, setIsHandleDropdownOpen] = useState(false);
     const [isLocationDropdownOpen, setIsLocationDropdownOpen] = useState(false);
     const [locationSearch, setLocationSearch] = useState('');
+
+    const { fromDate: dateFilterFromDate, toDate: dateFilterToDate } = useMemo(() => {
+        const today = new Date();
+        const earliest = new Date(today);
+        earliest.setDate(earliest.getDate() - DATE_FILTER_MAX_RANGE_DAYS);
+        return { fromDate: earliest, toDate: today };
+    }, []);
 
     // Platform tabs
     const PLATFORMS = [
@@ -209,6 +224,60 @@ export const GrievanceTopNavbar = ({
                                     )}
                                 </DropdownMenuContent>
                             </DropdownMenu>
+                        </div>
+
+                        <div className="min-w-0 flex-1 sm:flex-none">
+                            <Popover>
+                                <PopoverTrigger asChild>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className={cn(
+                                            'flex w-full sm:w-auto max-w-full items-center justify-between gap-2 font-medium',
+                                            dateRange?.from ? 'bg-indigo-50 text-indigo-700 border-indigo-300' : ''
+                                        )}
+                                    >
+                                        <CalendarIcon className="h-3.5 w-3.5 shrink-0" />
+                                        <span className="truncate max-w-[180px]">
+                                            {dateRange?.from ? (
+                                                dateRange?.to ? (
+                                                    <>{format(dateRange.from, 'LLL dd')} - {format(dateRange.to, 'LLL dd, y')}</>
+                                                ) : (
+                                                    format(dateRange.from, 'LLL dd, y')
+                                                )
+                                            ) : (
+                                                'Date range'
+                                            )}
+                                        </span>
+                                        <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
+                                    </Button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-auto p-0" align="end">
+                                    <div className="flex items-center justify-between px-3 pt-3">
+                                        <span className="text-xs font-semibold text-slate-700">Filter by Date (last {DATE_FILTER_MAX_RANGE_DAYS} days)</span>
+                                        {dateRange?.from && (
+                                            <button
+                                                type="button"
+                                                onClick={() => onDateRangeChange?.({ from: null, to: null })}
+                                                className="text-xs text-slate-500 hover:text-slate-800"
+                                            >
+                                                Clear
+                                            </button>
+                                        )}
+                                    </div>
+                                    <CalendarComponent
+                                        initialFocus
+                                        mode="range"
+                                        defaultMonth={dateRange?.from || dateFilterToDate}
+                                        selected={{ from: dateRange?.from || undefined, to: dateRange?.to || undefined }}
+                                        onSelect={(range) => onDateRangeChange?.({ from: range?.from || null, to: range?.to || null })}
+                                        fromDate={dateFilterFromDate}
+                                        toDate={dateFilterToDate}
+                                        disabled={{ before: dateFilterFromDate, after: dateFilterToDate }}
+                                        numberOfMonths={2}
+                                    />
+                                </PopoverContent>
+                            </Popover>
                         </div>
 
                         {activePlatform === 'all' && (

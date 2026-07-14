@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom';
 import { useNotification } from '../context/NotificationContext';
 import api from '../lib/api';
-import { AlertTriangle, CheckCircle, Flag, XCircle, Zap, Activity, MessageSquare, Filter, ExternalLink, Search, Calendar, Download, Loader2, ArrowUpCircle, Plus, LayoutGrid, LayoutList } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Flag, XCircle, Zap, Activity, MessageSquare, Filter, ExternalLink, Search, Calendar, Download, Loader2, ArrowUpCircle, Plus, LayoutGrid, LayoutList, Users } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Skeleton } from '../components/ui/skeleton';
@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Textarea } from '../components/ui/textarea';
 import { toast } from 'sonner';
 import { TwitterAlertCard, YoutubeAlertCard } from '../components/AlertCards';
+import { FrequentEngagersDialog } from '../components/FrequentEngagersDialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover';
 import { Calendar as CalendarComponent } from '../components/ui/calendar';
@@ -22,6 +23,17 @@ import { useRbac } from '../contexts/RbacContext';
 const ALERT_STATUS_TABS = [
   { value: 'active', label: 'Active' },
 ];
+
+const ENGAGER_AUTO_QUEUE_TRIGGER_KEY = 'engagerAutoQueueLastTriggerAt';
+const ENGAGER_AUTO_QUEUE_TRIGGER_TTL = 60 * 60 * 1000; // 1 hour
+
+const DATE_FILTER_MAX_RANGE_DAYS = 90;
+const getDateFilterBounds = () => {
+  const today = new Date();
+  const earliest = new Date(today);
+  earliest.setDate(earliest.getDate() - DATE_FILTER_MAX_RANGE_DAYS);
+  return { fromDate: earliest, toDate: today };
+};
 
 const Alerts = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -50,6 +62,7 @@ const Alerts = () => {
   const [availableKeywords, setAvailableKeywords] = useState([]);
   const [sourceCategoryFilter, setSourceCategoryFilter] = useState('all');
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
+  const { fromDate: dateFilterFromDate, toDate: dateFilterToDate } = useMemo(() => getDateFilterBounds(), []);
   const [instagramContentFilter, setInstagramContentFilter] = useState('all_posts_reels');
   const [instagramStoriesStatusFilter, setInstagramStoriesStatusFilter] = useState('all');
   const [capturedStories, setCapturedStories] = useState([]);
@@ -190,6 +203,7 @@ const Alerts = () => {
 
   // Add Source Modal States
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
+  const [showEngagersDialog, setShowEngagersDialog] = useState(false);
   const [initialSourceData, setInitialSourceData] = useState(null);
 
   // Fetch reports for escalated alerts to show report status
@@ -727,6 +741,32 @@ const Alerts = () => {
     return () => clearInterval(interval);
   }, [checkForNewAlerts, fetchAlerts, fetchAlertStats, fetchSourcesMetadata, fetchCapturedStories, isCapturedStoriesView]);
 
+  // The backend already auto-queues Frequent Engagers analyses hourly, but
+  // that timer only starts fresh on a backend restart — this pings the same
+  // endpoint once per hour (per browser) as a redundant nudge so a long
+  // backend uptime without a restart doesn't mean a long wait for the first
+  // handles to get analyzed.
+  useEffect(() => {
+    try {
+      const lastTriggeredAt = Number(localStorage.getItem(ENGAGER_AUTO_QUEUE_TRIGGER_KEY) || 0);
+      if (Date.now() - lastTriggeredAt < ENGAGER_AUTO_QUEUE_TRIGGER_TTL) return;
+    } catch (error) {
+      console.error('Failed to read engager auto-queue trigger cache:', error);
+    }
+
+    api.post('/engager/engager-analysis-auto-queue')
+      .then(() => {
+        try {
+          localStorage.setItem(ENGAGER_AUTO_QUEUE_TRIGGER_KEY, String(Date.now()));
+        } catch (error) {
+          console.error('Failed to write engager auto-queue trigger cache:', error);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to trigger engager auto-queue:', error);
+      });
+  }, []);
+
   useEffect(() => {
     if (!hasAnyAlertFeature) return;
     if (!hasAnyAlertFeature) return undefined;
@@ -756,6 +796,17 @@ const Alerts = () => {
 
     toast.success(`Alert moved to ${newStatus?.replace('_', ' ') || 'updated'}`);
     fetchAlertStats();
+  };
+
+  const handleAlertDelete = (alertId) => {
+    setAlerts(prev => prev.filter(a => a.id !== alertId));
+    setInvestigatedAlerts(prev => prev.filter(a => a.id !== alertId));
+    fetchAlertStats();
+  };
+
+  const handleAlertEditSentiment = (alertId, riskLevel) => {
+    setAlerts(prev => prev.map(a => (a.id === alertId ? { ...a, risk_level: riskLevel } : a)));
+    setInvestigatedAlerts(prev => prev.map(a => (a.id === alertId ? { ...a, risk_level: riskLevel } : a)));
   };
 
   const handleInvestigate = async (url) => {
@@ -1144,17 +1195,30 @@ const Alerts = () => {
             <h1 className="text-3xl font-heading font-bold tracking-tight">Alerts Center</h1>
             <p className="text-sm text-muted-foreground mt-1">Monitor, triage, and respond to threat alerts in real-time</p>
           </div>
-          <Button
-            onClick={() => {
-              setInitialSourceData(null);
-              setSourceModalOpen(true);
-            }}
-            className="gap-2 shadow-sm"
-          >
-            <Plus className="h-4 w-4" />
-            Add Resource
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setShowEngagersDialog(true)} className="gap-2 shadow-sm">
+              <Users className="h-4 w-4" />
+              Frequent Engagers
+            </Button>
+            <Button
+              onClick={() => {
+                setInitialSourceData(null);
+                setSourceModalOpen(true);
+              }}
+              className="gap-2 shadow-sm"
+            >
+              <Plus className="h-4 w-4" />
+              Add Resource
+            </Button>
+          </div>
         </div>
+
+        <FrequentEngagersDialog
+          open={showEngagersDialog}
+          onOpenChange={setShowEngagersDialog}
+          onAddSource={handleOpenAddSource}
+          monitoredHandles={monitoredHandles}
+        />
 
         {/* Search & Filters Row */}
         <div className="flex flex-col md:flex-row md:items-center gap-3">
@@ -1263,6 +1327,9 @@ const Alerts = () => {
                       end: range?.to ? range.to.toISOString() : ''
                     });
                   }}
+                  fromDate={dateFilterFromDate}
+                  toDate={dateFilterToDate}
+                  disabled={{ before: dateFilterFromDate, after: dateFilterToDate }}
                   numberOfMonths={2}
                 />
               </PopoverContent>
@@ -1409,6 +1476,9 @@ const Alerts = () => {
                             end: range?.to ? range.to.toISOString() : ''
                           });
                         }}
+                        fromDate={dateFilterFromDate}
+                        toDate={dateFilterToDate}
+                        disabled={{ before: dateFilterFromDate, after: dateFilterToDate }}
                         numberOfMonths={2}
                       />
                     </PopoverContent>
@@ -1574,6 +1644,9 @@ const Alerts = () => {
                                   content={contentData}
                                   source={sourceData}
                                   onResolve={handleAlertResolve}
+                                  onDelete={handleAlertDelete}
+                                  onEditSentiment={handleAlertEditSentiment}
+                                  enableSpecialActions
                                   viewMode="grid"
                                   hideActions={isStoryArchiveCard}
                                   report={reportsMap[alert?.id]}
@@ -1586,6 +1659,9 @@ const Alerts = () => {
                                   content={contentData}
                                   source={sourceData}
                                   onResolve={handleAlertResolve}
+                                  onDelete={handleAlertDelete}
+                                  onEditSentiment={handleAlertEditSentiment}
+                                  enableSpecialActions
                                   viewMode="grid"
                                   hideActions={isStoryArchiveCard}
                                   searchQuery={searchQuery}

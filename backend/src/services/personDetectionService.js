@@ -1,4 +1,4 @@
-const { ALL_LEADERS, normalizeHandle } = require('../config/politicalData');
+const { ALL_LEADERS, OUR_PARTY, OPPOSITION_PARTIES, normalizeHandle } = require('../config/politicalData');
 
 /**
  * Person Detection Service
@@ -19,6 +19,33 @@ const { ALL_LEADERS, normalizeHandle } = require('../config/politicalData');
  */
 
 const escapeRegex = (value = '') => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Party-level entries (distinct from individual leaders). A post can attack
+ * or praise a whole party — "TRS destroyed Telangana", "Congress govt is
+ * useless" — with no leader named. Without this, such posts resolve zero
+ * PRE-RESOLVED ENTITIES and the LLM has to guess the client-perspective
+ * mapping from world knowledge alone. Aliases (e.g. "TRS" for BRS, the
+ * party's pre-2022 name) MUST resolve to the same side as the party itself.
+ */
+const PARTY_ENTRIES = [
+  {
+    party_id: OUR_PARTY.id,
+    name: OUR_PARTY.name,
+    full_name: OUR_PARTY.full_name,
+    aliases: OUR_PARTY.aliases || [OUR_PARTY.name],
+    side: 'ours',
+    party: OUR_PARTY.name
+  },
+  ...OPPOSITION_PARTIES.map((p) => ({
+    party_id: p.id,
+    name: p.name,
+    full_name: p.full_name,
+    aliases: p.aliases || [p.name],
+    side: 'opposition',
+    party: p.name
+  }))
+];
 
 /**
  * Spacing-aware regex for a multi-token name.
@@ -175,6 +202,29 @@ const detectPersons = async (text, metadata = {}) => {
         match_type: matchType
       });
     }
+  }
+
+  // Party-level pass — catches generic party mentions ("TRS govt", "Congress
+  // leaders") with no individual leader named. Runs independently of the
+  // leader loop above; both can match on the same post without conflict.
+  for (const partyEntry of PARTY_ENTRIES) {
+    const aliasHit = lowerText && partyEntry.aliases.some(
+      (alias) => alias && buildNameRegex(alias).test(lowerText)
+    );
+    if (!aliasHit) continue;
+
+    results.push({
+      person_id: `party:${partyEntry.party_id}`,
+      name: partyEntry.full_name,
+      role: 'Political Party',
+      district: '',
+      constituency: '',
+      side: partyEntry.side,
+      party: partyEntry.party,
+      handle: '',
+      handle_normalized: '',
+      match_type: 'party_text_match'
+    });
   }
 
   return results;

@@ -10,6 +10,8 @@ const {
     fetchKeywordGrievances,
     getGrievances,
     getGrievance,
+    updateGrievanceSentiment,
+    deleteGrievance,
     acknowledgeGrievance,
     markAsComplaint,
     updateComplaintStatus,
@@ -29,6 +31,7 @@ const {
     getSentimentAnalytics,
     getDistinctTopics,
     getCategoryAnalytics,
+    getPublicOpinionHighlights,
     getMapGrievances,
     getLocationStats,
     getLocationSummary
@@ -64,6 +67,7 @@ router.get('/dashboard-stats', getDashboardStats);
 router.get('/sentiment-analytics', getSentimentAnalytics);
 router.get('/topics', getDistinctTopics);
 router.get('/category-analytics', getCategoryAnalytics);
+router.get('/public-opinion', getPublicOpinionHighlights);
 router.get('/map', getMapGrievances);
 router.get('/location-stats', getLocationStats);
 router.get('/location-summary', getLocationSummary);
@@ -95,7 +99,10 @@ router.route('/')
     .get(requireFeatureAccess('/grievances', resolveGrievanceFeatureFromQuery, { aliases: GRIEVANCE_FEATURE_ALIASES }), getGrievances);
 
 router.route('/:id')
-    .get(getGrievance);
+    .get(getGrievance)
+    .delete(deleteGrievance);
+
+router.put('/:id/sentiment', updateGrievanceSentiment);
 
 // Classification actions
 router.put('/:id/acknowledge', requireFeatureAccess('/grievances', () => 'pending'), acknowledgeGrievance);

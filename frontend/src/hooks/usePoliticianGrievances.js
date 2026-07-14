@@ -2,6 +2,12 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import api from '../lib/api';
 import { buildKeywordList, scoreRelevance, isGrievanceRelevant, getEntityKeywords } from '../utils/keywordService';
 
+// Module-level (survives component unmount/remount, e.g. switching between
+// leaders on the Overview tab) so a leader you've already viewed in this
+// session renders instantly instead of re-running the full fetch pipeline.
+const politicianGrievanceCache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
 /**
  * Multi-signal parallel-fetch hook for politician-specific grievances.
  * Reusable outside Grievances.js (e.g. TopMlaWatchCard, MinisterDetailPanel).
@@ -59,12 +65,27 @@ const usePoliticianGrievances = (entity, filters = {}, options = {}) => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const stableFilters = useMemo(() => { filtersRef.current = filters; return filtersRef.current; }, [filtersKey]);
 
-  const fetch = useCallback(async () => {
+  const cacheKey = entity
+    ? `${entity.id}::${filtersKey}::${maxKeywords}:${searchLimit}:${constituencyLimit}:${maxResults}`
+    : null;
+
+  const fetch = useCallback(async (force = false) => {
     if (!entity) {
       setGrievances([]);
       setTotal(0);
       setLastUpdatedAt(null);
       return;
+    }
+
+    if (!force) {
+      const cached = politicianGrievanceCache.get(cacheKey);
+      if (cached && Date.now() - cached.ts < CACHE_DURATION) {
+        setGrievances(cached.grievances);
+        setTotal(cached.total);
+        setLastUpdatedAt(new Date(cached.ts));
+        setError(null);
+        return;
+      }
     }
 
     setLoading(true);
@@ -75,35 +96,32 @@ const usePoliticianGrievances = (entity, filters = {}, options = {}) => {
 
     const requests = [];
 
-    // 1. posted_by_handle — official posts FROM the politician's account
-    entityKws.handles.slice(0, 2).forEach(handle => {
+    // 1. posted_by_handle — official posts FROM the politician's account.
+    // Batched into one OR'd query instead of one full-scan query per handle.
+    const handles = entityKws.handles.slice(0, 2);
+    if (handles.length) {
       requests.push(
-        api.get('/grievances', { params: { posted_by_handle: handle, limit: searchLimit, ...stableFilters } })
+        api.get('/grievances', { params: { posted_by_handle: handles, limit: searchLimit, count: false, ...stableFilters } })
           .catch(() => ({ data: { grievances: [] } }))
       );
-    });
+    }
 
-    // 2. @mention search — posts that @tag the politician
-    entityKws.handles.slice(0, 2).forEach(handle => {
-      requests.push(
-        api.get('/grievances', { params: { search: `@${handle}`, ...commonParams } })
-          .catch(() => ({ data: { grievances: [] } }))
-      );
-    });
-
-    // 3 & 4. Primary names + aliases (budget = maxKeywords minus handle slots)
-    const handleSlots  = Math.min(entityKws.handles.length, 2) * 2;
+    // 2, 3 & 4. @mentions + primary names + aliases — also batched into one
+    // OR'd query (budget = maxKeywords minus handle mention slots).
+    const handleSlots = handles.length * 2;
     const nameBudget   = Math.max(1, maxKeywords - handleSlots);
-
-    activeKeywords
+    const nameTerms = activeKeywords
       .filter(k => k.type === 'primary' || k.type === 'alias' || k.type === 'custom')
       .slice(0, nameBudget)
-      .forEach(kw => {
-        requests.push(
-          api.get('/grievances', { params: { search: kw.term, ...commonParams } })
-            .catch(() => ({ data: { grievances: [] } }))
-        );
-      });
+      .map(kw => kw.term);
+    const searchTerms = [...handles.map(h => `@${h}`), ...nameTerms];
+
+    if (searchTerms.length) {
+      requests.push(
+        api.get('/grievances', { params: { search: searchTerms, limit: searchLimit * 2, count: false, ...stableFilters } })
+          .catch(() => ({ data: { grievances: [] } }))
+      );
+    }
 
     // 5. Constituency supplement — small cap, filtered strictly post-fetch
     if (entity.constituency) {
@@ -113,6 +131,7 @@ const usePoliticianGrievances = (entity, filters = {}, options = {}) => {
             location_city: entity.constituency.toLowerCase(),
             location:      entity.constituency.toLowerCase(),
             limit:         constituencyLimit,
+            count:         false,
             ...stableFilters,
           },
         }).catch(() => ({ data: { grievances: [] } }))
@@ -163,21 +182,23 @@ const usePoliticianGrievances = (entity, filters = {}, options = {}) => {
       });
 
       const results = maxResults > 0 ? relevant.slice(0, maxResults) : relevant;
+      const fetchedAt = Date.now();
       setGrievances(results);
       setTotal(relevant.length); // full matched count, not the display-capped slice
-      setLastUpdatedAt(new Date());
+      setLastUpdatedAt(new Date(fetchedAt));
+      politicianGrievanceCache.set(cacheKey, { grievances: results, total: relevant.length, ts: fetchedAt });
     } catch (err) {
       setError('Failed to load politician grievances');
     } finally {
       setLoading(false);
     }
-  }, [entity, activeKeywords, stableFilters, searchLimit, maxKeywords, constituencyLimit, maxResults]);
+  }, [entity, cacheKey, activeKeywords, stableFilters, searchLimit, maxKeywords, constituencyLimit, maxResults]);
 
   useEffect(() => { fetch(); }, [fetch]);
 
   useEffect(() => {
     if (!entity || !autoRefreshMs) return undefined;
-    const timer = setInterval(fetch, autoRefreshMs);
+    const timer = setInterval(() => fetch(true), autoRefreshMs);
     return () => clearInterval(timer);
   }, [entity, autoRefreshMs, fetch]);
 
@@ -209,7 +230,7 @@ const usePoliticianGrievances = (entity, filters = {}, options = {}) => {
     lastUpdatedAt,
     allKeywords, activeKeywords, disabledKeywordIds,
     toggleKeyword, addCustomKeyword, removeCustomKeyword,
-    refresh: fetch,
+    refresh: useCallback(() => fetch(true), [fetch]), // bypasses the cache
   };
 };
 

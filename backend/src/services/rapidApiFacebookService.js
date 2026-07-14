@@ -41,11 +41,11 @@ const extractFacebookEntityToken = (value) => {
 
             // /pages/<name>/<id>
             const pagesMatch = pathname.match(/^\/pages\/(?:[^\/]+)\/([^\/]+)/i);
-            if (pagesMatch?.[1]) return pagesMatch[1];
+            if (pagesMatch?.[1]) return decodeURIComponent(pagesMatch[1]);
 
             // /<slug>
             const first = pathname.split('/').filter(Boolean)[0];
-            if (first) return first;
+            if (first) return decodeURIComponent(first);
         } catch {
             // Fall through
         }

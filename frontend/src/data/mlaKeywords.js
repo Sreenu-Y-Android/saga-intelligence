@@ -7,9 +7,18 @@
  *   handles  - official X/Twitter handles WITHOUT the @ prefix
  *              used both as posted_by_handle filter AND as @mention search terms
  *   party    - party abbreviations / names used in social media context
+ *   topics   - scheme/issue monitoring terms (praise + criticism, EN + Telugu)
+ *              that count toward this leader's relevance even with no name
+ *              mention — e.g. "HYDRA demolitions" or "Rythu Bharosa delay"
+ *              are about the CM's government even if he isn't named.
+ *              Mirrors backend/scripts/seed_monitoring_keywords.js — keep in sync.
  *
  * Weights in keywordService.js:
- *   handle (5) > primary name (3) > alias (2) > party (1) > constituency (1)
+ *   handle (5) > primary name (3) > alias (2) = topic (2) > party (1) > constituency (1)
+ *
+ * Handles below are web-verified against each leader's live X account (2026-07).
+ * Ids match the ids in backend/src/config/politicalData.js and
+ * telanganaMlaDirectory.js so the same person resolves consistently everywhere.
  */
 
 const MLA_KEYWORD_OVERRIDES = {
@@ -21,8 +30,47 @@ const MLA_KEYWORD_OVERRIDES = {
       'Anumula Revanth Reddy', 'Anumula Revanth', 'CM Revanth Reddy',
       'Revanth Reddy CM', 'Telangana CM Revanth',
     ],
-    handles: ['revanth_anumula', 'RevanthTRS', 'CMO_Telangana'],
+    handles: ['revanth_anumula', 'TelanganaCMO'],
     party: ['Congress', 'INC', 'TPCC', 'Telangana Congress', 'Indian National Congress'],
+    topics: [
+      // Criticism (EN)
+      'six guarantees', 'six guarantees failure', 'loan waiver delay', 'Rythu Bharosa delay',
+      'unemployment', 'job notifications delay', 'HYDRA demolitions', 'Musi River project controversy',
+      'Musi beautification protests', 'land acquisition', 'corruption allegations', 'governance failure',
+      'anti farmer', 'anti youth', 'power cuts', 'fiscal crisis', 'debt burden',
+      'Praja Palana criticism', 'betrayal', 'administration failure',
+      '#FailedPromises', '#CongressFailedTelangana', '#RevanthFailed', '#SaveTelangana', '#BrokenPromises',
+      '#CongressFailures', '#TelanganaBetrayed', '#HYDRAVictims', '#StopHYDRA', '#MusiProject',
+      '#MusiEvictions', '#JoblessYouth', '#FarmerIssues', '#LoanWaiverDelay', '#PrajaPalanaFailure',
+      // Praise (EN)
+      'Telangana Rising', 'investments', 'Praja Palana success', 'reforms', 'investment summit',
+      'Future City Hyderabad', 'industrial growth', 'tourism development', 'farmer welfare',
+      'economic growth', 'infrastructure',
+      '#TelanganaRising', '#PrajaPalana', '#TelanganaDevelopment', '#FutureCity', '#InvestInTelangana',
+      '#CongressForTelangana', '#TelanganaProgress', '#NewTelangana', '#PeopleFirstGovernance',
+      '#TelanganaGrowth', '#RevanthForTelangana', '#TelanganaTransformation', '#DevelopingTelangana',
+      // Criticism (Telugu)
+      'రేవంత్ రెడ్డి హామీలు', 'రేవంత్ రెడ్డి ఆరు గ్యారంటీలు', 'కాంగ్రెస్ హామీలు అమలు కాలేదు',
+      'రైతు రుణమాఫీ ఆలస్యం', 'రైతు భరోసా ఆలస్యం', 'రేవంత్ రెడ్డి నిరుద్యోగం', 'ఉద్యోగాల భర్తీ ఆలస్యం',
+      'హైడ్రా కూల్చివేతలు', 'హైడ్రా వివాదం', 'మూసీ ప్రాజెక్ట్ వివాదం', 'మూసీ సుందరీకరణ వ్యతిరేకత',
+      'కాంగ్రెస్ రైతు వ్యతిరేకం', 'కాంగ్రెస్ యువత వ్యతిరేకం', 'రేవంత్ పాలన వైఫల్యం', 'కాంగ్రెస్ మోసం తెలంగాణ',
+      'నెరవేరని హామీలు', 'రేవంత్ రెడ్డి అప్పులు', 'విద్యుత్ కోతలు తెలంగాణ',
+      '#హామీలమోసం', '#కాంగ్రెస్‌మోసం', '#రేవంత్‌విఫలం', '#హైడ్రాబాధితులు', '#మూసీవివాదం',
+      '#రైతులసమస్యలు', '#నిరుద్యోగయువత', '#నెరవేరనిహామీలు',
+      // Praise (Telugu)
+      'రేవంత్ రెడ్డి అభివృద్ధి', 'తెలంగాణ రైజింగ్', 'ప్రజా పాలన విజయవంతం', 'రేవంత్ రెడ్డి పెట్టుబడులు',
+      'రేవంత్ రెడ్డి ఉపాధి', 'కాంగ్రెస్ సంక్షేమం', 'తెలంగాణ అభివృద్ధి', 'భవిష్యత్ నగరం',
+      'పారిశ్రామిక వృద్ధి తెలంగాణ', 'రైతు సంక్షేమం తెలంగాణ', 'రేవంత్ రెడ్డి సంస్కరణలు', 'తెలంగాణ ఆర్థిక వృద్ధి',
+      '#రేవంత్‌రెడ్డి', '#ప్రజాపాలన', '#తెలంగాణఅభివృద్ధి', '#కొత్తతెలంగాణ', '#అభివృద్ధితెలంగాణ',
+      '#తెలంగాణప్రగతి', '#తెలంగాణరైజింగ్',
+      // Schemes / entities (neutral)
+      'HYDRA Telangana', 'Musi River Project', 'Rythu Bharosa Telangana', 'Indiramma Housing',
+      'Indiramma Illu', 'Mahalakshmi Scheme Telangana', 'Gruha Jyothi Telangana', 'Cheyutha Telangana',
+      'Telangana CMO', 'Telangana Secretariat',
+      '#IndirammaIllu', '#IndirammaHousing', '#RythuBharosa', '#MahalakshmiScheme', '#GruhaJyothi',
+      '#Cheyutha', '#FreeBusScheme', '#TelanganaWelfare', '#TelanganaCM', '#TelanganaGovernment',
+      '#RevanthReddyGovernment',
+    ],
   },
 
   // ─── Deputy Chief Minister ─────────────────────────────────────────────────
@@ -33,7 +81,7 @@ const MLA_KEYWORD_OVERRIDES = {
       'Deputy CM Vikramarka', 'Bhatti Vikramarka Finance',
       'Mallu Bhatti Vikramarka',
     ],
-    handles: ['bhattivik', 'BhattiVikramarka'],
+    handles: ['Bhatti_Mallu'],
     party: ['Congress', 'INC', 'TPCC', 'Telangana Congress'],
   },
 
@@ -43,7 +91,7 @@ const MLA_KEYWORD_OVERRIDES = {
       'D Sridhar Babu', 'IT Minister Telangana', 'Sridhar Industries Minister',
       'Manthani MLA Sridhar', 'D Sridhar Babu IT', 'Industries Minister Telangana',
     ],
-    handles: ['dsridharbabu', 'SridharBabuMLA'],
+    handles: ['OffDSB', 'Min_SridharBabu'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
@@ -53,17 +101,17 @@ const MLA_KEYWORD_OVERRIDES = {
       'Komatireddy Venkat', 'Roads Minister Telangana', 'Komatireddy',
       'Venkat Roads', 'Komatireddy Venkat Reddy', 'Roads and Buildings Minister',
     ],
-    handles: ['KVReddyINC', 'komatireddyvr'],
+    handles: ['KomatireddyKVR'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
-  // ─── Municipal Administration Minister ────────────────────────────────────
+  // ─── Transport & BC Welfare Minister ───────────────────────────────────────
   'ponnam-prabhakar': {
     aliases: [
-      'Ponnam', 'Ponnam GHMC', 'Municipal Minister Telangana',
-      'Ponnam Husnabad', 'MA&UD Minister', 'Municipal Administration Minister',
+      'Ponnam', 'Ponnam Transport', 'Transport Minister Telangana',
+      'Ponnam Husnabad', 'BC Welfare Minister', 'Transport & BC Welfare Minister',
     ],
-    handles: ['ponnamprabhakar', 'PonnamPrabhakarT'],
+    handles: ['Ponnam_INC'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
@@ -74,7 +122,7 @@ const MLA_KEYWORD_OVERRIDES = {
       'N Uttam Kumar', 'Uttam Huzurnagar', 'N Uttam Kumar Reddy',
       'TPCC President', 'Telangana PCC President Uttam',
     ],
-    handles: ['UttamKumarReddyN', 'UttamKumarTelangana'],
+    handles: ['UttamINC'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
@@ -84,48 +132,28 @@ const MLA_KEYWORD_OVERRIDES = {
       'Tummala Nageshwara', 'Tummala Nageswara Rao', 'Agriculture Minister Telangana',
       'Tummala Khammam', 'Khammam MLA Tummala',
     ],
-    handles: ['tummala_nageswara', 'TummalaNageswara'],
+    handles: ['Tummala_INC'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
-  // ─── Tribal Welfare Minister ──────────────────────────────────────────────
+  // ─── Panchayat Raj & Women's Welfare Minister ──────────────────────────────
   'seethakka': {
     aliases: [
-      'Anasuya Seethakka', 'Danasari Anasuya', 'Tribal Minister Telangana',
-      'Seethakka Tribal', 'Danasari Seethakka', 'Mulug MLA Seethakka',
-      'Tribal Welfare Minister',
+      'Anasuya Seethakka', 'Danasari Anasuya', 'Panchayat Raj Minister Telangana',
+      'Seethakka Panchayat Raj', 'Danasari Seethakka', 'Mulug MLA Seethakka',
+      'Women Child Welfare Minister',
     ],
-    handles: ['seethakka_mla', 'DanasariAnasuya'],
+    handles: ['seethakkaMLA'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
-  // ─── BC Welfare Minister ──────────────────────────────────────────────────
-  'gangula': {
-    aliases: [
-      'Gangula Kamalakar', 'BC Welfare Minister', 'Gangula Minister',
-      'Karimnagar MLA Gangula', 'BC Welfare Minister Telangana',
-    ],
-    handles: ['GangulaKamalakar', 'gangula_kamalakar'],
-    party: ['Congress', 'INC', 'TPCC'],
-  },
-
-  // ─── Women & Child Welfare Minister ───────────────────────────────────────
+  // ─── Environment, Forests & Endowments Minister ────────────────────────────
   'konda-surekha': {
     aliases: [
-      'Surekha Minister', 'Women Minister Telangana', 'Konda Surekha Minister',
-      'Warangal East MLA Surekha', 'Women Child Welfare Minister',
+      'Surekha Minister', 'Environment Minister Telangana', 'Konda Surekha Minister',
+      'Warangal East MLA Surekha', 'Forest Minister Telangana',
     ],
-    handles: ['KondaSurekha', 'kondaSurekhaINC'],
-    party: ['Congress', 'INC', 'TPCC'],
-  },
-
-  // ─── Labour Minister ──────────────────────────────────────────────────────
-  'sirikonda': {
-    aliases: [
-      'Sirikonda Madhu', 'Labour Minister Telangana', 'Madhu Yashpal',
-      'Sirikonda Madhu Yashpal', 'Banswada MLA',
-    ],
-    handles: ['SirikondaMadhu', 'sirikonda_madhu'],
+    handles: ['iamkondasurekha'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
@@ -133,87 +161,143 @@ const MLA_KEYWORD_OVERRIDES = {
   'jupally': {
     aliases: [
       'Jupally Krishna', 'Jupally Krishna Rao', 'Tourism Minister Telangana',
-      'Kollapur MLA Jupally', 'Tourism Culture Minister',
+      'Kollapur MLA Jupally', 'Tourism Culture Minister', 'Excise Minister Telangana',
     ],
-    handles: ['JupallyKrishnaRao', 'jupally_krishna'],
+    handles: ['jupallyk_rao'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
-  // ─── Health Minister ──────────────────────────────────────────────────────
-  'naini-reddy': {
-    aliases: [
-      'Naini Rajender', 'Health Minister Telangana', 'Naini Reddy Health',
-      'Naini Rajender Reddy',
-    ],
-    handles: ['NainiRajender', 'naini_rajender'],
-    party: ['Congress', 'INC', 'TPCC'],
-  },
-
-  // ─── Housing & Urban Dev Minister ─────────────────────────────────────────
-  'chamakura': {
-    aliases: [
-      'Chamakura Malla Reddy', 'Malla Reddy Minister', 'Urban Dev Minister',
-      'Housing Minister Telangana',
-    ],
-    handles: ['ChamakuraMR', 'chamakura_mla'],
-    party: ['Congress', 'INC', 'TPCC'],
-  },
-
-  // ─── Civil Supplies Minister ──────────────────────────────────────────────
-  'puvvada': {
-    aliases: [
-      'Puvvada Ajay Kumar', 'Puvvada Ajay', 'Civil Supplies Minister',
-      'Civil Supplies Telangana', 'Khammam MLA Puvvada',
-    ],
-    handles: ['PuvvadaAjayKumar', 'puvvada_ajay'],
-    party: ['Congress', 'INC', 'TPCC'],
-  },
-
-  // ─── Industries Minister ──────────────────────────────────────────────────
+  // ─── Health & Medical Minister ─────────────────────────────────────────────
   'damodar': {
     aliases: [
-      'Damodar Raja', 'Damodar Narasimha', 'Industries Minister Telangana',
-      'Damodar Raja Narasimha', 'Andole MLA Damodar',
+      'Damodar Raja', 'Damodar Narasimha', 'Health Minister Telangana',
+      'Damodar Raja Narasimha', 'Andole MLA Damodar', 'Science Technology Minister',
     ],
-    handles: ['DamodarRajaN', 'damodar_industries'],
+    handles: ['DamodarCilarapu'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
-  // ─── Panchayat Raj Minister ───────────────────────────────────────────────
-  'niranjan-reddy': {
+  // ─── Revenue, Housing & IPR Minister ───────────────────────────────────────
+  'ponguleti-palair': {
     aliases: [
-      'Singireddy Niranjan', 'Niranjan Panchayat', 'Panchayat Raj Minister',
-      'Singireddy Niranjan Reddy', 'PR Minister Telangana',
+      'Ponguleti Srinivasa Reddy', 'Ponguleti Srinivas Reddy', 'Revenue Minister Telangana',
+      'Palair MLA Ponguleti', 'Housing Minister Telangana',
     ],
-    handles: ['NiranjanReddyS', 'singireddy_niranjan'],
+    handles: ['INC_Ponguleti'],
     party: ['Congress', 'INC', 'TPCC'],
   },
 
-  // ─── AP Chief Minister — N. Chandrababu Naidu (TDP) ─────────────────────
-  'chandra-babu-naidu': {
+  // ─── Labour & Mines Minister ────────────────────────────────────────────────
+  'gaddam-vivekanand': {
     aliases: [
-      'CBN', 'Chandrababu', 'N Chandrababu Naidu', 'AP Chief Minister',
-      'CM AP', 'CM Chandrababu', 'AP CM CBN', 'CM Naidu', 'AP CM Naidu',
-      'Chandrababu Naidu AP CM', 'Kuppam MLA Chandrababu', 'Naidu AP CM',
-      'TDP Chief', 'Chandrababu TDP', 'AP CM Chandrababu Naidu',
+      'Gaddam Vivekanand', 'G Vivekanand', 'Gaddam Vivek Venkatswamy',
+      'Labour Minister Telangana', 'Chennur MLA Vivekanand', 'Mines Minister Telangana',
     ],
-    handles: ['ncbn', 'ChandrababuTDP', 'APCMOfficer'],
-    party: ['TDP', 'Telugu Desam', 'Telugu Desam Party', 'NDA AP'],
+    handles: [],
+    party: ['Congress', 'INC', 'TPCC'],
   },
 
-  // ─── AP Cabinet Minister — Nara Lokesh (TDP) ─────────────────────────────
-  // Tracks ALL Twitter mentions & tags of Nara Lokesh across AP political discourse
-  'nara-lokesh': {
+  // ─── SC/ST & Disabilities Welfare Minister ─────────────────────────────────
+  'adluri-laxman': {
     aliases: [
-      'Lokesh', 'Nara Lokesh Minister', 'AP Education Minister', 'AP HRD Minister',
-      'HRD Minister Andhra', 'IT Minister AP', 'Lokesh TDP', 'TDP Lokesh',
-      'Nara Lokesh TDP', 'Lokesh AP Minister', 'Minister Nara Lokesh',
-      'AP IT Minister Lokesh', 'Lokesh Mangalagiri', 'Mangalagiri MLA Lokesh',
-      'Education Minister AP', 'Lokesh Human Resources', 'AP Electronics Minister',
-      'N Lokesh', 'Naralokesh', 'Chandrababu son', 'CBN son Lokesh',
+      'Adluri Laxman Kumar', 'SC Welfare Minister Telangana', 'Dharmapuri MLA Adluri',
+      'Tribal Welfare Minister Telangana',
     ],
-    handles: ['naralokesh', 'NaraLokeshTDP'],
-    party: ['TDP', 'Telugu Desam', 'Telugu Desam Party', 'NDA AP'],
+    handles: ['minister_adluri'],
+    party: ['Congress', 'INC', 'TPCC'],
+  },
+
+  // ─── Animal Husbandry, Fisheries & Sports Minister ─────────────────────────
+  'vakiti-makthal': {
+    aliases: [
+      'Vakiti Srihari', 'Animal Husbandry Minister Telangana', 'Makthal MLA Vakiti',
+      'Sports Minister Telangana',
+    ],
+    handles: ['Vakiti_srihari'],
+    party: ['Congress', 'INC', 'TPCC'],
+  },
+
+  // ─── Public Enterprises & Minorities Welfare Minister ──────────────────────
+  'mohammad-azharuddin': {
+    aliases: [
+      'Mohammad Azharuddin', 'Mohammed Azharuddin', 'Azharuddin Minister',
+      'Minorities Welfare Minister Telangana', 'MLC Azharuddin',
+    ],
+    handles: ['azharflicks'],
+    party: ['Congress', 'INC', 'TPCC'],
+  },
+
+  // ─── Warangal West MLA (non-minister) ──────────────────────────────────────
+  'naini-reddy': {
+    aliases: [
+      'Naini Rajender', 'Naini Rajender Reddy', 'Warangal West MLA Naini',
+    ],
+    handles: ['naini_rajender'],
+    party: ['Congress', 'INC', 'TPCC'],
+  },
+
+  // ─── BRS Chief ──────────────────────────────────────────────────────────────
+  'kcr': {
+    aliases: [
+      'KCR', 'Chandrashekar Rao', 'K Chandrashekar Rao', 'Former CM KCR',
+      'BRS Chief KCR', 'BRS President',
+    ],
+    handles: ['KCRBRSPresident'],
+    party: ['BRS', 'Bharat Rashtra Samithi'],
+  },
+
+  // ─── BRS Working President ─────────────────────────────────────────────────
+  'ktr': {
+    aliases: [
+      'KTR', 'K T Rama Rao', 'Rama Rao', 'BRS Working President',
+    ],
+    handles: ['KTRBRS'],
+    party: ['BRS', 'Bharat Rashtra Samithi'],
+  },
+
+  // ─── BRS Senior Leader ──────────────────────────────────────────────────────
+  'harish-rao': {
+    aliases: [
+      'Harish Rao', 'T Harish Rao', 'Siddipet MLA Harish Rao',
+    ],
+    handles: ['BRSHarish'],
+    party: ['BRS', 'Bharat Rashtra Samithi'],
+  },
+
+  // ─── BJP Senior Leader ──────────────────────────────────────────────────────
+  't-raja-singh': {
+    aliases: [
+      'Raja Singh', 'T Raja Singh', 'Goshamahal MLA Raja Singh',
+    ],
+    handles: ['TigerRajaSingh'],
+    party: ['BJP', 'Bharatiya Janata Party'],
+  },
+
+  // ─── BJP Floor Leader ───────────────────────────────────────────────────────
+  'alleti-maheshwar-reddy': {
+    aliases: [
+      'Alleti Maheshwar Reddy', 'Maheshwar Reddy', 'Nirmal MLA Alleti', 'BJP Floor Leader',
+    ],
+    handles: ['maheshreddy_bjp'],
+    party: ['BJP', 'Bharatiya Janata Party'],
+  },
+
+  // ─── AIMIM Floor Leader ─────────────────────────────────────────────────────
+  'akbaruddin-owaisi': {
+    aliases: [
+      'Akbaruddin Owaisi', 'Akbaruddin', 'Chandrayangutta MLA Akbaruddin',
+    ],
+    handles: ['AkbarOwaisi_MIM'],
+    party: ['AIMIM', 'Majlis'],
+  },
+
+  // ─── AIMIM Senior Leader ────────────────────────────────────────────────────
+  'majid-hussain': {
+    aliases: [
+      'Majid Hussain', 'Mohammed Majid Hussain', 'Nampally MLA Majid Hussain',
+    ],
+    handles: ['Md_MajidHussain'],
+    party: ['AIMIM', 'Majlis'],
   },
 };
 

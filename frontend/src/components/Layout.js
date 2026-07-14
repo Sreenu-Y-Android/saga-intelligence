@@ -119,8 +119,8 @@ const Layout = () => {
         />
       )}
 
-      {/* Top Bar - SOC-EYE style */}
-      <header className="fixed top-0 left-0 right-0 h-16 lg:h-20 bg-gradient-to-r from-blue-950 via-blue-900 to-blue-950 z-50 shadow-lg select-none">
+      {/* Top Bar - Congress saffron-to-green gradient */}
+      <header className="fixed top-0 left-0 right-0 h-16 lg:h-20 bg-gradient-to-r from-[hsl(28,75%,20%)] via-[hsl(80,40%,20%)] to-[hsl(125,55%,15%)] z-50 shadow-lg select-none">
         <div className="flex items-center justify-between h-full px-4 lg:px-6 relative">
           {/* Left: Menu + Logo */}
           <div className="flex items-center gap-3 lg:gap-4 relative z-10">
@@ -143,7 +143,7 @@ const Layout = () => {
               />
               <div className="flex flex-col items-start justify-start text-left leading-tight">
                 <h1 className="text-base lg:text-2xl font-heading font-bold text-white tracking-wider uppercase drop-shadow-md">BLURA SAGA</h1>
-                <span className="hidden sm:block text-[9px] lg:text-[10px] text-blue-200 font-medium tracking-widest uppercase drop-shadow">Sentiment and Good Will Analysis</span>
+                <span className="hidden sm:block text-[9px] lg:text-[10px] text-[hsl(125,30%,78%)] font-medium tracking-widest uppercase drop-shadow">Sentiment and Good Will Analysis</span>
               </div>
             </div>
           </div>
@@ -181,7 +181,7 @@ const Layout = () => {
               className="text-white hover:bg-white/10 h-9 w-9 lg:h-10 lg:w-10"
               aria-label={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
             >
-              {darkMode ? <Sun className="h-4 w-4 lg:h-5 lg:w-5 text-[hsl(43,96%,70%)]" /> : <Moon className="h-4 w-4 lg:h-5 lg:w-5" />}
+              {darkMode ? <Sun className="h-4 w-4 lg:h-5 lg:w-5 text-[hsl(33,100%,70%)]" /> : <Moon className="h-4 w-4 lg:h-5 lg:w-5" />}
             </Button>
 
             <div className="hidden sm:block h-6 lg:h-8 w-px bg-white/20"></div>
@@ -189,7 +189,7 @@ const Layout = () => {
             <div className="flex items-center gap-2 lg:gap-3">
               <div className="text-right hidden sm:block">
                 <div className="text-xs lg:text-sm font-semibold text-white truncate max-w-[120px] lg:max-w-none">{user?.full_name}</div>
-                <div className="text-[10px] lg:text-xs text-blue-200 font-medium uppercase tracking-wide">{user?.role}</div>
+                <div className="text-[10px] lg:text-xs text-[hsl(125,30%,78%)] font-medium uppercase tracking-wide">{user?.role}</div>
               </div>
               <Button
                 variant="ghost"
@@ -204,16 +204,28 @@ const Layout = () => {
             </div>
           </div>
         </div>
+        {/* Congress tricolor accent strip */}
+        <div className="absolute bottom-0 left-0 right-0 h-[3px] flex">
+          <div className="flex-1 bg-[hsl(33,100%,50%)]"></div>
+          <div className="flex-1 bg-white"></div>
+          <div className="flex-1 bg-[hsl(125,89%,28%)]"></div>
+        </div>
       </header>
 
-      {/* Sidebar - Narrow icon rail */}
+      {/* Sidebar - Narrow icon rail, Congress saffron-to-green gradient */}
       <aside
-        className={`fixed top-16 lg:top-20 left-0 bottom-0 w-[82px] bg-gradient-to-b from-blue-950 via-blue-900 to-blue-950 shadow-xl z-40 transform transition-transform duration-300 ease-in-out select-none ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        className={`fixed top-16 lg:top-20 left-0 bottom-0 w-[82px] bg-gradient-to-b from-[hsl(28,75%,20%)] via-[hsl(80,40%,20%)] to-[hsl(125,55%,15%)] shadow-xl z-40 transform transition-transform duration-300 ease-in-out select-none ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         data-testid="sidebar"
         role="navigation"
         aria-label="Main navigation"
       >
+        {/* Congress tricolor accent strip */}
+        <div className="h-[3px] flex">
+          <div className="flex-1 bg-[hsl(33,100%,50%)]"></div>
+          <div className="flex-1 bg-white"></div>
+          <div className="flex-1 bg-[hsl(125,89%,28%)]"></div>
+        </div>
         {/* Navigation Links */}
         <nav className="flex flex-col items-center gap-0.5 py-3 overflow-y-auto max-h-[calc(100vh-10rem)]" style={{ scrollbarWidth: 'none' }}>
           {navigation.map((item) => {
@@ -226,12 +238,15 @@ const Layout = () => {
                 data-testid={`nav-${item.name.toLowerCase().replace(' ', '-')}`}
                 className={`relative flex flex-col items-center justify-center w-[70px] py-2.5 rounded-xl text-center transition-all duration-200 group ${
                   isActive
-                    ? 'bg-white/[0.08] text-white'
+                    ? 'bg-[hsl(33,100%,50%)]/15 text-white'
                     : 'text-white/50 hover:bg-white/[0.05] hover:text-white/80'
                 }`}
               >
+                {isActive && (
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[3px] rounded-r bg-[hsl(33,100%,50%)]"></span>
+                )}
                 <div className="relative">
-                  <Icon className={`h-[22px] w-[22px] mb-1 ${isActive ? 'text-white' : 'text-white/50 group-hover:text-white/80'}`} />
+                  <Icon className={`h-[22px] w-[22px] mb-1 ${isActive ? 'text-[hsl(33,100%,62%)]' : 'text-white/50 group-hover:text-white/80'}`} />
                   {item.name === 'Alerts' && unreadCount > 0 && (
                     <span className="absolute -top-1.5 -right-2.5 bg-red-500 text-white text-[9px] font-bold min-w-[18px] h-[18px] flex items-center justify-center rounded-full shadow-lg shadow-red-500/30">
                       {unreadCount > 99 ? '99+' : unreadCount}

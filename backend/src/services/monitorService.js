@@ -13,11 +13,30 @@ const { sendAlertEmail } = require('./emailService');
 const { getActiveEvents, autoArchiveEndedEvents, scanEventOnce, shouldPollEvent } = require('./eventMonitorService');
 const { checkAndCreateVelocityAlerts, createNewPostAlert, updateEngagementHistory, checkVelocity } = require('./velocityAlertService');
 const { queueUrlEnrichment } = require('./urlEnrichmentService');
+const { yieldToInteractive } = require('./apiPriorityGate');
 const rapidApiInstagramService = require('./rapidApiInstagramService');
 const { archiveContentMedia, archiveTwitterMedia } = require('./contentS3Service');
 
 let lastMediaBackfillAt = 0;
 const MEDIA_BACKFILL_INTERVAL_MS = 15 * 60 * 1000;
+
+// Content lookback window: only ingest posts between MIN and MAX days old
+// (skips anything more recent than MIN days, drops anything older than MAX days).
+const getLookbackWindow = () => {
+  const maxDays = Number(process.env.MONITOR_LOOKBACK_MAX_DAYS || 90);
+  const minDays = Number(process.env.MONITOR_LOOKBACK_MIN_DAYS || 30);
+  const safeMaxDays = Number.isFinite(maxDays) && maxDays > 0 ? maxDays : 90;
+  const safeMinDays = Number.isFinite(minDays) && minDays >= 0 ? minDays : 30;
+  const now = Date.now();
+  return {
+    minDays: safeMinDays,
+    maxDays: safeMaxDays,
+    // oldest allowed timestamp
+    lowerCutoff: now - (safeMaxDays * 24 * 60 * 60 * 1000),
+    // newest allowed timestamp (excludes anything more recent than this)
+    upperCutoff: now - (safeMinDays * 24 * 60 * 60 * 1000)
+  };
+};
 
 const normalizeInstagramHandle = (value) => {
   if (!value) return value;
@@ -355,17 +374,15 @@ const monitorYoutubeSource = async (source, apiKey) => {
     let items = response.data.items || [];
     const apiCount = items.length;
 
-    // Lookback filter (default: 7 days) — parity with X monitor
-    const lookbackDays = Number(process.env.MONITOR_LOOKBACK_DAYS || 7);
-    const safeLookbackDays = Number.isFinite(lookbackDays) && lookbackDays > 0 ? lookbackDays : 7;
-    const cutoff = Date.now() - (safeLookbackDays * 24 * 60 * 60 * 1000);
+    // Lookback window (default: 30-90 days old) — parity with X monitor
+    const { minDays, maxDays, lowerCutoff, upperCutoff } = getLookbackWindow();
     const beforeLookback = items.length;
     items = items.filter(it => {
       const created = it.snippet?.publishedAt ? new Date(it.snippet.publishedAt).getTime() : NaN;
-      return Number.isFinite(created) ? created >= cutoff : true;
+      return Number.isFinite(created) ? (created >= lowerCutoff && created <= upperCutoff) : true;
     });
     if (items.length < beforeLookback) {
-      console.log(`[Monitor YT] channel=${source.identifier}: lookback ${safeLookbackDays}d dropped ${beforeLookback - items.length}/${beforeLookback}`);
+      console.log(`[Monitor YT] channel=${source.identifier}: lookback ${minDays}-${maxDays}d dropped ${beforeLookback - items.length}/${beforeLookback}`);
     }
 
     let existingCount = 0;
@@ -501,18 +518,16 @@ const monitorXSource = async (source) => {
       return [];
     }
 
-    // Profile monitor lookback window (default: last 7 days)
-    const lookbackDays = Number(process.env.MONITOR_LOOKBACK_DAYS || 7);
-    const safeLookbackDays = Number.isFinite(lookbackDays) && lookbackDays > 0 ? lookbackDays : 7;
-    const cutoff = Date.now() - (safeLookbackDays * 24 * 60 * 60 * 1000);
+    // Profile monitor lookback window (default: 30-90 days old)
+    const { minDays, maxDays, lowerCutoff, upperCutoff } = getLookbackWindow();
     const beforeLookback = tweets.length;
     tweets = tweets.filter(t => {
       const created = t.created_at ? new Date(t.created_at).getTime() : NaN;
-      return Number.isFinite(created) ? created >= cutoff : true;
+      return Number.isFinite(created) ? (created >= lowerCutoff && created <= upperCutoff) : true;
     });
     const afterLookback = tweets.length;
     if (afterLookback < beforeLookback) {
-      console.log(`[Monitor X] @${source.identifier}: lookback ${safeLookbackDays}d dropped ${beforeLookback - afterLookback}/${beforeLookback}`);
+      console.log(`[Monitor X] @${source.identifier}: lookback ${minDays}-${maxDays}d dropped ${beforeLookback - afterLookback}/${beforeLookback}`);
     }
 
     if (!tweets || tweets.length === 0) {
@@ -1054,10 +1069,8 @@ const monitorInstagramSource = async (source, accessToken) => {
 
     const apiCount = Array.isArray(posts) ? posts.length : 0;
 
-    // Lookback filter (default: 7 days) — parity with X monitor
-    const lookbackDays = Number(process.env.MONITOR_LOOKBACK_DAYS || 7);
-    const safeLookbackDays = Number.isFinite(lookbackDays) && lookbackDays > 0 ? lookbackDays : 7;
-    const cutoff = Date.now() - (safeLookbackDays * 24 * 60 * 60 * 1000);
+    // Lookback window (default: 30-90 days old) — parity with X monitor
+    const { minDays, maxDays, lowerCutoff, upperCutoff } = getLookbackWindow();
     const beforeLookback = apiCount;
     posts = (posts || []).filter(p => {
       const raw = pickFirst(p?.taken_at_timestamp, p?.taken_at, p?.created_time, p?.timestamp, p?.created_at);
@@ -1065,10 +1078,10 @@ const monitorInstagramSource = async (source, accessToken) => {
       let ms;
       if (typeof raw === 'number') ms = raw < 1e12 ? raw * 1000 : raw;
       else ms = new Date(raw).getTime();
-      return Number.isFinite(ms) ? ms >= cutoff : true;
+      return Number.isFinite(ms) ? (ms >= lowerCutoff && ms <= upperCutoff) : true;
     });
     if (posts.length < beforeLookback) {
-      console.log(`[Monitor IG] @${handle}: lookback ${safeLookbackDays}d dropped ${beforeLookback - posts.length}/${beforeLookback}`);
+      console.log(`[Monitor IG] @${handle}: lookback ${minDays}-${maxDays}d dropped ${beforeLookback - posts.length}/${beforeLookback}`);
     }
 
     if (!posts || posts.length === 0) {
@@ -1410,20 +1423,18 @@ const monitorFacebookSource = async (source, accessToken, options = {}) => {
     posts = Array.isArray(posts) ? posts : [];
     const apiCount = posts.length;
 
-    // Lookback filter (default: 7 days) — parity with X monitor
-    const lookbackDays = Number(process.env.MONITOR_LOOKBACK_DAYS || 7);
-    const safeLookbackDays = Number.isFinite(lookbackDays) && lookbackDays > 0 ? lookbackDays : 7;
-    const cutoff = Date.now() - (safeLookbackDays * 24 * 60 * 60 * 1000);
+    // Lookback window (default: 30-90 days old) — parity with X monitor
+    const { minDays, maxDays, lowerCutoff, upperCutoff } = getLookbackWindow();
     const beforeLookback = posts.length;
     posts = posts.filter(p => {
       if (!p?.created_at) return true;
       let ms;
       if (typeof p.created_at === 'number') ms = p.created_at < 1e12 ? p.created_at * 1000 : p.created_at;
       else ms = new Date(p.created_at).getTime();
-      return Number.isFinite(ms) ? ms >= cutoff : true;
+      return Number.isFinite(ms) ? (ms >= lowerCutoff && ms <= upperCutoff) : true;
     });
     if (posts.length < beforeLookback) {
-      console.log(`[Monitor FB] page=${source.identifier}: lookback ${safeLookbackDays}d dropped ${beforeLookback - posts.length}/${beforeLookback}`);
+      console.log(`[Monitor FB] page=${source.identifier}: lookback ${minDays}-${maxDays}d dropped ${beforeLookback - posts.length}/${beforeLookback}`);
     }
 
     const newContent = [];
@@ -2290,6 +2301,10 @@ const startMonitoring = async () => {
       for (let i = 0; i < sources.length; i += CONCURRENCY_LIMIT) {
         const batch = sources.slice(i, i + CONCURRENCY_LIMIT);
         // console.log(`[Monitor] Processing batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(sources.length / CONCURRENCY_LIMIT)} (${batch.length} sources)`);
+
+        // Pause between batches while a Frequent Engagers analysis is
+        // actively using the shared RapidAPI key.
+        await yieldToInteractive();
 
         await Promise.all(batch.map(async (source) => {
           // Double check in-memory source against DB to honor "Pause" instantly

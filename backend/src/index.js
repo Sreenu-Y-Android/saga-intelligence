@@ -47,6 +47,7 @@ app.use('/api/settings', require('./routes/settingsRoutes'));
 app.use('/api/audit', require('./routes/auditRoutes'));
 app.use('/api/youtube', require('./routes/youtube.routes'));
 app.use('/api/x', require('./routes/x.routes'));
+app.use('/api/engager', require('./routes/engagerRoutes'));
 app.use('/api/media', require('./routes/media.routes'));
 app.use('/api/search', require('./routes/searchRoutes'));
 app.use('/api/events', require('./routes/eventRoutes'));
@@ -369,17 +370,45 @@ const runGrievanceFetch = async () => {
       return;
     }
 
-    // Fetch grievances for today
+    // Fetch grievances between MIN and MAX days old (default: 30-90 days),
+    // skipping anything more recent than MIN days.
+    const maxDays = Number(process.env.MONITOR_LOOKBACK_MAX_DAYS || 90);
+    const minDays = Number(process.env.MONITOR_LOOKBACK_MIN_DAYS || 30);
+    const safeMaxDays = Number.isFinite(maxDays) && maxDays > 0 ? maxDays : 90;
+    const safeMinDays = Number.isFinite(minDays) && minDays >= 0 ? minDays : 30;
     const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
+    const startDate = new Date(today);
+    startDate.setDate(startDate.getDate() - safeMaxDays);
+    const endDate = new Date(today);
+    endDate.setDate(endDate.getDate() - safeMinDays);
+    const startDateStr = startDate.toISOString().split('T')[0];
+    const endDateStr = endDate.toISOString().split('T')[0];
 
-    const result = await grievanceService.fetchAllGrievances(todayStr, todayStr);
+    const result = await grievanceService.fetchAllGrievances(startDateStr, endDateStr);
 
   } catch (error) {
     console.error('[Grievance Scheduler] Error during auto-fetch:', error.message);
   } finally {
     grievanceSchedulerRunning = false;
   }
+};
+
+// ─── Frequent Engagers Auto-Queue ──────────────────────────────────────────
+// Analysis was previously only ever triggered by a manual button click.
+// This runs it automatically in the background, one monitored X handle per
+// tick (autoQueueNewHandles already skips handles analyzed within the last
+// 7 days and respects the single-flight processing lock).
+const startEngagerAutoQueue = () => {
+  const tick = async () => {
+    try {
+      const { autoQueueNewHandles } = require('./services/engagerAnalysisService');
+      await autoQueueNewHandles();
+    } catch (err) {
+      console.warn('[EngagerAutoQueue] tick failed:', err.message);
+    }
+  };
+  setTimeout(tick, 2 * 60 * 1000); // first run 2 minutes after startup
+  setInterval(tick, 60 * 60 * 1000); // then hourly
 };
 
 // ─── Content Availability Checker ──────────────────────────────────────────
@@ -459,6 +488,9 @@ const startServer = async () => {
 
   // Start Content Availability Checker
   startAvailabilityChecker();
+
+  // Start Frequent Engagers Auto-Queue
+  startEngagerAutoQueue();
 
   // Retweet Sync Scheduler — DISABLED (now on-demand via Frequent Engagers button)
   // try {

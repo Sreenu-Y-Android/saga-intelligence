@@ -8,7 +8,7 @@ const Settings = require('../models/Settings');
 const Keyword = require('../models/Keyword');
 const { performFullAnalysis } = require('./monitorService');
 const { generateComplaintCode } = require('./complaintCodeService');
-const { analyzeGrievanceContent } = require('./grievanceService');
+const { analyzeGrievanceContent, textMatchesAnyKeyword, getRelevanceTerms } = require('./grievanceService');
 const { syncLegacyFieldsFromWorkflow } = require('./grievanceWorkflowService');
 
 const BATCH_SIZE = Number(process.env.ENGINE_TEMP_BATCH_SIZE || 40);
@@ -361,6 +361,12 @@ async function upsertGrievanceFromTemp(item) {
 
   const existing = await Grievance.findOne({ tweet_id: n.canonicalId });
   if (existing) return existing;
+
+  const relevanceTerms = await getRelevanceTerms();
+  if (!textMatchesAnyKeyword(n.text, relevanceTerms)) {
+    console.log(`[TempProcessor] Skipping irrelevant grievance ${n.canonicalId} — no known keyword/candidate found in text`);
+    return null;
+  }
 
   const grievanceSource = await resolveGrievanceSource(item, n);
 

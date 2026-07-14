@@ -13,6 +13,10 @@ import ReactPlayer from 'react-player';
 import { toast } from 'sonner';
 import ReasonModal from './ReasonModal';
 import ForensicResults from './ForensicResults';
+import { useAuth } from '../contexts/AuthContext';
+
+const SPECIAL_ACCESS_EMAIL = 'sreenu@gmail.com';
+const RISK_TO_SENTIMENT = { low: 'positive', medium: 'neutral', high: 'negative', critical: 'negative' };
 
 const WHATSAPP_GROUP_LINK = 'https://chat.whatsapp.com/HGGWZCyNXBmHfp4KvYxlXu';
 
@@ -731,7 +735,9 @@ const URLCard = ({ card }) => {
     );
 };
 
-export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSource, monitoredHandles = [], viewMode = 'list', searchQuery, hideActions = false, report = null, isInvestigatedResult = false, customClass = '' }) => {
+export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSource, onDelete, onEditSentiment, enableSpecialActions = false, monitoredHandles = [], viewMode = 'list', searchQuery, hideActions = false, report = null, isInvestigatedResult = false, customClass = '' }) => {
+    const { user } = useAuth();
+    const canEditDelete = enableSpecialActions && user?.email === SPECIAL_ACCESS_EMAIL;
     const [showReasonModal, setShowReasonModal] = useState(false);
     const [showFullTextModal, setShowFullTextModal] = useState(false);
     const [downloading, setDownloading] = useState(false);
@@ -864,6 +870,26 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
             toast.error('Failed to update status: ' + (error.response?.data?.error || error.message));
         } finally {
             setActionLoading(false);
+        }
+    };
+
+    const handleEditSentiment = async (sentiment) => {
+        try {
+            const res = await api.put(`/alerts/${alert.id}/sentiment`, { sentiment });
+            onEditSentiment?.(alert.id, res.data.risk_level);
+            toast.success('Sentiment updated');
+        } catch (error) {
+            toast.error(error.response?.data?.message || 'Failed to update sentiment');
+        }
+    };
+
+    const handleDelete = async () => {
+        try {
+            await api.delete(`/alerts/${alert.id}`);
+            onDelete?.(alert.id);
+            toast.success('Alert deleted');
+        } catch (error) {
+            toast.error(error.response?.data?.message || 'Failed to delete alert');
         }
     };
 
@@ -1057,6 +1083,29 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
                     </div>
                     {/* Action Controls - right-aligned, wraps left on smaller screens */}
                     <div className="flex items-center gap-2 flex-wrap justify-end mt-3 mb-2">
+
+                        {canEditDelete && (
+                            <select
+                                className="h-7 text-[11px] font-semibold rounded ring-1 ring-slate-200 bg-slate-100 text-slate-700 px-1"
+                                title="Edit sentiment"
+                                value={RISK_TO_SENTIMENT[alert.risk_level] || 'neutral'}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => { e.stopPropagation(); handleEditSentiment(e.target.value); }}
+                            >
+                                <option value="positive">Positive</option>
+                                <option value="neutral">Moderate</option>
+                                <option value="negative">Negative</option>
+                            </select>
+                        )}
+                        {canEditDelete && (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); handleDelete(); }}
+                                className="h-7 w-7 flex items-center justify-center text-red-700 bg-red-100 hover:bg-red-200 ring-1 ring-red-200 rounded-md transition-colors"
+                                title="Delete"
+                            >
+                                <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                        )}
 
                         {/* Action Button */}
                         {!hideActions && alert.status === 'active' && (
@@ -1255,14 +1304,41 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
                             />
                         )}
 
-                        {/* Relation button */}
+                        {/* Engager Analysis button — queues a Frequent Engagers analysis
+                            for this card's handle; view results from the Frequent
+                            Engagers dialog on the Alerts toolbar. */}
                         <button
-                            onClick={(e) => {
+                            onClick={async (e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
+                                if (alert?.platform !== 'x') {
+                                    toast.info('Frequent Engagers is only available for X/Twitter posts');
+                                    return;
+                                }
+                                const tweetHandle = content?.is_repost
+                                    ? content.original_author
+                                    : (content?.author_handle || source?.handle);
+                                const cleanHandle = tweetHandle ? String(tweetHandle).replace(/^@/, '').trim() : null;
+                                if (!cleanHandle || cleanHandle === 'unknown') {
+                                    toast.error('No X handle found for this alert');
+                                    return;
+                                }
+                                try {
+                                    const res = await api.post('/engager/engager-analysis', { handle: cleanHandle, period_days: 30 });
+                                    const status = res.data?.status;
+                                    if (status === 'already_processing') {
+                                        toast.warning(`Analysis for @${cleanHandle} is already in progress`);
+                                    } else if (status === 'blocked') {
+                                        toast.warning('Another analysis is processing. Please wait.');
+                                    } else {
+                                        toast.success(`Engager analysis started for @${cleanHandle}`);
+                                    }
+                                } catch {
+                                    toast.error('Failed to start engager analysis');
+                                }
                             }}
                             className="p-2 rounded-md hover:bg-accent text-muted-foreground hover:text-accent-foreground transition-colors z-20"
-                            title="Relation"
+                            title="Analyze Engagers"
                         >
                             <Users className="h-4 w-4" />
                         </button>
@@ -1609,7 +1685,9 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
 };
 TwitterAlertCard.displayName = 'TwitterAlertCard';
 
-export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSource, monitoredHandles = [], viewMode = 'list', hideActions = false, report = null, isInvestigatedResult = false, customClass = '' }) => {
+export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSource, onDelete, onEditSentiment, enableSpecialActions = false, monitoredHandles = [], viewMode = 'list', hideActions = false, report = null, isInvestigatedResult = false, customClass = '' }) => {
+    const { user } = useAuth();
+    const canEditDelete = enableSpecialActions && user?.email === SPECIAL_ACCESS_EMAIL;
     const [showReasonModal, setShowReasonModal] = useState(false);
     const [showFullTextModal, setShowFullTextModal] = useState(false);
     const [showActionDropdown, setShowActionDropdown] = useState(false);
@@ -1656,6 +1734,27 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
             setActionLoading(false);
         }
     };
+
+    const handleEditSentiment = async (sentiment) => {
+        try {
+            const res = await api.put(`/alerts/${alert.id}/sentiment`, { sentiment });
+            onEditSentiment?.(alert.id, res.data.risk_level);
+            toast.success('Sentiment updated');
+        } catch (error) {
+            toast.error(error.response?.data?.message || 'Failed to update sentiment');
+        }
+    };
+
+    const handleDelete = async () => {
+        try {
+            await api.delete(`/alerts/${alert.id}`);
+            onDelete?.(alert.id);
+            toast.success('Alert deleted');
+        } catch (error) {
+            toast.error(error.response?.data?.message || 'Failed to delete alert');
+        }
+    };
+
     const [downloading, setDownloading] = useState(false);
     const [downloadProgress, setDownloadProgress] = useState(0);
     const [downloadStatus, setDownloadStatus] = useState('');
@@ -1853,6 +1952,28 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
                     </div>
                     {/* Action Controls - right-aligned, wraps left on smaller screens */}
                     <div className="flex items-center gap-2 flex-wrap justify-end mt-3">
+                        {canEditDelete && (
+                            <select
+                                className="h-7 text-[11px] font-semibold rounded ring-1 ring-slate-200 bg-slate-100 text-slate-700 px-1"
+                                title="Edit sentiment"
+                                value={RISK_TO_SENTIMENT[alert.risk_level] || 'neutral'}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => { e.stopPropagation(); handleEditSentiment(e.target.value); }}
+                            >
+                                <option value="positive">Positive</option>
+                                <option value="neutral">Moderate</option>
+                                <option value="negative">Negative</option>
+                            </select>
+                        )}
+                        {canEditDelete && (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); handleDelete(); }}
+                                className="h-7 w-7 flex items-center justify-center text-red-700 bg-red-100 hover:bg-red-200 ring-1 ring-red-200 rounded-md transition-colors"
+                                title="Delete"
+                            >
+                                <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                        )}
                         {(() => {
                             const targetHandle = content?.channelId || alert.author_handle;
                             if (onAddSource && targetHandle && !isMonitoredHandle(targetHandle)) {

@@ -216,7 +216,7 @@ const getAnalyticsOverview = async (req, res) => {
 // @access  Private
 const getTrends = async (req, res) => {
   try {
-    const days = parseInt(req.query.days) || 7;
+    const days = parseInt(req.query.days) || 90;
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 

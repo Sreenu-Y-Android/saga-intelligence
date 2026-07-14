@@ -13,6 +13,7 @@ const TYPE_WEIGHT = {
   handle:       5,
   primary:      3,
   alias:        2,
+  topic:        2,
   custom:       2,
   party:        1,
   constituency: 1,
@@ -24,7 +25,7 @@ const TYPE_WEIGHT = {
  */
 export const getEntityKeywords = (entity) => {
   if (!entity) {
-    return { primary: [], constituency: [], aliases: [], handles: [], party: [], all: [] };
+    return { primary: [], constituency: [], aliases: [], handles: [], party: [], topics: [], all: [] };
   }
 
   const overrides = MLA_KEYWORD_OVERRIDES[entity.id] || {};
@@ -34,6 +35,7 @@ export const getEntityKeywords = (entity) => {
   const aliases      = overrides.aliases  || [];
   const handles      = overrides.handles  || [];
   const party        = overrides.party    || [];
+  const topics       = overrides.topics   || [];
 
   return {
     primary,
@@ -41,7 +43,8 @@ export const getEntityKeywords = (entity) => {
     aliases,
     handles,
     party,
-    all: [...primary, ...constituency, ...aliases, ...handles, ...party],
+    topics,
+    all: [...primary, ...constituency, ...aliases, ...handles, ...party, ...topics],
   };
 };
 
@@ -81,6 +84,10 @@ export const buildKeywordList = (entity) => {
 
   kws.party.forEach(term => {
     list.push({ id: `party_${idx++}`, term, type: 'party', label: term, isSystem: true });
+  });
+
+  kws.topics.forEach(term => {
+    list.push({ id: `topic_${idx++}`, term, type: 'topic', label: term, isSystem: true });
   });
 
   return list;
@@ -126,11 +133,12 @@ export const isGrievanceRelevant = (grievance, entity) => {
 
   const hasPrimary = kws.primary.some(k => text.includes(k.toLowerCase()));
   const hasAlias   = kws.aliases.some(k  => text.includes(k.toLowerCase()));
+  const hasTopic   = kws.topics.some(k   => text.includes(k.toLowerCase()));
   const hasHandle  = kws.handles.some(h  =>
     text.includes(h.toLowerCase()) || text.includes(`@${h.toLowerCase()}`)
   );
 
-  return hasPrimary || hasAlias || hasHandle;
+  return hasPrimary || hasAlias || hasTopic || hasHandle;
 };
 
 /**
@@ -144,6 +152,7 @@ export const getOrderedSearchTerms = (entity, maxTerms = 6) => {
     ...kws.handles.map(h => ({ term: `@${h}`, type: 'handle', raw: h })),
     ...kws.primary.map(t => ({ term: t, type: 'primary', raw: t })),
     ...kws.aliases.map(t => ({ term: t, type: 'alias', raw: t })),
+    ...kws.topics.map(t => ({ term: t, type: 'topic', raw: t })),
   ];
   return terms.slice(0, maxTerms);
 };

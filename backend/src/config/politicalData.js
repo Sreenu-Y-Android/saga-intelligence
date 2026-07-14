@@ -34,6 +34,7 @@ const OUR_PARTY = {
   id: 'inc',
   name: 'INC',
   full_name: 'Indian National Congress',
+  aliases: ['Congress', 'Congress Party', 'INC', 'Hand symbol party'],
   alliance: 'INDIA',
   role: 'ruling',
   state: 'Telangana',
@@ -42,22 +43,21 @@ const OUR_PARTY = {
 
 const _CABINET_RAW = [
   { id: 'revanth-reddy', name: 'A. Revanth Reddy', shortName: 'Revanth Reddy', role: 'Chief Minister', constituency: 'Kodangal', district: 'Vikarabad', handles: ['@revanth_anumula', '@TelanganaCMO'] },
-  { id: 'bhatti-vikramarka', name: 'Mallu Bhatti Vikramarka', shortName: 'Bhatti Vikramarka', role: 'Deputy Chief Minister', constituency: 'Madhira', district: 'Khammam', handles: ['@Bhatti_Vikramarka'] },
-  { id: 'sridhar-babu', name: 'D. Sridhar Babu', shortName: 'Sridhar Babu', role: 'Cabinet Minister', constituency: 'Manthani', district: 'Peddapalli', handles: ['@dudilla_sridhar'] },
-  { id: 'venkat-reddy', name: 'Komatireddy Venkat Reddy', shortName: 'Venkat Reddy', role: 'Cabinet Minister', constituency: 'Nalgonda', district: 'Nalgonda', handles: ['@v_komatireddy'] },
-  { id: 'ponnam-prabhakar', name: 'Ponnam Prabhakar', shortName: 'Ponnam Prabhakar', role: 'Cabinet Minister', constituency: 'Husnabad', district: 'Peddapalli', handles: ['@PonnamLOKSABHA'] },
-  { id: 'tummala', name: 'Tummala Nageshwara Rao', shortName: 'Tummala Nageshwara', role: 'Cabinet Minister', constituency: 'Khammam', district: 'Khammam', handles: ['@Tummala_N_Rao'] },
-  { id: 'uttam-kumar', name: 'N. Uttam Kumar Reddy', shortName: 'Uttam Kumar Reddy', role: 'Cabinet Minister', constituency: 'Huzurnagar', district: 'Suryapet', handles: ['@UttamReddyINC'] },
-  { id: 'jupally', name: 'Jupally Krishna Rao', shortName: 'Jupally Krishna Rao', role: 'Cabinet Minister', constituency: 'Kollapur', district: 'Nagarkurnool', handles: ['@JupallyK'] },
-  { id: 'sirikonda', name: 'Sirikonda Madhu Yashpal Goud', shortName: 'Sirikonda Madhu', role: 'Cabinet Minister', constituency: 'Banswada', district: 'Kamareddy', handles: [] },
-  { id: 'damodar', name: 'Damodar Raja Narasimha', shortName: 'Damodar Narasimha', role: 'Cabinet Minister', constituency: 'Andole', district: 'Sangareddy', handles: ['@DamodarRajaNars'] },
+  { id: 'bhatti-vikramarka', name: 'Mallu Bhatti Vikramarka', shortName: 'Bhatti Vikramarka', role: 'Deputy Chief Minister', constituency: 'Madhira', district: 'Khammam', handles: ['@Bhatti_Mallu'] },
+  { id: 'sridhar-babu', name: 'D. Sridhar Babu', shortName: 'Sridhar Babu', role: 'Cabinet Minister', constituency: 'Manthani', district: 'Peddapalli', handles: ['@OffDSB', '@Min_SridharBabu'] },
+  { id: 'venkat-reddy', name: 'Komatireddy Venkat Reddy', shortName: 'Venkat Reddy', role: 'Cabinet Minister', constituency: 'Nalgonda', district: 'Nalgonda', handles: ['@KomatireddyKVR'] },
+  { id: 'ponnam-prabhakar', name: 'Ponnam Prabhakar', shortName: 'Ponnam Prabhakar', role: 'Cabinet Minister', constituency: 'Husnabad', district: 'Peddapalli', handles: ['@Ponnam_INC'] },
+  { id: 'tummala', name: 'Tummala Nageshwara Rao', shortName: 'Tummala Nageshwara', role: 'Cabinet Minister', constituency: 'Khammam', district: 'Khammam', handles: ['@Tummala_INC'] },
+  { id: 'uttam-kumar', name: 'N. Uttam Kumar Reddy', shortName: 'Uttam Kumar Reddy', role: 'Cabinet Minister', constituency: 'Huzurnagar', district: 'Suryapet', handles: ['@UttamINC'] },
+  { id: 'jupally', name: 'Jupally Krishna Rao', shortName: 'Jupally Krishna Rao', role: 'Cabinet Minister', constituency: 'Kollapur', district: 'Nagarkurnool', handles: ['@jupallyk_rao'] },
+  { id: 'damodar', name: 'Damodar Raja Narasimha', shortName: 'Damodar Narasimha', role: 'Cabinet Minister', constituency: 'Andole', district: 'Sangareddy', handles: ['@DamodarCilarapu'] },
   { id: 'seethakka', name: 'Danasari Anasuya (Seethakka)', shortName: 'Seethakka', role: 'Cabinet Minister', constituency: 'Mulug', district: 'Mulugu', handles: ['@seethakkaMLA'] },
-  { id: 'gangula', name: 'Gangula Kamalakar', shortName: 'Gangula Kamalakar', role: 'Cabinet Minister', constituency: 'Karimnagar', district: 'Karimnagar', handles: ['@GKamalakarTRS'] },
-  { id: 'konda-surekha', name: 'Konda Surekha', shortName: 'Konda Surekha', role: 'Cabinet Minister', constituency: 'Warangal East', district: 'Hanamkonda', handles: ['@iamKondaSurekha'] },
-  { id: 'naini-reddy', name: 'Naini Rajender Reddy', shortName: 'Naini Rajender', role: 'Cabinet Minister', constituency: 'Warangal West', district: 'Hanamkonda', handles: [] },
-  { id: 'niranjan-reddy', name: 'Singireddy Niranjan Reddy', shortName: 'Niranjan Reddy', role: 'Cabinet Minister', constituency: 'Wanaparthy', district: 'Wanaparthy', handles: ['@NiranjanReddyOf'] },
-  { id: 'puvvada', name: 'Puvvada Ajay Kumar', shortName: 'Puvvada Ajay', role: 'Cabinet Minister', constituency: 'Palair', district: 'Khammam', handles: ['@puvvada_ajay'] },
-  { id: 'chamakura', name: 'Chamakura Malla Reddy', shortName: 'Malla Reddy', role: 'Cabinet Minister', constituency: 'Medchal', district: 'Medchal-Malkajgiri', handles: ['@MallaReddyBrs'] }
+  { id: 'konda-surekha', name: 'Konda Surekha', shortName: 'Konda Surekha', role: 'Cabinet Minister', constituency: 'Warangal East', district: 'Hanamkonda', handles: ['@iamkondasurekha'] },
+  { id: 'ponguleti', name: 'Ponguleti Srinivasa Reddy', shortName: 'Ponguleti Srinivasa', role: 'Cabinet Minister', constituency: 'Palair', district: 'Khammam', handles: ['@INC_Ponguleti'] },
+  { id: 'gaddam-vivekanand', name: 'Gaddam Vivekanand', shortName: 'Gaddam Vivekanand', role: 'Cabinet Minister', constituency: 'Chennur', district: 'Mancherial', handles: [] },
+  { id: 'adluri-laxman', name: 'Adluri Laxman Kumar', shortName: 'Adluri Laxman', role: 'Cabinet Minister', constituency: 'Dharmapuri', district: 'Jagtial', handles: ['@minister_adluri'] },
+  { id: 'vakiti-makthal', name: 'Vakiti Srihari', shortName: 'Vakiti Srihari', role: 'Cabinet Minister', constituency: 'Makthal', district: 'Narayanpet', handles: ['@Vakiti_srihari'] },
+  { id: 'mohammad-azharuddin', name: 'Mohammad Azharuddin', shortName: 'Azharuddin', role: 'Cabinet Minister (MLC)', constituency: '', district: 'Hyderabad', handles: ['@azharflicks'] }
 ];
 
 const _CONGRESS_MLAS_RAW = [
@@ -68,11 +68,9 @@ const _CONGRESS_MLAS_RAW = [
   { id: 'anil-kumar-bhongir', name: 'Kumbam Anil Kumar Reddy', shortName: 'Anil Kumar Reddy', role: 'MLA', constituency: 'Bhongir', district: 'Yadadri', handles: [] },
   { id: 'satyanarayana-bhupalpalle', name: 'Gandra Satyanarayana Rao', shortName: 'Gandra Satyanarayana', role: 'MLA', constituency: 'Bhupalpalle', district: 'Jayashankar Bhupalpally', handles: [] },
   { id: 'sudarshan-bodhan', name: 'P. Sudarshan Reddy', shortName: 'Sudarshan Reddy', role: 'MLA', constituency: 'Bodhan', district: 'Nizamabad', handles: [] },
-  { id: 'gaddam-vivekanand', name: 'Gaddam Vivekanand', shortName: 'Gaddam Vivekanand', role: 'MLA', constituency: 'Chennur', district: 'Mancherial', handles: [] },
   { id: 'medipally-sathyam', name: 'Medipally Sathyam', shortName: 'Medipally Sathyam', role: 'MLA', constituency: 'Choppadandi', district: 'Karimnagar', handles: [] },
   { id: 'balu-naik-devarakonda', name: 'Balu Naik Nenavath', shortName: 'Balu Naik', role: 'MLA', constituency: 'Devarakonda', district: 'Nalgonda', handles: [] },
   { id: 'gmr-devarkadra', name: 'Gavinolla Madhusudan Reddy', shortName: 'GMR Devarkadra', role: 'MLA', constituency: 'Devarkadra', district: 'Mahabubnagar', handles: [] },
-  { id: 'adluri-laxman', name: 'Adluri Laxman Kumar', shortName: 'Adluri Laxman', role: 'MLA', constituency: 'Dharmapuri', district: 'Jagtial', handles: [] },
   { id: 'jatoth-dornakal', name: 'Jatoth Ram Chander Naik', shortName: 'Jatoth Ram Naik', role: 'MLA', constituency: 'Dornakal', district: 'Mahabubabad', handles: [] },
   { id: 'malreddy-ibrahimpatnam', name: 'Malreddy Ranga Reddy', shortName: 'Malreddy Ranga', role: 'MLA', constituency: 'Ibrahimpatnam', district: 'Rangareddy', handles: [] },
   { id: 'anirudh-jadcherla', name: 'Anirudh Reddy Janampalli', shortName: 'Anirudh Reddy', role: 'MLA', constituency: 'Jadcherla', district: 'Mahabubnagar', handles: [] },
@@ -81,8 +79,6 @@ const _CONGRESS_MLAS_RAW = [
   { id: 'vedma-khanapur', name: 'Vedma Bhojju', shortName: 'Vedma Bhojju', role: 'MLA', constituency: 'Khanapur', district: 'Nirmal', handles: [] },
   { id: 'padmavathi-kodad', name: 'Nalamada Padmavathi Reddy', shortName: 'Padmavathi Reddy', role: 'MLA', constituency: 'Kodad', district: 'Suryapet', handles: [] },
   { id: 'murali-naik-mahabubabad', name: 'Dr. Murali Naik Bhukya', shortName: 'Murali Naik', role: 'MLA', constituency: 'Mahabubabad', district: 'Mahabubabad', handles: [] },
-  { id: 'srinivas-mahbubnagar', name: 'Yennam Srinivas Reddy', shortName: 'Yennam Srinivas', role: 'MLA', constituency: 'Mahbubnagar', district: 'Mahabubnagar', handles: [] },
-  { id: 'vakiti-makthal', name: 'Vakiti Srihari', shortName: 'Vakiti Srihari', role: 'MLA', constituency: 'Makthal', district: 'Narayanpet', handles: [] },
   { id: 'kavvampally-manakondur', name: 'Dr. Kavvampally Satyanarayana', shortName: 'Kavvampally', role: 'MLA', constituency: 'Manakondur', district: 'Rajanna Sircilla', handles: [] },
   { id: 'premsagar-mancherial', name: 'Kokkirala Premsagar Rao', shortName: 'Premsagar Rao', role: 'MLA', constituency: 'Mancherial', district: 'Mancherial', handles: [] },
   { id: 'mynampally-medak', name: 'Mynampally Rohith', shortName: 'Mynampally Rohith', role: 'MLA', constituency: 'Medak', district: 'Medak', handles: [] },
@@ -95,7 +91,6 @@ const _CONGRESS_MLAS_RAW = [
   { id: 'parnika-narayanpet', name: 'Chittem Parnika Reddy', shortName: 'Parnika Reddy', role: 'MLA', constituency: 'Narayanpet', district: 'Narayanpet', handles: [] },
   { id: 'madhava-narsampet', name: 'Donthi Madhava Reddy', shortName: 'Madhava Reddy', role: 'MLA', constituency: 'Narsampet', district: 'Warangal', handles: [] },
   { id: 'bhoopathi-nizamabad', name: 'Bhoopathi Reddy Rekulapally', shortName: 'Bhoopathi Reddy', role: 'MLA', constituency: 'Nizamabad Rural', district: 'Nizamabad', handles: [] },
-  { id: 'ponguleti-palair', name: 'Ponguleti Srinivasa Reddy', shortName: 'Ponguleti Srinivasa', role: 'MLA', constituency: 'Palair', district: 'Khammam', handles: [] },
   { id: 'yashaswini-palakurthi', name: 'Yashaswini Mamidala', shortName: 'Yashaswini', role: 'MLA', constituency: 'Palakurthi', district: 'Suryapet', handles: [] },
   { id: 'rammohan-pargi', name: 'Tammannagari Ram Mohan Reddy', shortName: 'Ram Mohan Reddy', role: 'MLA', constituency: 'Pargi', district: 'Vikarabad', handles: [] },
   { id: 'prakash-parkal', name: 'Revuri Prakash Reddy', shortName: 'Prakash Reddy', role: 'MLA', constituency: 'Parkal', district: 'Hanamkonda', handles: [] },
@@ -109,6 +104,7 @@ const _CONGRESS_MLAS_RAW = [
   { id: 'aadi-vemulawada', name: 'Aadi Srinivas', shortName: 'Aadi Srinivas', role: 'MLA', constituency: 'Vemulawada', district: 'Rajanna Sircilla', handles: [] },
   { id: 'prasad-vikarabad', name: 'Gaddam Prasad Kumar', shortName: 'Gaddam Prasad', role: 'MLA', constituency: 'Vikarabad', district: 'Vikarabad', handles: [] },
   { id: 'megha-wanaparthy', name: 'Megha Reddy Tudi', shortName: 'Megha Reddy', role: 'MLA', constituency: 'Wanaparthy', district: 'Wanaparthy', handles: [] },
+  { id: 'naini-reddy', name: 'Naini Rajender Reddy', shortName: 'Naini Rajender', role: 'MLA', constituency: 'Warangal West', district: 'Hanamkonda', handles: ['@naini_rajender'] },
   { id: 'nagaraj-waradhanapet', name: 'K.R. Nagaraj', shortName: 'K.R. Nagaraj', role: 'MLA', constituency: 'Waradhanapet', district: 'Hanamkonda', handles: [] },
   { id: 'ramdas-wyra', name: 'Ramdas Maloth', shortName: 'Ramdas Maloth', role: 'MLA', constituency: 'Wyra', district: 'Khammam', handles: [] },
   { id: 'kanakaiah-yellandu', name: 'Koram Kanakaiah', shortName: 'Koram Kanakaiah', role: 'MLA', constituency: 'Yellandu', district: 'Bhadradri Kothagudem', handles: [] }
@@ -122,10 +118,9 @@ const OUR_LEADERS = [...CABINET_MINISTERS, ...CONGRESS_MLAS];
 // OPPOSITION PARTIES — extend freely, downstream auto-adapts
 // ─────────────────────────────────────────────────────────
 const _BRS_LEADERS_RAW = [
-  { id: 'kcr', name: 'K. Chandrashekar Rao', shortName: 'KCR', aliases: ['KCR', 'Chandrashekar Rao'], role: 'Former CM / BRS Chief', constituency: 'Gajwel', district: 'Siddipet', handles: ['@KCRTalksToYou'] },
+  { id: 'kcr', name: 'K. Chandrashekar Rao', shortName: 'KCR', aliases: ['KCR', 'Chandrashekar Rao'], role: 'Former CM / BRS Chief', constituency: 'Gajwel', district: 'Siddipet', handles: ['@KCRBRSPresident'] },
   { id: 'ktr', name: 'K. T. Rama Rao', shortName: 'KTR', aliases: ['KTR', 'Rama Rao'], role: 'BRS Working President', constituency: 'Sircilla', district: 'Rajanna Sircilla', handles: ['@KTRBRS'] },
-  { id: 'harish-rao', name: 'T. Harish Rao', shortName: 'Harish Rao', aliases: ['Harish Rao'], role: 'BRS Senior Leader', constituency: 'Siddipet', district: 'Siddipet', handles: ['@BRSHarish'] },
-  { id: 'kavitha', name: 'K. Kavitha', shortName: 'Kavitha', aliases: ['K Kavitha'], role: 'MLC', constituency: 'Nizamabad', district: 'Nizamabad', handles: ['@RaoKavitha'] }
+  { id: 'harish-rao', name: 'T. Harish Rao', shortName: 'Harish Rao', aliases: ['Harish Rao'], role: 'BRS Senior Leader', constituency: 'Siddipet', district: 'Siddipet', handles: ['@BRSHarish'] }
 ];
 
 const _BJP_LEADERS_RAW = [
@@ -138,13 +133,23 @@ const _BJP_LEADERS_RAW = [
 
 const _AIMIM_LEADERS_RAW = [
   { id: 'asaduddin-owaisi', name: 'Asaduddin Owaisi', shortName: 'Owaisi', role: 'AIMIM President / MP', constituency: 'Hyderabad', district: 'Hyderabad', handles: ['@asadowaisi'] },
-  { id: 'akbaruddin-owaisi', name: 'Akbaruddin Owaisi', shortName: 'Akbaruddin', role: 'AIMIM Floor Leader / MLA', constituency: 'Chandrayangutta', district: 'Hyderabad', handles: [] }
+  { id: 'akbaruddin-owaisi', name: 'Akbaruddin Owaisi', shortName: 'Akbaruddin', role: 'AIMIM Floor Leader / MLA', constituency: 'Chandrayangutta', district: 'Hyderabad', handles: ['@AkbarOwaisi_MIM'] }
 ];
 
 const OPPOSITION_PARTIES = [
-  { id: 'brs', name: 'BRS', full_name: 'Bharat Rashtra Samithi', alliance: 'BRS', leaders: tagLeaders(_BRS_LEADERS_RAW, 'BRS', 'opposition') },
-  { id: 'bjp', name: 'BJP', full_name: 'Bharatiya Janata Party', alliance: 'NDA', leaders: tagLeaders(_BJP_LEADERS_RAW, 'BJP', 'opposition') },
-  { id: 'aimim', name: 'AIMIM', full_name: 'All India Majlis-e-Ittehadul Muslimeen', alliance: 'AIMIM', leaders: tagLeaders(_AIMIM_LEADERS_RAW, 'AIMIM', 'opposition') }
+  {
+    id: 'brs',
+    name: 'BRS',
+    full_name: 'Bharat Rashtra Samithi',
+    // BRS was renamed from TRS (Telangana Rashtra Samithi) in 2022 — still
+    // overwhelmingly referred to as "TRS" in everyday posts. Every alias here
+    // MUST resolve to the opposition, same as a named BRS leader would.
+    aliases: ['TRS', 'Telangana Rashtra Samithi', 'BRS', 'Car symbol party'],
+    alliance: 'BRS',
+    leaders: tagLeaders(_BRS_LEADERS_RAW, 'BRS', 'opposition')
+  },
+  { id: 'bjp', name: 'BJP', full_name: 'Bharatiya Janata Party', aliases: ['BJP', 'Bharatiya Janata Party', 'Lotus symbol party'], alliance: 'NDA', leaders: tagLeaders(_BJP_LEADERS_RAW, 'BJP', 'opposition') },
+  { id: 'aimim', name: 'AIMIM', full_name: 'All India Majlis-e-Ittehadul Muslimeen', aliases: ['AIMIM', 'MIM', 'Majlis'], alliance: 'AIMIM', leaders: tagLeaders(_AIMIM_LEADERS_RAW, 'AIMIM', 'opposition') }
 ];
 
 const OPPOSITION_LEADERS = OPPOSITION_PARTIES.flatMap((p) => p.leaders);

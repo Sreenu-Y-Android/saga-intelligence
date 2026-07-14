@@ -14,7 +14,10 @@ const keywordSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    enum: ['violence', 'threat', 'hate', 'other'],
+    // 'monitoring' — search-only topic/candidate keywords for active content
+    // fetching (fetchKeywordGrievances). Kept distinct from the threat/hate/
+    // violence categories used for alert risk-scoring in monitorService.js.
+    enum: ['violence', 'threat', 'hate', 'other', 'monitoring'],
     required: true
   },
   language: {
@@ -29,6 +32,13 @@ const keywordSchema = new mongoose.Schema({
   weight: {
     type: Number,
     default: 50
+  },
+  // Metadata only — does not affect matching/search. Lets the Keyword
+  // management UI filter monitoring terms by which way they cut for the client.
+  direction: {
+    type: String,
+    enum: ['positive', 'negative', 'neutral'],
+    default: 'neutral'
   },
   created_at: {
     type: Date,

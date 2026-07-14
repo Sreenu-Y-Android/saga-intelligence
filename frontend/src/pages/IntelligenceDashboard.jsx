@@ -1,5 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
+import { toast } from 'sonner';
+import {
+  PLATFORM_LABELS, fmt, prettify, buildReportModel, exportReportPDF, exportReportExcel,
+  TYPE_BADGE, fetchAllRowsForExport, dedupeReportRowsByAuthor, exportRowsPDF, exportRowsExcel,
+  normalizeAlertReportRow, normalizeGrievanceReportRow
+} from '../lib/reportExport';
 import {
   Activity,
   AlertTriangle,
@@ -9,11 +15,14 @@ import {
   CalendarDays,
   Camera,
   ChevronRight,
+  Download,
+  ExternalLink,
   FileText,
   Globe,
   Hash,
   KeyRound,
   Layers,
+  Loader2,
   MessageSquare,
   Minus,
   Monitor,
@@ -61,7 +70,6 @@ const TABS = [
 ];
 
 const PLATFORM_COLORS = { x: '#000000', youtube: '#FF0000', facebook: '#1877F2', instagram: '#E4405F', whatsapp: '#25D366', unknown: '#94a3b8' };
-const PLATFORM_LABELS = { x: 'X (Twitter)', youtube: 'YouTube', facebook: 'Facebook', instagram: 'Instagram', whatsapp: 'WhatsApp', unknown: 'Other' };
 const RISK_COLORS = { high: '#ef4444', medium: '#f59e0b', low: '#22c55e' };
 const STATUS_COLORS = {
   generated: '#3b82f6', printed: '#8b5cf6', sent: '#10b981', sent_to_intermediary: '#f59e0b',
@@ -71,15 +79,6 @@ const STATUS_COLORS = {
   received: '#3b82f6', reviewed: '#8b5cf6', action_taken: '#10b981', converted_to_fir: '#ef4444'
 };
 const CHART_PALETTE = ['#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#10b981', '#ec4899', '#06b6d4', '#f97316', '#84cc16', '#6366f1'];
-
-const compactFmt = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
-const numFmt = new Intl.NumberFormat('en-US');
-const fmt = (v, compact = false) => {
-  const n = Number(v || 0);
-  if (!Number.isFinite(n)) return '0';
-  return compact ? compactFmt.format(n) : numFmt.format(n);
-};
-const prettify = (s) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
 const fadeUp = {
   hidden: { opacity: 0, y: 16 },
@@ -188,9 +187,232 @@ const EmptyState = ({ message }) => (
 );
 
 /* ═══════════════════════════════════════════════════════════════════
+   ROW-LEVEL REPORT TABLE — matches bandisunjay's Intelligence Dashboard
+   report format: one row per post (or deduped by author in "Profiles"
+   view mode). Used inside both the Alerts and Grievances tabs; the
+   PDF/Excel buttons here export the real per-post list, not the
+   aggregate KPI summary.
+   ═══════════════════════════════════════════════════════════════════ */
+const PAGE_SIZE = 25;
+
+const RowLevelReportTable = ({ kind, dateFrom, dateTo }) => {
+  const [viewMode, setViewMode] = useState('all'); // 'all' | 'profiles'
+  const [page, setPage] = useState(1);
+  const [rows, setRows] = useState([]);
+  const [pagination, setPagination] = useState({ total: 0, totalPages: 0, hasMore: false });
+  const [loading, setLoading] = useState(true);
+  const [profileRows, setProfileRows] = useState([]);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const buildParams = useCallback((overrides = {}) => {
+    const params = { page, limit: PAGE_SIZE, ...overrides };
+    if (kind === 'alerts') {
+      params.status = params.status || 'all';
+    } else {
+      params.tab = params.tab || 'all';
+      params.status_filter = params.status_filter || 'all';
+    }
+    if (dateFrom) {
+      if (kind === 'alerts') params.startDate = dateFrom; else params.from = dateFrom;
+    }
+    if (dateTo) {
+      if (kind === 'alerts') params.endDate = dateTo; else params.to = dateTo;
+    }
+    return params;
+  }, [kind, page, dateFrom, dateTo]);
+
+  useEffect(() => { setPage(1); }, [dateFrom, dateTo, kind]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const endpoint = kind === 'alerts' ? '/alerts' : '/grievances';
+        const listKey = kind === 'alerts' ? 'alerts' : 'grievances';
+        const normalize = kind === 'alerts' ? normalizeAlertReportRow : normalizeGrievanceReportRow;
+        const res = await api.get(endpoint, { params: buildParams() });
+        if (cancelled) return;
+        const list = Array.isArray(res.data?.[listKey]) ? res.data[listKey] : [];
+        setRows(list.map(normalize));
+        const p = res.data?.pagination || {};
+        setPagination({
+          total: Number(p.total) || 0,
+          totalPages: Number(p.totalPages ?? p.pages) || 0,
+          hasMore: Boolean(p.hasMore)
+        });
+      } catch {
+        if (!cancelled) { setRows([]); setPagination({ total: 0, totalPages: 0, hasMore: false }); }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [buildParams, kind]);
+
+  useEffect(() => {
+    if (viewMode !== 'profiles') return;
+    let cancelled = false;
+    const load = async () => {
+      setProfilesLoading(true);
+      try {
+        const all = await fetchAllRowsForExport(kind, buildParams({ page: undefined }));
+        if (!cancelled) setProfileRows(all);
+      } catch {
+        if (!cancelled) setProfileRows([]);
+      } finally {
+        if (!cancelled) setProfilesLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [viewMode, kind, buildParams]);
+
+  const displayRows = viewMode === 'profiles' ? dedupeReportRowsByAuthor(profileRows) : rows;
+  const dateRangeLabel = dateFrom && dateTo ? `${dateFrom} to ${dateTo}` : 'All time';
+  const title = kind === 'alerts' ? 'Alerts Report' : 'Grievances Report';
+
+  const handleExport = async (format) => {
+    setExporting(true);
+    try {
+      const allRows = viewMode === 'profiles' ? dedupeReportRowsByAuthor(profileRows) : await fetchAllRowsForExport(kind, buildParams({ page: undefined }));
+      if (!allRows.length) {
+        toast.error('No rows to export for the current filters');
+        return;
+      }
+      const fileName = `${kind}_report_${viewMode}_${new Date().toISOString().slice(0, 10)}`;
+      const opts = { fileName, title, dateRangeLabel, profilesMode: viewMode === 'profiles' };
+      if (format === 'pdf') await exportRowsPDF(allRows, opts);
+      else exportRowsExcel(allRows, opts);
+      toast.success(`${title} downloaded (${format.toUpperCase()})`);
+    } catch (e) {
+      toast.error('Failed to generate report');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const isLoading = loading || (viewMode === 'profiles' && profilesLoading);
+
+  return (
+    <ChartCard title={title} subtitle={`${viewMode === 'profiles' ? displayRows.length + ' profile(s)' : pagination.total + ' post(s)'} — ${dateRangeLabel}`} icon={FileText} iconColor="#f59e0b">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+          {['all', 'profiles'].map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setViewMode(mode)}
+              className={cn(
+                'rounded-md px-3 py-1 text-xs font-semibold transition-colors',
+                viewMode === mode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              )}
+            >
+              {mode === 'all' ? 'Content' : 'Profiles'}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => handleExport('pdf')}
+            disabled={exporting || isLoading || displayRows.length === 0}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition-all hover:bg-blue-100 disabled:opacity-40"
+          >
+            {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} PDF
+          </button>
+          <button
+            type="button"
+            onClick={() => handleExport('excel')}
+            disabled={exporting || isLoading || displayRows.length === 0}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-all hover:bg-emerald-100 disabled:opacity-40"
+          >
+            {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Excel
+          </button>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <EmptyState message="Loading..." />
+      ) : displayRows.length === 0 ? (
+        <EmptyState message="No records for the current filters" />
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-slate-200">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 text-slate-500">
+              <tr>
+                <th className="px-3 py-2 font-semibold">#</th>
+                <th className="px-3 py-2 font-semibold">Posted By</th>
+                <th className="px-3 py-2 font-semibold">Handle</th>
+                <th className="px-3 py-2 font-semibold">Platform</th>
+                <th className="px-3 py-2 font-semibold">Risk/Sentiment</th>
+                <th className="px-3 py-2 font-semibold">Category</th>
+                {viewMode === 'profiles' && <th className="px-3 py-2 font-semibold">Posts</th>}
+                <th className="px-3 py-2 font-semibold">Date</th>
+                <th className="px-3 py-2 font-semibold">Link</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {displayRows.slice(0, 100).map((r, i) => (
+                <tr key={r.id || r.tweet_id || i} className="hover:bg-slate-50">
+                  <td className="px-3 py-2 text-slate-400">{i + 1}</td>
+                  <td className="px-3 py-2 font-medium text-slate-800">{r.posted_by?.display_name || r.posted_by?.handle || '—'}</td>
+                  <td className="px-3 py-2 text-slate-500">{r.posted_by?.handle || '—'}</td>
+                  <td className="px-3 py-2 text-slate-600">{PLATFORM_LABELS[r.platform] || prettify(r.platform || '—')}</td>
+                  <td className="px-3 py-2 text-slate-600">{prettify(r.sentiment || '—')}</td>
+                  <td className="px-3 py-2 text-slate-600">{r.category || '—'}</td>
+                  {viewMode === 'profiles' && <td className="px-3 py-2 text-slate-600">{r._postCount || 1}</td>}
+                  <td className="px-3 py-2 text-slate-500">{r.post_date ? new Date(r.post_date).toLocaleDateString('en-GB') : '—'}</td>
+                  <td className="px-3 py-2">
+                    {r.post_link ? (
+                      <a href={r.post_link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-blue-600 hover:underline">
+                        View <ExternalLink className="h-3 w-3" />
+                      </a>
+                    ) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {displayRows.length > 100 && (
+            <div className="border-t border-slate-100 bg-slate-50 px-3 py-2 text-center text-[11px] text-slate-400">
+              Showing first 100 of {displayRows.length} — the full list is included in the PDF/Excel export
+            </div>
+          )}
+        </div>
+      )}
+
+      {viewMode === 'all' && pagination.totalPages > 1 && (
+        <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+          <button
+            type="button"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1}
+            className="rounded-md border border-slate-200 px-2.5 py-1 disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span>Page {page} of {pagination.totalPages}</span>
+          <button
+            type="button"
+            onClick={() => setPage((p) => (pagination.hasMore ? p + 1 : p))}
+            disabled={!pagination.hasMore}
+            className="rounded-md border border-slate-200 px-2.5 py-1 disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      )}
+    </ChartCard>
+  );
+};
+
+/* ═══════════════════════════════════════════════════════════════════
    ALERTS INTELLIGENCE TAB
    ═══════════════════════════════════════════════════════════════════ */
-const AlertsIntelligence = ({ data }) => {
+const AlertsIntelligence = ({ data, dateFrom, dateTo }) => {
   const refs = {
     riskTrend: useRef(null),
     riskDist: useRef(null),
@@ -569,6 +791,10 @@ const AlertsIntelligence = ({ data }) => {
           ) : <EmptyState />}
         </ChartCard>
       </motion.div>
+
+      <motion.div variants={fadeUp}>
+        <RowLevelReportTable kind="alerts" dateFrom={dateFrom} dateTo={dateTo} />
+      </motion.div>
     </motion.div>
   );
 };
@@ -576,7 +802,7 @@ const AlertsIntelligence = ({ data }) => {
 /* ═══════════════════════════════════════════════════════════════════
    GRIEVANCES INTELLIGENCE TAB
    ═══════════════════════════════════════════════════════════════════ */
-const GrievancesIntelligence = ({ data }) => {
+const GrievancesIntelligence = ({ data, dateFrom, dateTo }) => {
   const refs = {
     trend: useRef(null),
     platform: useRef(null),
@@ -901,6 +1127,10 @@ const GrievancesIntelligence = ({ data }) => {
           ) : <EmptyState />}
         </ChartCard>
       </motion.div>
+
+      <motion.div variants={fadeUp}>
+        <RowLevelReportTable kind="grievances" dateFrom={dateFrom} dateTo={dateTo} />
+      </motion.div>
     </motion.div>
   );
 };
@@ -1102,6 +1332,7 @@ const IntelligenceDashboard = () => {
   const [alertsData, setAlertsData] = useState(null);
   const [grievancesData, setGrievancesData] = useState(null);
   const [profilesData, setProfilesData] = useState(null);
+  const [exportingReport, setExportingReport] = useState(false);
 
   const activeTabMeta = useMemo(() => TABS.find(t => t.key === activeTab) || TABS[0], [activeTab]);
 
@@ -1149,6 +1380,29 @@ const IntelligenceDashboard = () => {
   };
 
   const currentData = activeTab === 'alerts' ? alertsData : activeTab === 'grievances' ? grievancesData : profilesData;
+
+  const handleDownloadReport = async (format) => {
+    if (!currentData) {
+      toast.error('No data loaded yet — wait for the tab to finish loading.');
+      return;
+    }
+    const model = buildReportModel(activeTab, currentData, dateFrom, dateTo);
+    if (!model) return;
+    setExportingReport(true);
+    try {
+      if (format === 'pdf') {
+        exportReportPDF(model);
+      } else {
+        exportReportExcel(model);
+      }
+      toast.success(`${activeTabMeta.label} report downloaded (${format.toUpperCase()})`);
+    } catch (err) {
+      toast.error('Failed to generate report');
+    } finally {
+      setExportingReport(false);
+    }
+  };
+
   const generatedAt = currentData?.generatedAt ? new Date(currentData.generatedAt).toLocaleString() : '--';
 
   return (
@@ -1201,6 +1455,31 @@ const IntelligenceDashboard = () => {
               <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
               <span className="hidden sm:inline">Refresh</span>
             </Button>
+            {/* Profile summary export — Alerts/Grievances tabs have their own row-level PDF/Excel buttons below */}
+            {activeTab === 'profiles' && (
+              <div className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 p-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={exportingReport || loading || !currentData}
+                  onClick={() => handleDownloadReport('pdf')}
+                  className="h-7 gap-1.5 rounded-lg px-2 text-xs"
+                  title={`Download ${activeTabMeta.label} as PDF`}
+                >
+                  <Download className="h-3.5 w-3.5" /> PDF
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={exportingReport || loading || !currentData}
+                  onClick={() => handleDownloadReport('excel')}
+                  className="h-7 gap-1.5 rounded-lg px-2 text-xs"
+                  title={`Download ${activeTabMeta.label} as Excel`}
+                >
+                  <Download className="h-3.5 w-3.5" /> Excel
+                </Button>
+              </div>
+            )}
             <div className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
               <CalendarDays className="h-3.5 w-3.5 text-slate-400" />
               <span className="text-[11px] text-slate-500">{generatedAt}</span>
@@ -1273,8 +1552,8 @@ const IntelligenceDashboard = () => {
         )}
 
         {/* ══════════ TAB CONTENT ══════════ */}
-        {activeTab === 'alerts' && <AlertsIntelligence data={alertsData} />}
-        {activeTab === 'grievances' && <GrievancesIntelligence data={grievancesData} />}
+        {activeTab === 'alerts' && <AlertsIntelligence data={alertsData} dateFrom={dateFrom} dateTo={dateTo} />}
+        {activeTab === 'grievances' && <GrievancesIntelligence data={grievancesData} dateFrom={dateFrom} dateTo={dateTo} />}
         {activeTab === 'profiles' && <ProfilesIntelligence data={profilesData} />}
 
       </div>

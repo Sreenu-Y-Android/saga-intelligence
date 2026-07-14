@@ -55,10 +55,13 @@ const rapidRequestX = async (config, retryCount = 0) => {
         const status = error.response?.status;
         const msg = String(error.response?.data?.message || error.response?.data?.error || error.message || '').toLowerCase();
 
-        // 429 (Rate Limit) - Always retry with backoff
+        // 429 (Rate Limit) - Always retry with backoff. Jittered so that
+        // concurrent callers sharing this key (grievance fetch, X monitor,
+        // engager analysis) don't all retry on the exact same tick and
+        // re-trip the per-second cap together.
         if (status === 429 && retryCount < maxRetries) {
-            const delay = baseDelay * (retryCount + 1);
-            console.warn(`[RapidAPI] ⏳ Rate limited (429). Retrying in ${delay / 1000}s... (attempt ${retryCount + 1}/${maxRetries})`);
+            const delay = baseDelay * (retryCount + 1) + Math.floor(Math.random() * 2000);
+            console.warn(`[RapidAPI] ⏳ Rate limited (429). Retrying in ${(delay / 1000).toFixed(1)}s... (attempt ${retryCount + 1}/${maxRetries})`);
             await new Promise(r => setTimeout(r, delay));
             return rapidRequestX(config, retryCount + 1);
         }
@@ -735,10 +738,15 @@ const normalizeTweet = (tweetResult, fallbackHandle = 'unknown') => {
 
 const searchTweets = async (query) => {
     try {
-        // Search last 7 days for broader results
+        // Only ingest tweets between MIN and MAX days old (default: 30-90 days)
+        const maxDays = Number(process.env.MONITOR_LOOKBACK_MAX_DAYS || 90);
+        const minDays = Number(process.env.MONITOR_LOOKBACK_MIN_DAYS || 30);
+        const safeMaxDays = Number.isFinite(maxDays) && maxDays > 0 ? maxDays : 90;
+        const safeMinDays = Number.isFinite(minDays) && minDays >= 0 ? minDays : 30;
         const weekAgo = new Date();
-        weekAgo.setDate(weekAgo.getDate() - 7);
+        weekAgo.setDate(weekAgo.getDate() - safeMaxDays);
         const sinceDate = weekAgo.toISOString().split('T')[0];
+        const upperCutoff = Date.now() - (safeMinDays * 24 * 60 * 60 * 1000);
 
         console.log(`[RapidAPI] Searching tweets for: ${query} since:${sinceDate}`);
 
@@ -816,6 +824,15 @@ const searchTweets = async (query) => {
             } catch {
                 // All attempts failed
             }
+        }
+
+        const beforeUpperFilter = tweets.length;
+        tweets = tweets.filter(t => {
+            const created = t.created_at ? new Date(t.created_at).getTime() : NaN;
+            return Number.isFinite(created) ? created <= upperCutoff : true;
+        });
+        if (tweets.length < beforeUpperFilter) {
+            console.log(`[RapidAPI] "${query}": lookback ${safeMinDays}-${safeMaxDays}d dropped ${beforeUpperFilter - tweets.length}/${beforeUpperFilter} (too recent)`);
         }
 
         console.log(`[RapidAPI] Found ${tweets.length} tweets for "${query}"`);
@@ -1008,4 +1025,190 @@ const fetchTweetDetail = async (tweetId, options = {}) => {
     }
 };
 
-module.exports = { fetchUserTweets, searchUsers, searchTweets, fetchUserProfile, fetchTweetDetail, normalizeTweet };
+/**
+ * Fetches tweets for a handle, paginating via cursor until either `sinceDate` is
+ * passed (tweets older than it are dropped and pagination stops) or `maxTweets`
+ * is reached. Used by engagerAnalysisService to build the pool of tweets to
+ * scan for retweeters.
+ */
+const fetchAllUserTweetsSince = async (handle, { sinceDate = null, maxTweets = 200 } = {}) => {
+    const cleanHandle = handle.replace('@', '').trim();
+    const allTweets = [];
+
+    try {
+        let userId = userIdCache.get(cleanHandle);
+        if (!userId) {
+            const userResponse = await rapidRequestX({
+                method: 'get',
+                url: `https://${process.env.RAPIDAPI_HOST}/user`,
+                params: { username: cleanHandle }
+            });
+            const result = userResponse.data?.result?.data?.user?.result ||
+                userResponse.data?.data?.user?.result ||
+                userResponse.data?.result;
+            if (!result?.rest_id) {
+                console.warn(`[RapidAPI] Could not resolve user id for ${cleanHandle}`);
+                return allTweets;
+            }
+            userId = result.rest_id;
+            userIdCache.set(cleanHandle, userId);
+        }
+
+        let cursor = null;
+        let keepGoing = true;
+
+        while (keepGoing && allTweets.length < maxTweets) {
+            const params = { user: userId, count: 40 };
+            if (cursor) params.cursor = cursor;
+
+            const response = await rapidRequestX({
+                method: 'get',
+                url: `https://${process.env.RAPIDAPI_HOST}/user-tweets`,
+                params
+            });
+
+            const instructions = response.data?.result?.timeline?.instructions || [];
+            const entries = instructions.find(i => i.type === 'TimelineAddEntries')?.entries || [];
+
+            let pageTweetCount = 0;
+            let nextCursor = null;
+
+            for (const entry of entries) {
+                const entryType = entry.content?.entryType;
+                if (entryType === 'TimelineTimelineCursor') {
+                    if (entry.content?.cursorType === 'Bottom') nextCursor = entry.content?.value || null;
+                    continue;
+                }
+
+                const rawTweet = entry.content?.itemContent?.tweet_results?.result;
+                if (!rawTweet) continue;
+
+                const normalized = normalizeTweet(rawTweet, cleanHandle);
+                if (!normalized) continue;
+
+                if (sinceDate && normalized.created_at && normalized.created_at < sinceDate) {
+                    keepGoing = false;
+                    continue;
+                }
+
+                allTweets.push(normalized);
+                pageTweetCount++;
+                if (allTweets.length >= maxTweets) { keepGoing = false; break; }
+            }
+
+            if (!nextCursor || pageTweetCount === 0) keepGoing = false;
+            cursor = nextCursor;
+        }
+
+        console.log(`[RapidAPI] fetchAllUserTweetsSince(@${cleanHandle}): collected ${allTweets.length} tweets`);
+        return allTweets;
+    } catch (error) {
+        console.error(`[RapidAPI] fetchAllUserTweetsSince failed for ${handle}:`, error.message);
+        return allTweets;
+    }
+};
+
+/**
+ * Fetches retweeters of a single tweet (one page). Pass the `cursor` returned
+ * from a previous call to page through the full list.
+ */
+const getTimelineEntriesForRetweeters = (data) => {
+    const instructions = data?.result?.timeline?.instructions ||
+        data?.timeline?.instructions ||
+        [];
+    const entries = [];
+    for (const instruction of instructions) {
+        if (Array.isArray(instruction?.entries)) entries.push(...instruction.entries);
+        if (Array.isArray(instruction?.moduleItems)) entries.push(...instruction.moduleItems);
+    }
+    return entries;
+};
+
+const extractBottomCursor = (entries = []) => {
+    for (const entry of entries) {
+        const cursorType = entry?.content?.cursorType || entry?.cursorType;
+        const value = entry?.content?.value || entry?.value;
+        const entryId = entry?.entryId || entry?.entry_id || '';
+        if ((cursorType === 'Bottom' || /cursor-bottom/i.test(String(entryId))) && value) {
+            return value;
+        }
+    }
+    return null;
+};
+
+/**
+ * Fetches every retweeter of one tweet, paginated up to `count`. Tries a
+ * cascade of endpoint/param-name variants — different RapidAPI provider
+ * versions expect different param names for the same /retweets endpoint,
+ * and silently returning [] on a param mismatch was producing "completed"
+ * analyses with 0 engagers even when the tweet genuinely had retweets.
+ */
+const fetchTweetRetweeters = async (tweetId, options = {}) => {
+    const key = String(tweetId || '').trim();
+    if (!key) return { users: [], nextCursor: null };
+    const count = options.count || 100;
+
+    const attempts = [
+        { path: 'retweets', baseParams: { pid: key } },
+        { path: 'retweets', baseParams: { tweet_id: key } },
+        { path: 'retweets', baseParams: { id: key } },
+        { path: 'tweet-retweets', baseParams: { pid: key } }
+    ];
+
+    for (const attempt of attempts) {
+        try {
+            const users = [];
+            const seenHandles = new Set();
+            let cursor = options.cursor || null;
+            let page = 0;
+            const maxPages = Math.max(1, Math.ceil(count / 100));
+
+            while (users.length < count && page < maxPages) {
+                page += 1;
+                const params = { ...attempt.baseParams, count: Math.min(count, 100) };
+                if (cursor) params.cursor = cursor;
+
+                const response = await rapidRequestX({
+                    method: 'get',
+                    url: `https://${process.env.RAPIDAPI_HOST}/${attempt.path}`,
+                    params
+                });
+
+                const entries = getTimelineEntriesForRetweeters(response.data);
+                let addedThisPage = 0;
+
+                for (const entry of entries) {
+                    const userResult = entry?.content?.itemContent?.user_results?.result ||
+                        entry?.content?.itemContent?.user_result?.result ||
+                        entry?.item?.itemContent?.user_results?.result ||
+                        entry?.user_results?.result ||
+                        null;
+
+                    const resolved = resolveUser(userResult);
+                    if (!resolved?.screen_name) continue;
+
+                    const handleKey = resolved.screen_name.toLowerCase();
+                    if (seenHandles.has(handleKey)) continue;
+                    seenHandles.add(handleKey);
+
+                    users.push(resolved);
+                    addedThisPage += 1;
+                    if (users.length >= count) break;
+                }
+
+                cursor = extractBottomCursor(entries);
+                if (!cursor || addedThisPage === 0) break;
+            }
+
+            if (users.length > 0) {
+                return { users, nextCursor: null };
+            }
+        } catch (error) {
+            console.warn(`[RapidAPI] Retweeters fetch attempt failed for tweet ${key} via ${attempt.path}:`, error.message);
+        }
+    }
+
+    return { users: [], nextCursor: null };
+};
+
+module.exports = { fetchUserTweets, searchUsers, searchTweets, fetchUserProfile, fetchTweetDetail, normalizeTweet, fetchAllUserTweetsSince, fetchTweetRetweeters };

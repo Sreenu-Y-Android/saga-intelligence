@@ -11,6 +11,7 @@ const cacheService = require('../services/cacheService');
 const translationService = require('../services/translationService');
 const cheerio = require('cheerio');
 const { v4: uuidv4 } = require('uuid');
+const { isSpecialUser } = require('../config/specialAccess');
 
 const escapeRegex = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -543,6 +544,76 @@ const updateAlert = async (req, res) => {
     await createAuditLog(req.user, 'update', 'alert', req.params.id, { status, source_id });
 
     res.status(200).json(updatedAlert);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Maps the 3-way sentiment editor to the field that actually drives the
+// positive/moderate/negative badge shown on alert cards (risk_level).
+const SENTIMENT_TO_RISK_LEVEL = {
+  positive: 'low',
+  neutral: 'medium',
+  negative: 'high'
+};
+
+/**
+ * @desc    Directly edit an alert's intention/sentiment classification
+ *          (positive/moderate/negative) by setting its risk_level
+ * @route   PUT /api/alerts/:id/sentiment
+ * @access  Private (restricted to special account)
+ */
+const updateAlertSentiment = async (req, res) => {
+  if (!isSpecialUser(req.user)) {
+    return res.status(403).json({ message: 'Not authorized' });
+  }
+  try {
+    const { sentiment } = req.body;
+    const riskLevel = SENTIMENT_TO_RISK_LEVEL[sentiment];
+
+    if (!riskLevel) {
+      return res.status(400).json({ message: 'Invalid sentiment value' });
+    }
+
+    const alert = await Alert.findOneAndUpdate(
+      { id: req.params.id },
+      { risk_level: riskLevel },
+      { new: true }
+    );
+
+    if (!alert) {
+      return res.status(404).json({ message: 'Alert not found' });
+    }
+
+    await clearAlertCache();
+    await createAuditLog(req.user, 'edit_sentiment', 'alert', req.params.id, { sentiment, risk_level: riskLevel });
+
+    res.status(200).json({ id: alert.id, risk_level: alert.risk_level });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+/**
+ * @desc    Permanently delete an alert
+ * @route   DELETE /api/alerts/:id
+ * @access  Private (restricted to special account)
+ */
+const deleteAlert = async (req, res) => {
+  if (!isSpecialUser(req.user)) {
+    return res.status(403).json({ message: 'Not authorized' });
+  }
+  try {
+    const deleted = await Alert.findOneAndDelete({ id: req.params.id });
+
+    if (!deleted) {
+      return res.status(404).json({ message: 'Alert not found' });
+    }
+
+    await clearAlertCache();
+    await createAuditLog(req.user, 'delete', 'alert', req.params.id, { deleted: true });
+
+    res.status(200).json({ id: req.params.id, deleted: true });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -1375,6 +1446,8 @@ module.exports = {
   getAlerts,
   getAlertById,
   updateAlert,
+  updateAlertSentiment,
+  deleteAlert,
   getAlertStats,
   getAlertSummary,
   getDashboardStats,

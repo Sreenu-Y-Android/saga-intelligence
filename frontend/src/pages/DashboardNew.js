@@ -8,13 +8,13 @@ import {
   Shield, AlertTriangle, Send,
   Users, ChevronDown, Loader2, Info, Clock, FileText, MessageSquare,
   ArrowRight, RefreshCw, X, Video, Pencil, Play, ExternalLink, Settings,
-  BarChart3, Tag, MapPin, TrendingDown, Minus
+  BarChart3, Tag, MapPin, TrendingDown, Minus, TrendingUp, ShieldAlert, Building2, Landmark
 } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Avatar, AvatarImage, AvatarFallback } from '../components/ui/avatar';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip';
 import { useDashboard } from '../contexts/DashboardContext';
-import { getMinisterInitials, WATCH_POLITICIANS } from '../data/telanganaMinistersData';
+import { getMinisterInitials, getMinisterById } from '../data/telanganaMinistersData';
 import { PARTY_WISE_MLA_DIRECTORY, TOTAL_MLA_DIRECTORY_COUNT } from '../data/telanganaMlaDirectory';
 import api from '../lib/api';
 import usePoliticianGrievances from '../hooks/usePoliticianGrievances';
@@ -129,32 +129,38 @@ const fetchPoliticianSentimentSummary = async (entity) => {
 
   const keywordList = buildKeywordList(entity);
   const entityKeywords = getEntityKeywords(entity);
-  const commonParams = { limit: CARD_SUMMARY_SEARCH_LIMIT };
   const requests = [];
 
-  entityKeywords.handles.slice(0, 2).forEach((handle) => {
+  // Every leader card used to fire up to CARD_SUMMARY_MAX_KEYWORDS+2 separate
+  // full-collection-scan search requests, and this fetch runs once PER VISIBLE
+  // LEADER in parallel — with a large party list that's hundreds of concurrent
+  // regex scans on every page load. Handles and search terms are now each
+  // batched into a single OR'd query (count=false since only the merged/scored
+  // result set is used, not the backend total).
+  const handles = entityKeywords.handles.slice(0, 2);
+  if (handles.length) {
     requests.push(
-      api.get('/grievances', { params: { posted_by_handle: handle, ...commonParams } })
-        .catch(() => ({ data: { grievances: [] } }))
+      api.get('/grievances', {
+        params: { posted_by_handle: handles, limit: CARD_SUMMARY_SEARCH_LIMIT, count: false },
+      }).catch(() => ({ data: { grievances: [] } }))
     );
-    requests.push(
-      api.get('/grievances', { params: { search: `@${handle}`, ...commonParams } })
-        .catch(() => ({ data: { grievances: [] } }))
-    );
-  });
+  }
 
-  const handleSlots = Math.min(entityKeywords.handles.length, 2) * 2;
+  const handleSlots = handles.length * 2;
   const nameBudget = Math.max(1, CARD_SUMMARY_MAX_KEYWORDS - handleSlots);
-
-  keywordList
+  const nameTerms = keywordList
     .filter((keyword) => keyword.type === 'primary' || keyword.type === 'alias')
     .slice(0, nameBudget)
-    .forEach((keyword) => {
-      requests.push(
-        api.get('/grievances', { params: { search: keyword.term, ...commonParams } })
-          .catch(() => ({ data: { grievances: [] } }))
-      );
-    });
+    .map((keyword) => keyword.term);
+  const searchTerms = [...handles.map((h) => `@${h}`), ...nameTerms];
+
+  if (searchTerms.length) {
+    requests.push(
+      api.get('/grievances', {
+        params: { search: searchTerms, limit: CARD_SUMMARY_SEARCH_LIMIT * 2, count: false },
+      }).catch(() => ({ data: { grievances: [] } }))
+    );
+  }
 
   if (constituency) {
     requests.push(
@@ -163,6 +169,7 @@ const fetchPoliticianSentimentSummary = async (entity) => {
           location_city: constituency,
           location: constituency,
           limit: CARD_SUMMARY_CONSTITUENCY_LIMIT,
+          count: false,
         },
       }).catch(() => ({ data: { grievances: [] } }))
     );
@@ -640,8 +647,21 @@ const DroneViewStrip = () => {
 // ─── Ministers Panel ────────────────────────────────────────────────────────
 const MinistersPanel = ({ selectedIds = new Set(), onToggle, onClearAll, selectedCount = 0 }) => {
   const { navigateToPoliticianGrievances } = usePoliticianNavigation();
-  const [activeParty, setActiveParty] = useState('TDP');
-  const [memberSentimentMap, setMemberSentimentMap] = useState({});
+  const { getMemberSentimentSummary, setMemberSentimentSummary } = useDashboard();
+  const [activeParty, setActiveParty] = useState(PARTY_WISE_MLA_DIRECTORY[0]?.party || 'INC');
+  // Seeded from the shared DashboardContext cache (which lives above the
+  // router) so leaving Overview and coming back doesn't force every leader
+  // card to refetch — only entries that are missing or stale get refetched.
+  const [memberSentimentMap, setMemberSentimentMap] = useState(() => {
+    const seeded = {};
+    PARTY_WISE_MLA_DIRECTORY.forEach((group) => {
+      group.members.forEach((member) => {
+        const cached = getMemberSentimentSummary(member.id);
+        if (cached != null) seeded[member.id] = cached;
+      });
+    });
+    return seeded;
+  });
 
   const activePartyGroup = useMemo(
     () => PARTY_WISE_MLA_DIRECTORY.find((group) => group.party === activeParty) || PARTY_WISE_MLA_DIRECTORY[0],
@@ -687,6 +707,7 @@ const MinistersPanel = ({ selectedIds = new Set(), onToggle, onClearAll, selecte
       })
     ).then((entries) => {
       if (cancelled) return;
+      entries.forEach(([id, summary]) => setMemberSentimentSummary(id, summary));
       setMemberSentimentMap((prev) => {
         const next = { ...prev };
         entries.forEach(([id, summary]) => {
@@ -927,78 +948,6 @@ const MiniSentimentPie = ({ positive = 0, negative = 0, neutral = 0 }) => {
   );
 };
 
-const ANDHRA_PRADESH_MAP_URL = 'https://upload.wikimedia.org/wikipedia/commons/f/fe/Andhra_Pradesh_map_for_WLM-IN.svg';
-
-const TDP_MAP_POINTS = {
-  mangalagiri: {
-    top: '34%',
-    left: '62%',
-    district: 'Guntur',
-    label: 'Mangalagiri',
-  },
-  kuppam: {
-    top: '82%',
-    left: '42%',
-    district: 'Chittoor',
-    label: 'Kuppam',
-  },
-};
-
-const AndhraPradeshMapPanel = ({ leader }) => {
-  const activeKey = String(leader?.constituency || '').trim().toLowerCase();
-
-  return (
-    <div className="relative flex h-full items-center justify-center overflow-hidden bg-white p-4">
-      <div className="absolute inset-x-0 top-0 z-10 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur-sm">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-700">Andhra Pradesh</p>
-        <p className="mt-1 text-sm font-semibold text-slate-900">Constituency Map</p>
-      </div>
-
-      <div className="relative mt-10 h-full w-full max-w-[420px]">
-        <img
-          src={ANDHRA_PRADESH_MAP_URL}
-          alt="Andhra Pradesh map"
-          className="h-full w-full object-contain"
-          style={{ filter: 'grayscale(1) brightness(2.8) contrast(3.2)' }}
-          draggable={false}
-        />
-
-        {Object.entries(TDP_MAP_POINTS).map(([key, point]) => {
-          const isActive = key === activeKey;
-          return (
-            <div
-              key={key}
-              className="absolute -translate-x-1/2 -translate-y-1/2"
-              style={{ top: point.top, left: point.left }}
-            >
-              <div className="relative flex flex-col items-center">
-                <div
-                  className={`h-4 w-4 rounded-full border-2 shadow ${isActive ? 'scale-110' : ''}`}
-                  style={{
-                    background: isActive ? leader.color : '#ffffff',
-                    borderColor: leader.color,
-                  }}
-                />
-                <div
-                  className="mt-2 min-w-[108px] rounded-xl border px-2.5 py-1.5 text-center shadow-sm"
-                  style={{
-                    background: isActive ? `${leader.color}` : 'rgba(255,255,255,0.96)',
-                    borderColor: `${leader.color}66`,
-                    color: isActive ? '#ffffff' : '#0f172a',
-                  }}
-                >
-                  <p className="text-[10px] font-bold leading-tight">{point.label}</p>
-                  <p className="text-[9px] leading-tight opacity-80">{point.district}</p>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
 // ─── Minister Detail Panel (shows in dashboard when minister is selected) ────
 const MinisterDetailPanel = ({ minister }) => {
   // Uses the same keyword-based pipeline as the Grievances page so counts always match
@@ -1098,11 +1047,158 @@ const MinisterDetailPanel = ({ minister }) => {
   );
 };
 
+// ─── Public Opinion Highlights ──────────────────────────────────────────────
+// Emerging Issues / Fake News / Department-wise Sentiment / Constituency-wise
+// Analysis — every row is a count derived from existing grievance content and
+// links through to the matching filtered view on the Grievances page.
+const SentimentMiniBar = ({ positive = 0, neutral = 0, negative = 0 }) => {
+  const total = positive + neutral + negative;
+  if (total === 0) return null;
+  return (
+    <div className="flex h-1.5 w-full rounded-full overflow-hidden bg-slate-100">
+      {positive > 0 && <div className="bg-emerald-500" style={{ width: `${(positive / total) * 100}%` }} />}
+      {neutral > 0 && <div className="bg-amber-400" style={{ width: `${(neutral / total) * 100}%` }} />}
+      {negative > 0 && <div className="bg-red-500" style={{ width: `${(negative / total) * 100}%` }} />}
+    </div>
+  );
+};
+
+const PublicOpinionHighlights = ({ data }) => {
+  if (!data) return null;
+
+  const emergingIssues = data.emergingIssues || [];
+  const departmentSentiment = data.departmentSentiment || [];
+  const constituencySentiment = data.constituencySentiment || [];
+  const fakeNewsCount = data.fakeNews?.count || 0;
+
+  return (
+    <Card className="border border-border/50 shadow-sm overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-border/30 bg-gradient-to-r from-indigo-500/10 to-transparent">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 bg-indigo-100 rounded-lg">
+            <TrendingUp className="h-3.5 w-3.5 text-indigo-600" />
+          </div>
+          <div>
+            <h3 className="text-[13px] font-semibold text-foreground">Public Opinion</h3>
+            <p className="text-[10px] text-muted-foreground">Click any item to see the matching posts</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 divide-y md:divide-y-0 md:divide-x divide-border/30">
+        {/* Emerging Issues */}
+        <div className="p-4">
+          <div className="flex items-center gap-1.5 mb-3">
+            <TrendingUp className="h-3.5 w-3.5 text-violet-600" />
+            <h4 className="text-[12px] font-semibold text-foreground">Emerging Issues</h4>
+            <span className="text-[9px] text-muted-foreground">(last 7 days)</span>
+          </div>
+          {emergingIssues.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">No topic activity this week</p>
+          ) : (
+            <div className="space-y-1.5">
+              {emergingIssues.map((issue) => (
+                <Link
+                  key={issue.type}
+                  to={`/grievances?grievance_type=${encodeURIComponent(issue.type)}`}
+                  className="flex items-center justify-between gap-2 group rounded-md px-1.5 py-1 -mx-1.5 hover:bg-violet-50 transition-colors"
+                >
+                  <span className="text-[11px] text-foreground truncate group-hover:text-violet-700">{issue.type}</span>
+                  <span className="flex items-center gap-1 shrink-0">
+                    <span className="text-[11px] font-bold text-foreground tabular-nums">{issue.count}</span>
+                    {issue.growthPct > 0 && (
+                      <span className="text-[9px] font-semibold text-emerald-600">+{issue.growthPct}%</span>
+                    )}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Fake News */}
+        <div className="p-4">
+          <div className="flex items-center gap-1.5 mb-3">
+            <ShieldAlert className="h-3.5 w-3.5 text-red-600" />
+            <h4 className="text-[12px] font-semibold text-foreground">Fake News</h4>
+          </div>
+          <Link
+            to="/grievances?flag=fake_news"
+            className="flex flex-col items-start gap-1 group rounded-md px-1.5 py-1 -mx-1.5 hover:bg-red-50 transition-colors"
+          >
+            <span className="text-2xl font-bold text-red-600 tabular-nums">{fakeNewsCount}</span>
+            <span className="text-[10px] text-muted-foreground group-hover:text-red-600">
+              posts flagged &middot; view all
+            </span>
+          </Link>
+          <p className="text-[9px] text-muted-foreground/70 mt-3">Keyword-based signal, not verified fact-checking</p>
+        </div>
+
+        {/* Department-wise Sentiment */}
+        <div className="p-4">
+          <div className="flex items-center gap-1.5 mb-3">
+            <Building2 className="h-3.5 w-3.5 text-blue-600" />
+            <h4 className="text-[12px] font-semibold text-foreground">Department-wise Sentiment</h4>
+          </div>
+          {departmentSentiment.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">No department data yet</p>
+          ) : (
+            <div className="space-y-2">
+              {departmentSentiment.map((row) => (
+                <Link
+                  key={row.department}
+                  to={`/grievances?department=${encodeURIComponent(row.department)}`}
+                  className="block group rounded-md px-1.5 py-1 -mx-1.5 hover:bg-blue-50 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-[11px] text-foreground truncate group-hover:text-blue-700">{row.department}</span>
+                    <span className="text-[11px] font-bold text-foreground tabular-nums shrink-0">{row.total}</span>
+                  </div>
+                  <SentimentMiniBar positive={row.positive} neutral={row.neutral} negative={row.negative} />
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Constituency-wise Analysis */}
+        <div className="p-4">
+          <div className="flex items-center gap-1.5 mb-3">
+            <Landmark className="h-3.5 w-3.5 text-amber-600" />
+            <h4 className="text-[12px] font-semibold text-foreground">Constituency-wise Analysis</h4>
+          </div>
+          {constituencySentiment.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">No constituency data yet</p>
+          ) : (
+            <div className="space-y-2">
+              {constituencySentiment.slice(0, 6).map((row) => (
+                <Link
+                  key={row.constituency}
+                  to={`/grievances?location_constituency=${encodeURIComponent(row.constituency)}`}
+                  className="block group rounded-md px-1.5 py-1 -mx-1.5 hover:bg-amber-50 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-[11px] text-foreground truncate group-hover:text-amber-700">{row.constituency}</span>
+                    <span className="text-[11px] font-bold text-foreground tabular-nums shrink-0">{row.total}</span>
+                  </div>
+                  <SentimentMiniBar positive={row.positive} neutral={row.neutral} negative={row.negative} />
+                </Link>
+              ))}
+            </div>
+          )}
+          <p className="text-[9px] text-muted-foreground/70 mt-2">{data.meta?.constituencyCoverageNote}</p>
+        </div>
+      </div>
+    </Card>
+  );
+};
+
 const Dashboard = () => {
   const { dashboardData, loading, fetchDashboardData, refreshDashboard, hasCachedData } = useDashboard();
   const { navigateToPoliticianGrievances } = usePoliticianNavigation();
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [selectedMinister, setSelectedMinister] = useState(null);
+  // Revanth Reddy is selected by default every time the Overview tab loads.
+  const [selectedMinister, setSelectedMinister] = useState(() => getMinisterById('revanth-reddy'));
 
   const toggleMinister = useCallback((minister) => {
     setSelectedMinister((prev) => (prev?.id === minister.id ? null : minister));
@@ -1122,6 +1218,7 @@ const Dashboard = () => {
   const alertPendingReportData = dashboardData?.alertPendingReportData || {};
   const sentimentAnalytics = dashboardData?.sentimentAnalytics || null;
   const categoryAnalytics = dashboardData?.categoryAnalytics || null;
+  const publicOpinion = dashboardData?.publicOpinion || null;
 
   useEffect(() => {
     fetchDashboardData();
@@ -1319,11 +1416,7 @@ const Dashboard = () => {
                   </div>
                   {/* Right: map */}
                   <div className="flex-1 min-w-0">
-                    {selectedMinister.party === 'TDP' ? (
-                      <AndhraPradeshMapPanel leader={selectedMinister} />
-                    ) : (
-                      <TelanganaMap embedded highlightMinister={selectedMinister} />
-                    )}
+                    <TelanganaMap embedded highlightMinister={selectedMinister} />
                   </div>
                 </div>
               </div>
@@ -1349,6 +1442,9 @@ const Dashboard = () => {
           </div>
         );
       })()}
+
+      {/* Public Opinion Highlights */}
+      <PublicOpinionHighlights data={publicOpinion} />
 
       {/* Combined Analytics & Alerts Grid */}
       <TooltipProvider>

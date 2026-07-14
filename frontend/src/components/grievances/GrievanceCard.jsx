@@ -2,13 +2,16 @@ import React from 'react';
 import { format, formatDistanceToNowStrict } from 'date-fns';
 import {
     Heart, MessageCircle, Repeat2, BarChart3, Bookmark,
-    BadgeCheck, Play, Download, Loader2, Eye, Shield, Tag, MapPin, AlertTriangle
+    BadgeCheck, Play, Download, Loader2, Eye, Shield, Tag, MapPin, AlertTriangle, Trash2
 } from 'lucide-react';
 import { Card, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { normalizeMediaList } from '../AlertCards';
 import { cn } from '../../lib/utils';
+import { useAuth } from '../../contexts/AuthContext';
+
+const SPECIAL_ACCESS_EMAIL = 'sreenu@gmail.com';
 const GlobeIcon = ({ className }) => (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className={className}>
         <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zM1.6 8a6.4 6.4 0 0 1 12.8 0 6.4 6.4 0 0 1-12.8 0z" />
@@ -123,9 +126,42 @@ const highlightMentions = (text) => {
     );
 };
 
-const ActionButtons = ({ grievance, onAction, isDownloading = false }) => {
+const ActionButtons = ({ grievance, onAction, isDownloading = false, enableSpecialActions = false }) => {
+    const { user } = useAuth();
+    const canEditDelete = enableSpecialActions && user?.email === SPECIAL_ACCESS_EMAIL;
+
     return (
         <div className="flex items-center gap-1 shrink-0">
+            {canEditDelete && (
+                <select
+                    className="h-7 text-[11px] font-semibold rounded ring-1 ring-slate-200 bg-slate-100 text-slate-700 px-1 transition-all duration-150"
+                    title="Edit sentiment"
+                    value={(grievance.analysis?.sentiment || 'neutral')}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => {
+                        e.stopPropagation();
+                        onAction?.('edit_sentiment', { grievance, sentiment: e.target.value });
+                    }}
+                >
+                    <option value="positive">Positive</option>
+                    <option value="neutral">Moderate</option>
+                    <option value="negative">Negative</option>
+                </select>
+            )}
+            {canEditDelete && (
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-red-700 bg-red-100 hover:bg-red-200 ring-1 ring-red-200 transition-all duration-150 active:scale-95 active:translate-y-[1px]"
+                    title="Delete"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        onAction?.('delete', { grievance });
+                    }}
+                >
+                    <Trash2 className="h-4 w-4" />
+                </Button>
+            )}
             <Button
                 variant="ghost"
                 size="icon"
@@ -140,7 +176,7 @@ const ActionButtons = ({ grievance, onAction, isDownloading = false }) => {
                 {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             </Button>
 
-            {/* 
+            {/*
             <Button
                 variant="ghost"
                 size="icon"
@@ -533,7 +569,7 @@ const ParentFacebookPost = ({ context, getProxiedMediaUrl, onAction, grievance }
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 /*                  X (TWITTER) LAYOUT                     */
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-const XLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {} }) => {
+const XLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, enableSpecialActions = false }) => {
     const user = grievance.posted_by || {};
     const handle = (user.handle || '').replace('@', '');
     const text = grievance.content?.full_text || grievance.content?.text || '';
@@ -588,7 +624,7 @@ const XLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {} }
                             </div>
                             <WorkflowMeta grievance={grievance} onAction={onAction} />
                         </div>
-                        <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} />
+                        <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} enableSpecialActions={enableSpecialActions} />
                     </div>
                     {/* Only show "Replying to" if we DON'T show the parent thread above (fallback) */}
                     {(!parentTweet?.tweet_id) && ctx.in_reply_to?.posted_by?.handle && (
@@ -672,7 +708,7 @@ const FacebookMediaGrid = ({ media, getProxiedMediaUrl, onAction, grievance }) =
     );
 };
 
-const FacebookLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {} }) => {
+const FacebookLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, enableSpecialActions = false }) => {
     const user = grievance.posted_by || {};
     const text = grievance.content?.full_text || grievance.content?.text || '';
     const media = grievance.content?.media || [];
@@ -714,7 +750,7 @@ const FacebookLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
                             <WorkflowMeta grievance={grievance} onAction={onAction} />
                         </div>
                     </div>
-                    <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} />
+                    <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} enableSpecialActions={enableSpecialActions} />
                 </div>
                 {text && <div className="mt-3 text-[15px] text-[#050505] leading-5 whitespace-pre-wrap break-words">{highlightMentions(text)}</div>}
                 {media.length > 0 && <div className="mt-3 -mx-4"><FacebookMediaGrid media={media} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} grievance={grievance} /></div>}
@@ -754,7 +790,7 @@ const FacebookLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 /*                   WHATSAPP LAYOUT                       */
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {} }) => {
+const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, enableSpecialActions = false }) => {
     const user = grievance.posted_by || {};
     const text = grievance.content?.full_text || grievance.content?.text || '';
     const media = grievance.content?.media || [];
@@ -770,7 +806,7 @@ const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
                     <p className="text-[12.5px] font-semibold text-[#0f172a] truncate">{displayName}</p>
                     <WorkflowMeta grievance={grievance} onAction={onAction} />
                 </div>
-                <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} />
+                <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} enableSpecialActions={enableSpecialActions} />
             </div>
             <div className="flex justify-center mb-3">
                 <span className="bg-[#e1f3fb] text-[#54656f] text-[11px] font-medium px-3 py-1 rounded-lg shadow-sm">
@@ -822,7 +858,7 @@ const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 /*                 MAIN GRIEVANCE CARD                     */
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloadState = {}, isActioned = false, isSelected = false, compact = false }) => {
+export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloadState = {}, isActioned = false, isSelected = false, compact = false, enableSpecialActions = false }) => {
     const platform = (grievance.platform || 'x').toLowerCase();
     const isX = platform === 'x' || platform === 'twitter';
     const isFB = platform === 'facebook';
@@ -839,11 +875,10 @@ export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloa
 
     return (
         <Card id={`grievance-card-${grievance.id}`} className={cn(
-            "overflow-hidden shadow-sm border transition-shadow",
+            "relative overflow-hidden shadow-sm border transition-shadow",
             sentimentBorderColor && `border-l-[3px] ${sentimentBorderColor}`,
             isActioned ? "animate-card-action-blink border-green-400 z-10" : "border-slate-200 hover:shadow-md"
         )}>
-
             {(isDownloading || downloadState?.error) && (
                 <div className="px-4 py-2 border-b border-slate-100 bg-blue-50/40">
                     {isDownloading && (
@@ -865,11 +900,11 @@ export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloa
 
             {/* Platform-native Content */}
             <CardContent className={cn('p-3', isWA && 'p-2')}>
-                {isX && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} />}
-                {isFB && <FacebookLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} />}
-                {isWA && <WhatsAppLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} />}
-                {isIG && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} />}
-                {isYT && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} />}
+                {isX && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
+                {isFB && <FacebookLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
+                {isWA && <WhatsAppLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
+                {isIG && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
+                {isYT && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
             </CardContent>
 
             {/* Footer */}

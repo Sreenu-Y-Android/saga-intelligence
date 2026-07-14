@@ -18,6 +18,7 @@ const {
 const { createAuditLog } = require('../services/auditService');
 const cacheService = require('../services/cacheService');
 const crypto = require('crypto');
+const { isSpecialUser } = require('../config/specialAccess');
 
 const MAX_SOURCES_PER_PLATFORM = 5;
 const TWILIO_ACK_XML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>';
@@ -121,6 +122,46 @@ const mapLegacyFilterStatusToTab = (filterStatus) => {
     return 'all';
 };
 
+// ─── Public Opinion Highlights (Emerging Issues / Fake News / Department / Constituency) ───
+// No ML/LLM misinformation classifier exists in the pipeline yet, so this is a
+// lightweight keyword heuristic — approximate, not a real classification.
+const FAKE_NEWS_KEYWORDS = [
+    'fake news', 'fake video', 'fake photo', 'fake image', 'morphed video', 'morphed photo',
+    'doctored video', 'doctored photo', 'photoshopped', 'edited video', 'rumor', 'rumour',
+    'false claim', 'false news', 'misleading claim', 'fabricated', 'propaganda',
+    'disinformation', 'misinformation', 'deepfake', 'ai generated fake', 'fact check', 'debunk'
+];
+
+// There's no per-post department tagging pipeline today, so department-wise
+// sentiment is derived from the LLM-assigned grievance_type as a proxy
+// (topic implies the department most likely responsible).
+const GRIEVANCE_TYPE_DEPARTMENT_MAP = {
+    'road & infrastructure': 'Roads & Buildings',
+    'traffic complaint': 'Traffic & Transport',
+    'law & order': 'Home / Police',
+    'hate speech': 'Home / Police',
+    'corruption complaint': 'Vigilance & Anti-Corruption',
+    'public nuisance': 'Municipal Administration',
+    'public complaint': 'General Administration',
+    'political criticism': 'General Administration',
+    'government praise': 'General Administration'
+};
+
+const decodeEntities = (value) => String(value || '').replace(/&amp;/gi, '&').trim();
+
+const mapGrievanceTypeToDepartment = (grievanceType) => (
+    GRIEVANCE_TYPE_DEPARTMENT_MAP[decodeEntities(grievanceType).toLowerCase()] || null
+);
+
+// Reverse lookup for the department click-through filter — includes both the
+// plain `&` and `&amp;`-encoded forms since older records were stored either way.
+const DEPARTMENT_TO_GRIEVANCE_TYPES = {};
+Object.entries(GRIEVANCE_TYPE_DEPARTMENT_MAP).forEach(([typeKey, dept]) => {
+    if (!DEPARTMENT_TO_GRIEVANCE_TYPES[dept]) DEPARTMENT_TO_GRIEVANCE_TYPES[dept] = [];
+    const titleCased = typeKey.replace(/\b\w/g, (c) => c.toUpperCase());
+    DEPARTMENT_TO_GRIEVANCE_TYPES[dept].push(titleCased, titleCased.replace(/&/g, '&amp;'));
+});
+
 const buildListQuery = (params = {}, options = {}) => {
     const {
         classification,
@@ -141,7 +182,9 @@ const buildListQuery = (params = {}, options = {}) => {
         grievance_type,
         analysis_category,
         risk_level,
-        person_id
+        person_id,
+        department,
+        flag
     } = params;
 
     const { includeTab = true } = options;
@@ -197,7 +240,24 @@ const buildListQuery = (params = {}, options = {}) => {
         }
     }
     if (posted_by_handle) {
-        query['posted_by.handle'] = { $regex: new RegExp(`^@?${escapeRegex(String(posted_by_handle).replace(/^@/, '').trim())}$`, 'i') };
+        // May be a single handle or an array (e.g. checking authorship against
+        // several of an MLA's known handles in one query instead of one per handle).
+        const handles = Array.isArray(posted_by_handle) ? posted_by_handle : [posted_by_handle];
+        const handleOr = handles
+            .map((h) => String(h || '').trim())
+            .filter(Boolean)
+            .map((h) => ({ 'posted_by.handle': { $regex: new RegExp(`^@?${escapeRegex(h.replace(/^@/, ''))}$`, 'i') } }));
+
+        if (handleOr.length === 1) {
+            Object.assign(query, handleOr[0]);
+        } else if (handleOr.length > 1) {
+            if (query.$or) {
+                query.$and = [...(query.$and || []), { $or: query.$or }, { $or: handleOr }];
+                delete query.$or;
+            } else {
+                query.$or = handleOr;
+            }
+        }
     }
     if (sentiment && ['positive', 'negative', 'neutral'].includes(sentiment.toLowerCase())) {
         query['analysis.sentiment'] = sentiment.toLowerCase();
@@ -222,6 +282,14 @@ const buildListQuery = (params = {}, options = {}) => {
 
     if (grievance_type && grievance_type !== 'all') {
         query['analysis.grievance_type'] = grievance_type;
+    }
+
+    if (department && department !== 'all') {
+        // Department-wise click-through from the Public Opinion highlights —
+        // resolves via the same grievance_type -> department proxy map used
+        // to build the highlights themselves.
+        const types = DEPARTMENT_TO_GRIEVANCE_TYPES[department] || [];
+        query['analysis.grievance_type'] = types.length ? { $in: types } : { $in: [] };
     }
 
     if (analysis_category && analysis_category !== 'all') {
@@ -284,11 +352,14 @@ const buildListQuery = (params = {}, options = {}) => {
         'detected_location.constituency'
     ]);
 
-    addLocationOrFilter(location_constituency, [
-        'detected_location.constituency',
-        'detected_location.city',
-        'detected_location.district'
-    ]);
+    if (location_constituency && location_constituency !== 'all') {
+        // Direct field match — NOT routed through addLocationOrFilter's generic
+        // "exclude city=Telangana" rule. Mahabubnagar round-robin-assigned records
+        // keep a generic "Telangana" city fallback even when constituency is
+        // correctly set, so that exclusion would wrongly drop most real matches here.
+        const boundaryRegex = new RegExp(`(^|[^a-z0-9])${escapeRegex(String(location_constituency).trim())}([^a-z0-9]|$)`, 'i');
+        query['detected_location.constituency'] = { $regex: boundaryRegex };
+    }
 
     if (includeTab) {
         const tabFilter = tabToWorkflowQuery(finalTab);
@@ -303,22 +374,38 @@ const buildListQuery = (params = {}, options = {}) => {
         if (toDate) query.post_date.$lte = toDate;
     }
 
-    if (search) {
-        const textRegex = normalizeSearchRegex(search);
-        const searchOr = [
-            { complaint_code: textRegex },
-            { 'content.text': textRegex },
-            { 'content.full_text': textRegex },
-            { 'posted_by.display_name': textRegex },
-            { 'posted_by.handle': textRegex },
-            { complainant_phone: textRegex }
-        ];
+    // flag=fake_news click-through from the Public Opinion highlights — applies
+    // the same keyword heuristic used to compute the highlight count. An explicit
+    // `search` still wins if the caller passed one.
+    const effectiveSearch = search || (String(flag || '').toLowerCase() === 'fake_news' ? FAKE_NEWS_KEYWORDS : null);
 
-        if (query.$or) {
-            query.$and = [{ $or: query.$or }, { $or: searchOr }];
-            delete query.$or;
-        } else {
-            query.$or = searchOr;
+    if (effectiveSearch) {
+        // `search` may be a single term or an array of terms (e.g. all of an
+        // MLA's name/alias/handle keywords) — OR'd into one query instead of
+        // firing one full-collection-scan regex query per term.
+        const terms = Array.isArray(effectiveSearch) ? effectiveSearch : [effectiveSearch];
+        const searchOr = [];
+        terms.forEach((term) => {
+            const trimmed = String(term || '').trim();
+            if (!trimmed) return;
+            const textRegex = normalizeSearchRegex(trimmed);
+            searchOr.push(
+                { complaint_code: textRegex },
+                { 'content.text': textRegex },
+                { 'content.full_text': textRegex },
+                { 'posted_by.display_name': textRegex },
+                { 'posted_by.handle': textRegex },
+                { complainant_phone: textRegex }
+            );
+        });
+
+        if (searchOr.length) {
+            if (query.$or) {
+                query.$and = [...(query.$and || []), { $or: query.$or }, { $or: searchOr }];
+                delete query.$or;
+            } else {
+                query.$or = searchOr;
+            }
         }
     }
 
@@ -675,7 +762,8 @@ const getGrievances = async (req, res) => {
             page = 1,
             limit = 200,
             sort = '-post_date',
-            cursor
+            cursor,
+            count
         } = req.query;
 
         const query = buildListQuery(req.query);
@@ -683,6 +771,10 @@ const getGrievances = async (req, res) => {
         const pageNum = parseInt(page, 10);
         const skip = (pageNum - 1) * limitNum;
         const findQuery = { ...query };
+        // Callers that don't render a total/page count (e.g. the MLA-mode
+        // multi-keyword fetch, which merges+re-scores results client-side)
+        // can skip this — countDocuments() re-runs the same regex scan.
+        const skipCount = count === 'false';
 
         // Cursor format: "<post_date_iso>|<id>"
         if (cursor) {
@@ -771,8 +863,9 @@ const getGrievances = async (req, res) => {
                 .skip(cursor ? 0 : skip)
                 .limit(limitNum + 1)
                 .lean(),
-            // Run count in parallel (skip for cursor-based loads — frontend already has total)
-            cursor ? Promise.resolve(undefined) : Grievance.countDocuments(query)
+            // Run count in parallel (skip for cursor-based loads — frontend already has total —
+            // and whenever the caller explicitly opts out via count=false)
+            (cursor || skipCount) ? Promise.resolve(undefined) : Grievance.countDocuments(query)
         ]);
 
         const hasMore = grievancesRaw.length > limitNum;
@@ -818,6 +911,66 @@ const getGrievance = async (req, res) => {
         payload.can_convert_to_fir = canConvertToFir(payload);
         payload.complainant = normalizeComplainant(payload);
         res.status(200).json(payload);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * @desc    Directly edit a grievance's sentiment classification
+ * @route   PUT /api/grievances/:id/sentiment
+ * @access  Private (restricted to special account)
+ */
+const updateGrievanceSentiment = async (req, res) => {
+    if (!isSpecialUser(req.user)) {
+        return res.status(403).json({ message: 'Not authorized' });
+    }
+    try {
+        const { id } = req.params;
+        const { sentiment } = req.body;
+
+        if (!['positive', 'negative', 'neutral'].includes(sentiment)) {
+            return res.status(400).json({ message: 'Invalid sentiment value' });
+        }
+
+        const grievance = await Grievance.findOne({ id });
+        if (!grievance) {
+            return res.status(404).json({ message: 'Grievance not found' });
+        }
+
+        grievance.analysis = grievance.analysis || {};
+        grievance.analysis.sentiment = sentiment;
+        await grievance.save();
+        await invalidateGrievanceCaches();
+        await logAudit(req, 'EDIT_SENTIMENT', 'GRIEVANCE', id, sentiment);
+
+        res.status(200).json({ id: grievance.id, sentiment });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * @desc    Permanently delete a grievance
+ * @route   DELETE /api/grievances/:id
+ * @access  Private (restricted to special account)
+ */
+const deleteGrievance = async (req, res) => {
+    if (!isSpecialUser(req.user)) {
+        return res.status(403).json({ message: 'Not authorized' });
+    }
+    try {
+        const { id } = req.params;
+        const deleted = await Grievance.findOneAndDelete({ id });
+
+        if (!deleted) {
+            return res.status(404).json({ message: 'Grievance not found' });
+        }
+
+        await invalidateGrievanceCaches();
+        await logAudit(req, 'DELETE', 'GRIEVANCE', id, 'Hard deleted');
+
+        res.status(200).json({ id, deleted: true });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1695,6 +1848,99 @@ const getCategoryAnalytics = async (req, res) => {
 };
 
 /**
+ * @desc    Public Opinion highlights for the Overview dashboard:
+ *          Emerging Issues, Fake News (keyword heuristic), Department-wise
+ *          Sentiment (grievance_type proxy), Constituency-wise Analysis.
+ * @route   GET /api/grievances/public-opinion
+ */
+const getPublicOpinionHighlights = async (req, res) => {
+    try {
+        const cacheKey = 'grievances:public-opinion:v1';
+        const cached = await cacheService.get(cacheKey);
+        if (cached) return res.status(200).json(cached);
+
+        const now = new Date();
+        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+        const excludedTypes = [null, '', 'Normal', 'Not a Grievance'];
+
+        const [recentTypeRows, previousTypeRows, fakeNewsCount, departmentRows, constituencyRows] = await Promise.all([
+            Grievance.aggregate([
+                { $match: { is_active: true, post_date: { $gte: sevenDaysAgo }, 'analysis.grievance_type': { $nin: excludedTypes } } },
+                { $group: { _id: '$analysis.grievance_type', count: { $sum: 1 } } }
+            ]),
+            Grievance.aggregate([
+                { $match: { is_active: true, post_date: { $gte: fourteenDaysAgo, $lt: sevenDaysAgo }, 'analysis.grievance_type': { $nin: excludedTypes } } },
+                { $group: { _id: '$analysis.grievance_type', count: { $sum: 1 } } }
+            ]),
+            Grievance.countDocuments({
+                is_active: true,
+                $or: FAKE_NEWS_KEYWORDS.map((term) => ({ 'content.full_text': normalizeSearchRegex(term) }))
+            }),
+            Grievance.aggregate([
+                { $match: { is_active: true, 'analysis.grievance_type': { $nin: excludedTypes }, 'analysis.sentiment': { $exists: true, $ne: null } } },
+                { $group: { _id: { type: '$analysis.grievance_type', sentiment: '$analysis.sentiment' }, count: { $sum: 1 } } }
+            ]),
+            Grievance.aggregate([
+                { $match: { is_active: true, 'detected_location.constituency': { $nin: [null, ''] } } },
+                { $group: { _id: { constituency: '$detected_location.constituency', sentiment: '$analysis.sentiment' }, count: { $sum: 1 } } }
+            ])
+        ]);
+
+        // Emerging issues: recent-window count per topic, with growth vs the prior window
+        const previousByType = {};
+        previousTypeRows.forEach((r) => { previousByType[r._id] = r.count; });
+        const emergingIssues = recentTypeRows
+            .map((r) => {
+                const prev = previousByType[r._id] || 0;
+                const growthPct = prev > 0 ? Math.round(((r.count - prev) / prev) * 100) : (r.count > 0 ? 100 : 0);
+                return { type: r._id, count: r.count, previousCount: prev, growthPct };
+            })
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 6);
+
+        // Department-wise sentiment — grievance_type remapped to department proxy
+        const deptMap = {};
+        departmentRows.forEach(({ _id, count }) => {
+            const dept = mapGrievanceTypeToDepartment(_id.type);
+            if (!dept) return;
+            if (!deptMap[dept]) deptMap[dept] = { department: dept, total: 0, positive: 0, neutral: 0, negative: 0 };
+            deptMap[dept].total += count;
+            if (Object.prototype.hasOwnProperty.call(deptMap[dept], _id.sentiment)) deptMap[dept][_id.sentiment] += count;
+        });
+        const departmentSentiment = Object.values(deptMap).sort((a, b) => b.total - a.total);
+
+        // Constituency-wise sentiment
+        const constMap = {};
+        constituencyRows.forEach(({ _id, count }) => {
+            const c = _id.constituency;
+            if (!constMap[c]) constMap[c] = { constituency: c, total: 0, positive: 0, neutral: 0, negative: 0 };
+            constMap[c].total += count;
+            if (_id.sentiment && Object.prototype.hasOwnProperty.call(constMap[c], _id.sentiment)) constMap[c][_id.sentiment] += count;
+        });
+        const constituencySentiment = Object.values(constMap).sort((a, b) => b.total - a.total);
+
+        const payload = {
+            emergingIssues,
+            fakeNews: { count: fakeNewsCount },
+            departmentSentiment,
+            constituencySentiment,
+            // UI hints — both are proxy/heuristic signals, not direct classifications
+            meta: {
+                fakeNewsIsHeuristic: true,
+                departmentIsProxy: true,
+                constituencyCoverageNote: 'Constituency detection is currently reliable for Mahabubnagar-district posts only.'
+            }
+        };
+
+        await cacheService.set(cacheKey, payload, 30);
+        res.status(200).json(payload);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
  * Get aggregated map stats (counts, sentiment, categories) per location keyword.
  * Searches both detected_location fields AND full text for location keywords.
  * Returns accurate counts matching what the search-based grievance page shows.
@@ -2055,11 +2301,16 @@ const getLocationSummary = async (req, res) => {
                 'detected_location.constituency': { $regex: acPattern }
             };
         } else {
-            const params = {
-                ...req.query,
-                location_city: locationValue
+            // Every caller of this branch passes a specific constituency (leader
+            // cards, map constituency drill-down) — match detected_location.constituency
+            // directly rather than through buildListQuery's location_city path, whose
+            // "exclude city=Telangana" rule wrongly drops most Mahabubnagar
+            // round-robin-assigned records (their city stays a generic "Telangana"
+            // fallback even though constituency is correctly set).
+            query = {
+                is_active: true,
+                'detected_location.constituency': { $regex: new RegExp(`(^|[^a-z0-9])${escapeRegex(locationValue)}([^a-z0-9]|$)`, 'i') }
             };
-            query = buildListQuery(params, { includeTab: true });
         }
 
         const [total, sentimentRows, categoryRows] = await Promise.all([
@@ -2136,6 +2387,8 @@ module.exports = {
     fetchKeywordGrievances,
     getGrievances,
     getGrievance,
+    updateGrievanceSentiment,
+    deleteGrievance,
     acknowledgeGrievance,
     markAsComplaint,
     updateComplaintStatus,
@@ -2155,6 +2408,7 @@ module.exports = {
     getSentimentAnalytics,
     getDistinctTopics,
     getCategoryAnalytics,
+    getPublicOpinionHighlights,
     getMapGrievances,
     getLocationStats,
     getLocationSummary

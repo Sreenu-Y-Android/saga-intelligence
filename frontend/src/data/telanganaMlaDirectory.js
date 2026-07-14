@@ -1,12 +1,6 @@
-import { TELANGANA_MINISTERS, WATCH_POLITICIANS } from './telanganaMinistersData';
+import { TELANGANA_MINISTERS } from './telanganaMinistersData';
 
 export const MLA_PARTY_META = {
-  TDP: {
-    label: 'TDP',
-    fullName: 'Telugu Desam Party',
-    color: '#d97706',
-    accent: 'from-amber-500/10 to-transparent',
-  },
   INC: {
     label: 'INC',
     fullName: 'Indian National Congress',
@@ -165,7 +159,6 @@ const PARTY_WISE_IMAGE_FILES = {
     'SRI  VEDMA. BHOJJU.jpg',
     'SRI  VEMULA VEERESHAM.jpg',
     'SRI  VIVEK VENKAT SWAMY.jpg',
-    'SRI  YENNAM SRINIVAS REDDY.jpg',
     'T. RAM MOHAN REDDY.jpg',
     'YASHASWINI MAMIDALA.jpg',
   ],
@@ -356,7 +349,6 @@ const MEMBER_CONSTITUENCY_REFERENCE = {
     'SRI  VEDMA. BHOJJU.jpg': 'Khanapur (ST)',
     'SRI  VEMULA VEERESHAM.jpg': 'Nakrekal (SC)',
     'SRI  VIVEK VENKAT SWAMY.jpg': 'Chennur (SC)',
-    'SRI  YENNAM SRINIVAS REDDY.jpg': 'Mahabubnagar',
     'T. RAM MOHAN REDDY.jpg': 'Pargi',
     'YASHASWINI MAMIDALA.jpg': 'Palakurthi',
   },
@@ -586,16 +578,19 @@ const PROFILE_OVERRIDES = {
       district: 'Medchal-Malkajgiri',
     },
     'SRI  KALVAKUNTLA CHANDRASHEKAR RAO.jpg': {
+      id: 'kcr',
       name: 'K. Chandrashekar Rao',
       shortName: 'K. Chandrashekar Rao',
       role: 'Party Founder',
     },
     'SRI  KALVAKUNTLA TARAKA RAMA RAO (K.T.R).jpg': {
+      id: 'ktr',
       name: 'K. T. Rama Rao',
       shortName: 'K. T. Rama Rao',
       role: 'Working President',
     },
     'SRI  THANNEERU HARISH RAO.jpg': {
+      id: 'harish-rao',
       name: 'T. Harish Rao',
       shortName: 'T. Harish Rao',
       role: 'Senior Leader',
@@ -603,37 +598,27 @@ const PROFILE_OVERRIDES = {
   },
   BJP: {
     'SRI  T. RAJA SINGH.jpg': {
+      id: 't-raja-singh',
       name: 'T. Raja Singh',
       shortName: 'T. Raja Singh',
       role: 'Senior Leader',
     },
     'SRI  ALLETI MAHESHWAR REDDY.jpg': {
+      id: 'alleti-maheshwar-reddy',
       name: 'Alleti Maheshwar Reddy',
       shortName: 'Alleti Maheshwar Reddy',
       role: 'Floor Leader',
     },
   },
-  TDP: {
-    'lokesh.webp': {
-      name: 'Nara Lokesh',
-      shortName: 'Lokesh',
-      role: 'IT Minister',
-      department: 'IT Minister',
-    },
-    'cbn.webp': {
-      name: 'N. Chandrababu Naidu',
-      shortName: 'CBN',
-      role: 'Chief Minister',
-      department: 'Chief Minister',
-    },
-  },
   AIMIM: {
     'SRI  AKBAR UDDIN OWAISI.jpg': {
+      id: 'akbaruddin-owaisi',
       name: 'Akbaruddin Owaisi',
       shortName: 'Akbaruddin Owaisi',
       role: 'Floor Leader',
     },
     'SRI  MOHAMMED MAJID HUSSAIN.jpg': {
+      id: 'majid-hussain',
       name: 'Mohammed Majid Hussain',
       shortName: 'Majid Hussain',
       role: 'Senior Leader',
@@ -761,7 +746,7 @@ const buildMember = (party, fileName, index) => {
   const referenceConstituency = MEMBER_CONSTITUENCY_REFERENCE[party]?.[fileName] || '';
   const fallbackName = formatDisplayName(fileName);
   const selectionProfile = {
-    id: matchedProfile?.id || `${party.toLowerCase()}-${index + 1}-${slugify(fileName)}`,
+    id: overrides.id || matchedProfile?.id || `${party.toLowerCase()}-${index + 1}-${slugify(fileName)}`,
     name: overrides.name || matchedProfile?.name || fallbackName,
     shortName: overrides.shortName || matchedProfile?.shortName || fallbackName,
     role: overrides.role || matchedProfile?.role || 'MLA',
@@ -787,25 +772,7 @@ const buildMember = (party, fileName, index) => {
   };
 };
 
-// ─── TDP tab: AP politicians tracked for social mentions ──────────────────
-const TDP_DIRECTORY_MEMBERS = WATCH_POLITICIANS
-  .filter(wp => wp.party === 'TDP')
-  .map((wp, index) => ({
-    ...wp,
-    selectable: true,
-    linkedProfile: wp,
-    sourceFileName: wp.id,
-    sourceOrder: index,
-  }));
-
-const TDP_DIRECTORY_GROUP = {
-  party: 'TDP',
-  ...MLA_PARTY_META.TDP,
-  members: TDP_DIRECTORY_MEMBERS,
-};
-
 export const PARTY_WISE_MLA_DIRECTORY = [
-  TDP_DIRECTORY_GROUP,
   ...PARTY_ORDER.map((party) => ({
     party,
     ...MLA_PARTY_META[party],

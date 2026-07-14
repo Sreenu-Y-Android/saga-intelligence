@@ -5,7 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import {
     Search, Shield, FileText, CheckCircle2, Calendar, Clock,
     AlertCircle, X, RefreshCw, Plus, Trash2, Loader2, Download,
-    Building2, Users, BadgeCheck, CalendarDays, Filter, ChevronDown, ExternalLink, Tag, MapPin
+    Building2, Users, BadgeCheck, CalendarDays, Filter, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Tag, MapPin
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -38,6 +38,7 @@ import { CriticismReports } from '../components/grievances/CriticismReports';
 import { GrievancePopup } from '../components/grievances/GrievancePopup';
 import { GrievanceWorkflowReports } from '../components/grievances/GrievanceWorkflowReports';
 import { GrievanceStatusChangePopup } from '../components/grievances/GrievanceStatusChangePopup';
+import { FrequentEngagersDialog } from '../components/FrequentEngagersDialog';
 import { QueryPopup } from '../components/grievances/QueryPopup';
 import { QueryReports } from '../components/grievances/QueryReports';
 import { SuggestionPopup } from '../components/grievances/SuggestionPopup';
@@ -73,14 +74,12 @@ const Grievances = () => {
 
     const getProxiedMediaUrl = useCallback((rawUrl) => {
         if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
-        // Already a local/backend URL — no proxy needed
-        if (rawUrl.startsWith('/') || rawUrl.startsWith(BACKEND_URL)) return rawUrl;
-        // S3 URLs are directly accessible — no proxy needed
-        if (rawUrl.includes('amazonaws.com')) return rawUrl;
-        // Proxy all external media (Twitter images/videos, Facebook CDN, etc.)
-        // This ensures proper CORS headers and avoids hotlink blocks.
-        return `${BACKEND_URL}/api/media/stream?url=${encodeURIComponent(rawUrl)}`;
-    }, [BACKEND_URL]);
+        // Render every platform's media (Twitter/X, Facebook, Instagram, YouTube, S3, etc.)
+        // directly from its source URL instead of round-tripping through the backend
+        // proxy — the proxy adds a hard dependency on BACKEND_URL being reachable from
+        // the browser, which breaks playback (ERR_CONNECTION_REFUSED) whenever it isn't.
+        return rawUrl;
+    }, []);
 
     const triggerBlobDownload = useCallback(async (url, filename) => {
         try {
@@ -304,7 +303,9 @@ const Grievances = () => {
     const [, setStats] = useState({ total: 0, pending: 0, escalated: 0, closed: 0, converted_to_fir: 0 });
     const [, setWorkflowStats] = useState({ total: 0, pending: 0, escalated: 0, closed: 0, fir: 0 });
     const [activeReportSubTab, setActiveReportSubTab] = useState('grievance'); // grievance, suggestion, criticism
-    const [pagination, setPagination] = useState({ hasMore: false, nextCursor: null, total: 0 });
+    const [pagination, setPagination] = useState({ hasMore: false, nextCursor: null, total: 0, pages: 0 });
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(50);
     const fetchAbortRef = useRef(null); // AbortController for cancelling stale requests
 
     // Sources
@@ -316,6 +317,7 @@ const Grievances = () => {
     const [addSourceDept, setAddSourceDept] = useState('');
     const [addingSource, setAddingSource] = useState(false);
     const [fetchingSource, setFetchingSource] = useState(null);
+    const [showEngagersDialog, setShowEngagersDialog] = useState(false);
     const [fetchingHashtag, setFetchingHashtag] = useState(false);
     const [showSourcePanel, setShowSourcePanel] = useState(true);
 
@@ -424,6 +426,10 @@ const Grievances = () => {
     const [sentimentFilter, setSentimentFilter] = useState(() => searchParams.get('sentiment') || null);
     const [topicFilter, setTopicFilter] = useState(() => normalizeTopicFilterLabel(searchParams.get('grievance_type')));
     const [analysisCategoryFilter, setAnalysisCategoryFilter] = useState(() => searchParams.get('analysis_category') || null);
+    // Public Opinion highlights click-through (Overview tab)
+    const [departmentFilter, setDepartmentFilter] = useState(() => searchParams.get('department') || null);
+    const [fakeNewsFlag, setFakeNewsFlag] = useState(() => searchParams.get('flag') || null);
+    const [constituencyFilter, setConstituencyFilter] = useState(() => searchParams.get('location_constituency') || null);
     const [navbarPlatform, setNavbarPlatform] = useState('all');
     const [navbarStatus, setNavbarStatus] = useState('total');
 
@@ -532,6 +538,9 @@ const Grievances = () => {
         const urlHandle = searchParams.get('posted_by') || searchParams.get('handle') || null;
         const urlTopic = normalizeTopicFilterLabel(searchParams.get('grievance_type'));
         const urlAnalysisCategory = searchParams.get('analysis_category') || null;
+        const urlDepartment = searchParams.get('department') || null;
+        const urlFlag = searchParams.get('flag') || null;
+        const urlConstituency = searchParams.get('location_constituency') || null;
 
         // In politician mode the 'location' param is the constituency, not a user-applied filter.
         // Using politician_constituency for new navigations; 'location' is a legacy fallback.
@@ -545,6 +554,9 @@ const Grievances = () => {
         setSelectedHandle(urlHandle);
         setTopicFilter(urlTopic);
         setAnalysisCategoryFilter(urlAnalysisCategory);
+        setDepartmentFilter(urlDepartment);
+        setFakeNewsFlag(urlFlag);
+        setConstituencyFilter(urlConstituency);
     }, [searchParams, normalizeTopicFilterLabel]);
 
     // Modal dragging
@@ -661,7 +673,7 @@ const Grievances = () => {
             fetchGrievances();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeTab, platformFilter, dateRange, debouncedSearch, navbarPlatform, navbarStatus, selectedHandle, sentimentFilter, topicFilter, analysisCategoryFilter, locationFilter, allowedNavbarStatuses, politicianContext, disabledKeywordIds, customKeywords, showTopMlaGrid]);
+    }, [activeTab, platformFilter, dateRange, debouncedSearch, navbarPlatform, navbarStatus, selectedHandle, sentimentFilter, topicFilter, analysisCategoryFilter, locationFilter, departmentFilter, fakeNewsFlag, constituencyFilter, allowedNavbarStatuses, politicianContext, disabledKeywordIds, customKeywords, showTopMlaGrid]);
 
     const fetchSources = async () => {
         setSourcesLoading(true);
@@ -716,14 +728,19 @@ const Grievances = () => {
         if (topicFilter) commonParams.grievance_type = mapTopicFilterToApi(topicFilter);
 
         try {
-            // One request per active keyword (capped at 6 parallel)
-            const nameRequests = activeKws
+            // All name/alias/handle keywords go into ONE query (backend ORs them
+            // together) instead of one full-collection-scan regex query per
+            // keyword — this used to fire up to 5 parallel scans per click.
+            // count=false skips the redundant countDocuments() scan since this
+            // view computes its own total from the merged, re-scored results.
+            const nameTerms = activeKws
                 .filter(k => k.type !== 'constituency')
                 .slice(0, 5)
-                .map(kw =>
-                    api.get('/grievances', { params: { search: kw.term, limit: 40, ...commonParams } })
-                        .catch(() => ({ data: { grievances: [] } }))
-                );
+                .map(kw => kw.term);
+            const nameReq = nameTerms.length
+                ? api.get('/grievances', { params: { search: nameTerms, limit: 200, count: false, ...commonParams } })
+                    .catch(() => ({ data: { grievances: [] } }))
+                : Promise.resolve({ data: { grievances: [] } });
 
             // Constituency fetch — supplementary signal only.
             // Reduced limit (20) because location-only matches are the main source of noise.
@@ -733,12 +750,13 @@ const Grievances = () => {
                         location_city: politicianContext.constituency.toLowerCase(),
                         location: politicianContext.constituency.toLowerCase(),
                         limit: 20,
+                        count: false,
                         ...commonParams,
                     },
                 }).catch(() => ({ data: { grievances: [] } }))
                 : Promise.resolve({ data: { grievances: [] } });
 
-            const responses = await Promise.all([...nameRequests, constReq]);
+            const responses = await Promise.all([nameReq, constReq]);
 
             // Merge + deduplicate by grievance ID
             const seen = new Set();
@@ -801,37 +819,41 @@ const Grievances = () => {
         }
     };
 
-    const fetchGrievances = async (cursor = null) => {
+    const fetchGrievances = async (pageNum = 1, sizeOverride = null) => {
         if (!navbarStatus || (allowedNavbarStatuses.length > 0 && !allowedNavbarStatuses.includes(navbarStatus))) {
             setGrievances([]);
-            setPagination({ hasMore: false, nextCursor: null, total: 0 });
+            setPagination({ hasMore: false, nextCursor: null, total: 0, pages: 0 });
             setLoading(false);
             return;
         }
 
         if (navbarStatus === 'reports') {
             setGrievances([]);
-            setPagination({ hasMore: false, nextCursor: null, total: 0 });
+            setPagination({ hasMore: false, nextCursor: null, total: 0, pages: 0 });
             setLoading(false);
             return;
         }
 
-        // Cancel any in-flight request when filters change (not for "load more")
-        if (!cursor && fetchAbortRef.current) {
+        // A new fetch always supersedes whatever's in flight — page nav, filter
+        // change, or refresh all replace the current page rather than appending.
+        if (fetchAbortRef.current) {
             fetchAbortRef.current.abort();
         }
         const abortController = new AbortController();
-        if (!cursor) fetchAbortRef.current = abortController;
+        fetchAbortRef.current = abortController;
 
-        if (cursor) {
-            setLoadingMore(true);
-        } else {
+        setPage(pageNum);
+        if (pageNum === 1) {
             setLoading(true);
+        } else {
+            setLoadingMore(true);
         }
         try {
+            const effectiveSize = sizeOverride ?? pageSize;
             const params = {
                 tab: activeTab === 'fir' ? 'fir' : activeTab,
-                limit: 50,
+                page: pageNum,
+                limit: effectiveSize,
             };
 
             if (navbarStatus && navbarStatus !== 'total' && navbarStatus !== 'reports') {
@@ -846,6 +868,9 @@ const Grievances = () => {
             if (sentimentFilter) params.sentiment = sentimentFilter;
             if (topicFilter) params.grievance_type = mapTopicFilterToApi(topicFilter);
             if (analysisCategoryFilter) params.analysis_category = analysisCategoryFilter;
+            if (departmentFilter) params.department = departmentFilter;
+            if (fakeNewsFlag) params.flag = fakeNewsFlag;
+            if (constituencyFilter) params.location_constituency = constituencyFilter;
             if (locationFilter) {
                 // Keep both keys for compatibility with existing and legacy backend handlers.
                 params.location_city = locationFilter;
@@ -854,7 +879,6 @@ const Grievances = () => {
             if (debouncedSearch) params.search = debouncedSearch;
             if (dateRange.from) params.from = dateRange.from.toISOString();
             if (dateRange.to) params.to = dateRange.to.toISOString();
-            if (cursor) params.cursor = cursor;
 
             const res = await api.get('/grievances', { params, signal: abortController.signal });
             const data = res.data;
@@ -906,16 +930,18 @@ const Grievances = () => {
                 return g;
             });
 
-            if (cursor) {
-                setGrievances(prev => [...prev, ...enrichedRows]);
-            } else {
-                setGrievances(enrichedRows);
-            }
+            setGrievances(enrichedRows);
             setPagination({
                 hasMore: data.pagination?.hasMore || false,
                 nextCursor: data.pagination?.nextCursor || null,
-                total: data.pagination?.total ?? 0
+                total: data.pagination?.total ?? 0,
+                pages: data.pagination?.pages ?? 0
             });
+            // Scroll the results back into view on page navigation — otherwise the
+            // user is left staring at the pagination bar at the bottom of the old page.
+            if (pageNum > 1) {
+                splitPaneRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
         } catch (error) {
             if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return; // aborted — ignore
             toast.error('Failed to load grievances');
@@ -1268,8 +1294,40 @@ const Grievances = () => {
         ));
     };
 
+    const handleDeleteGrievance = async (grievance) => {
+        try {
+            await api.delete(`/grievances/${grievance.id}`);
+            setGrievances(prev => prev.filter(g => g.id !== grievance.id));
+            toast.success('Post deleted');
+        } catch (error) {
+            toast.error(error.response?.data?.message || 'Failed to delete post');
+        }
+    };
+
+    const handleEditGrievanceSentiment = async (grievance, sentiment) => {
+        try {
+            await api.put(`/grievances/${grievance.id}/sentiment`, { sentiment });
+            setGrievances(prev => prev.map(item => (
+                item.id === grievance.id
+                    ? { ...item, analysis: { ...(item.analysis || {}), sentiment, analyzed_at: item.analysis?.analyzed_at || new Date().toISOString() } }
+                    : item
+            )));
+            toast.success('Sentiment updated');
+        } catch (error) {
+            toast.error(error.response?.data?.message || 'Failed to update sentiment');
+        }
+    };
+
     /* ─── Card Actions ─── */
-    const handleAction = (action, { grievance, media, status }) => {
+    const handleAction = (action, { grievance, media, status, sentiment }) => {
+        if (action === 'delete') {
+            handleDeleteGrievance(grievance);
+            return;
+        }
+        if (action === 'edit_sentiment') {
+            handleEditGrievanceSentiment(grievance, sentiment);
+            return;
+        }
         setSelectedGrievance(grievance);
         if (action === 'view') {
             setIsDetailOpen(true);
@@ -1482,6 +1540,32 @@ const Grievances = () => {
         ? (selectedLocationTotal ?? displayedGrievances.length)
         : (pagination.total || displayedGrievances.length);
 
+    /* ─── Pagination derived values ─── */
+    const totalPages = Math.max(1, pagination.pages || Math.ceil((pagination.total || 0) / pageSize) || 1);
+    const rangeStart = displayedGrievances.length ? (page - 1) * pageSize + 1 : 0;
+    const rangeEnd = displayedGrievances.length ? rangeStart + displayedGrievances.length - 1 : 0;
+
+    // Windowed page numbers: first, last, current ± 1, with '…' gaps — keeps the
+    // control usable even when there are hundreds of pages.
+    const pageWindow = useMemo(() => {
+        const delta = 1;
+        const range = [];
+        for (let i = Math.max(1, page - delta); i <= Math.min(totalPages, page + delta); i++) {
+            range.push(i);
+        }
+        const withEdges = [];
+        if (range[0] > 1) {
+            withEdges.push(1);
+            if (range[0] > 2) withEdges.push('…');
+        }
+        withEdges.push(...range);
+        if (range[range.length - 1] < totalPages) {
+            if (range[range.length - 1] < totalPages - 1) withEdges.push('…');
+            withEdges.push(totalPages);
+        }
+        return withEdges;
+    }, [page, totalPages]);
+
     const xSources = sources.filter(s => s.platform === 'x');
     const fbSources = sources.filter(s => s.platform === 'facebook');
 
@@ -1549,10 +1633,12 @@ const Grievances = () => {
                             <div className="flex items-center gap-1.5">
                                 <button
                                     onClick={() => setShowKeywordEditor(v => !v)}
+                                    aria-expanded={showKeywordEditor}
                                     className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg transition-colors border ${showKeywordEditor ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'}`}
                                 >
                                     <Tag className="h-3 w-3" />
-                                    Keywords
+                                    Keywords ({mlaModeKeywords.length})
+                                    <ChevronDown className={`h-3 w-3 transition-transform ${showKeywordEditor ? 'rotate-180' : ''}`} />
                                 </button>
                                 <button
                                     onClick={clearPoliticianMode}
@@ -1564,69 +1650,71 @@ const Grievances = () => {
                             </div>
                         </div>
 
-                        {/* ── Keyword Pills Row ── */}
-                        <div className="px-4 py-2.5 flex flex-wrap items-center gap-1.5">
-                            <span className="text-[10px] font-semibold text-indigo-400 mr-0.5 shrink-0">Filters:</span>
-                            {mlaModeKeywords.map(kw => {
-                                const isDisabled = disabledKeywordIds.has(kw.id);
-                                return (
-                                    <button
-                                        key={kw.id}
-                                        onClick={() => toggleMlaKeyword(kw.id)}
-                                        title={isDisabled ? 'Click to enable' : 'Click to pause'}
-                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-semibold transition-all cursor-pointer select-none ${isDisabled
-                                            ? 'bg-white text-slate-400 border-slate-200 line-through opacity-60'
-                                            : (kwTypeStyle[kw.type] || kwTypeStyle.primary)
-                                            }`}
-                                    >
-                                        {kw.label}
-                                        {!kw.isSystem && (
-                                            <span
-                                                onClick={e => { e.stopPropagation(); removeMlaKeyword(kw.term); }}
-                                                className="ml-0.5 text-[11px] leading-none hover:opacity-60"
-                                            >×</span>
-                                        )}
-                                    </button>
-                                );
-                            })}
-
-                            {/* Inline add-keyword input */}
-                            <div className="inline-flex items-center gap-1">
-                                <input
-                                    type="text"
-                                    value={newKeywordInput}
-                                    onChange={e => setNewKeywordInput(e.target.value)}
-                                    onKeyDown={e => e.key === 'Enter' && addMlaKeyword()}
-                                    placeholder="+ add keyword"
-                                    className="h-[22px] px-2 text-[10px] border border-dashed border-indigo-300 rounded-full outline-none focus:border-indigo-500 bg-transparent w-28 text-indigo-700 placeholder:text-indigo-300"
-                                />
-                                {newKeywordInput.trim() && (
-                                    <button
-                                        onClick={addMlaKeyword}
-                                        className="h-[22px] px-2 text-[10px] bg-emerald-600 text-white rounded-full font-bold hover:bg-emerald-700 transition-colors"
-                                    >
-                                        +
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-
-                        {/* ── Keyword Legend (shown when editor open) ── */}
+                        {/* ── Keyword Dropdown — collapsed by default to save vertical space ── */}
                         {showKeywordEditor && (
-                            <div className="px-4 pb-3 flex flex-wrap items-center gap-3 text-[10px]">
-                                {[
-                                    { type: 'primary', label: 'Name keywords' },
-                                    { type: 'constituency', label: 'Constituency' },
-                                    { type: 'alias', label: 'Known aliases' },
-                                    { type: 'custom', label: 'Your additions' },
-                                ].map(({ type, label }) => (
-                                    <div key={type} className="flex items-center gap-1.5">
-                                        <span className={`inline-block w-2.5 h-2.5 rounded-full ${type === 'primary' ? 'bg-indigo-600' : type === 'constituency' ? 'bg-blue-500' : type === 'alias' ? 'bg-violet-500' : 'bg-emerald-600'}`} />
-                                        <span className="text-slate-500">{label}</span>
+                            <>
+                                <div className="px-4 py-2.5 flex flex-wrap items-center gap-1.5 border-t border-indigo-100">
+                                    <span className="text-[10px] font-semibold text-indigo-400 mr-0.5 shrink-0">Filters:</span>
+                                    {mlaModeKeywords.map(kw => {
+                                        const isDisabled = disabledKeywordIds.has(kw.id);
+                                        return (
+                                            <button
+                                                key={kw.id}
+                                                onClick={() => toggleMlaKeyword(kw.id)}
+                                                title={isDisabled ? 'Click to enable' : 'Click to pause'}
+                                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-semibold transition-all cursor-pointer select-none ${isDisabled
+                                                    ? 'bg-white text-slate-400 border-slate-200 line-through opacity-60'
+                                                    : (kwTypeStyle[kw.type] || kwTypeStyle.primary)
+                                                    }`}
+                                            >
+                                                {kw.label}
+                                                {!kw.isSystem && (
+                                                    <span
+                                                        onClick={e => { e.stopPropagation(); removeMlaKeyword(kw.term); }}
+                                                        className="ml-0.5 text-[11px] leading-none hover:opacity-60"
+                                                    >×</span>
+                                                )}
+                                            </button>
+                                        );
+                                    })}
+
+                                    {/* Inline add-keyword input */}
+                                    <div className="inline-flex items-center gap-1">
+                                        <input
+                                            type="text"
+                                            value={newKeywordInput}
+                                            onChange={e => setNewKeywordInput(e.target.value)}
+                                            onKeyDown={e => e.key === 'Enter' && addMlaKeyword()}
+                                            placeholder="+ add keyword"
+                                            className="h-[22px] px-2 text-[10px] border border-dashed border-indigo-300 rounded-full outline-none focus:border-indigo-500 bg-transparent w-28 text-indigo-700 placeholder:text-indigo-300"
+                                        />
+                                        {newKeywordInput.trim() && (
+                                            <button
+                                                onClick={addMlaKeyword}
+                                                className="h-[22px] px-2 text-[10px] bg-emerald-600 text-white rounded-full font-bold hover:bg-emerald-700 transition-colors"
+                                            >
+                                                +
+                                            </button>
+                                        )}
                                     </div>
-                                ))}
-                                <span className="text-slate-400 ml-2">· Click any keyword to pause/resume · Strikethrough = paused</span>
-                            </div>
+                                </div>
+
+                                {/* ── Keyword Legend ── */}
+                                <div className="px-4 pb-3 flex flex-wrap items-center gap-3 text-[10px]">
+                                    {[
+                                        { type: 'primary', label: 'Name keywords' },
+                                        { type: 'constituency', label: 'Constituency' },
+                                        { type: 'alias', label: 'Known aliases' },
+                                        { type: 'custom', label: 'Your additions' },
+                                    ].map(({ type, label }) => (
+                                        <div key={type} className="flex items-center gap-1.5">
+                                            <span className={`inline-block w-2.5 h-2.5 rounded-full ${type === 'primary' ? 'bg-indigo-600' : type === 'constituency' ? 'bg-blue-500' : type === 'alias' ? 'bg-violet-500' : 'bg-emerald-600'}`} />
+                                            <span className="text-slate-500">{label}</span>
+                                        </div>
+                                    ))}
+                                    <span className="text-slate-400 ml-2">· Click any keyword to pause/resume · Strikethrough = paused</span>
+                                </div>
+                            </>
                         )}
 
                         {/* ── Isolation mode footer ── */}
@@ -1721,8 +1809,13 @@ const Grievances = () => {
                     <Button variant="outline" size="sm" onClick={() => { fetchGrievances(); fetchDashboardStats(); fetchLocationStats(); }} className="gap-2">
                         <RefreshCw className="h-4 w-4" /> Refresh
                     </Button>
+                    <Button variant="outline" size="sm" onClick={() => setShowEngagersDialog(true)} className="gap-2">
+                        <Users className="h-4 w-4" /> Frequent Engagers
+                    </Button>
                 </div>
             </div>
+
+            <FrequentEngagersDialog open={showEngagersDialog} onOpenChange={setShowEngagersDialog} />
 
             {/* ─── Top Navigation Bar with Filters ─── */}
             <GrievanceTopNavbar
@@ -1741,12 +1834,32 @@ const Grievances = () => {
                 locationFilter={locationFilter}
                 onLocationChange={setLocationFilter}
                 uniqueLocations={uniqueLocations}
+                dateRange={dateRange}
+                onDateRangeChange={setDateRange}
             />
 
             {/* Dashboard Filter Banner */}
-            {(sentimentFilter || selectedHandle || topicFilter || analysisCategoryFilter || locationFilter) && (
+            {(sentimentFilter || selectedHandle || topicFilter || analysisCategoryFilter || locationFilter || departmentFilter || fakeNewsFlag || constituencyFilter) && (
                 <div className="mx-2 mt-2 flex items-center gap-2 px-3 py-2 bg-violet-50 border border-violet-200 rounded-lg text-xs">
                     <span className="text-violet-700 font-medium">Filtered by:</span>
+                    {fakeNewsFlag === 'fake_news' && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-semibold text-[11px]">
+                            🚩 Fake News (flagged)
+                            <button type="button" onClick={() => setFakeNewsFlag(null)} className="ml-0.5 hover:opacity-70">&times;</button>
+                        </span>
+                    )}
+                    {departmentFilter && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 font-semibold text-[11px]">
+                            🏢 {departmentFilter}
+                            <button type="button" onClick={() => setDepartmentFilter(null)} className="ml-0.5 hover:opacity-70">&times;</button>
+                        </span>
+                    )}
+                    {constituencyFilter && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold text-[11px]">
+                            🏛️ {constituencyFilter}
+                            <button type="button" onClick={() => setConstituencyFilter(null)} className="ml-0.5 hover:opacity-70">&times;</button>
+                        </span>
+                    )}
                     {sentimentFilter && (
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-semibold text-[11px] ${sentimentFilter === 'negative' ? 'bg-red-100 text-red-700' :
                             sentimentFilter === 'positive' ? 'bg-emerald-100 text-emerald-700' :
@@ -1781,7 +1894,7 @@ const Grievances = () => {
                     )}
                     <button
                         type="button"
-                        onClick={() => { setSentimentFilter(null); setSelectedHandle(null); setTopicFilter(null); setAnalysisCategoryFilter(null); setLocationFilter(null); }}
+                        onClick={() => { setSentimentFilter(null); setSelectedHandle(null); setTopicFilter(null); setAnalysisCategoryFilter(null); setLocationFilter(null); setDepartmentFilter(null); setFakeNewsFlag(null); setConstituencyFilter(null); }}
                         className="ml-auto text-violet-600 hover:text-violet-800 font-medium"
                     >
                         Clear all
@@ -1964,44 +2077,92 @@ const Grievances = () => {
                                     )
                                 ) : (
                                     <div className="space-y-4">
-                                        {/* Results summary */}
+                                        {/* Results summary + page-size selector */}
                                         <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
                                             <span>
                                                 {politicianContext
                                                     ? `${displayedGrievances.length} posts for ${politicianContext.name}`
-                                                    : `Showing ${displayedGrievances.length}${effectiveTotal ? ` of ${effectiveTotal}` : ''} results`}
+                                                    : displayedGrievances.length
+                                                        ? `Showing ${rangeStart}–${rangeEnd}${effectiveTotal ? ` of ${effectiveTotal}` : ''} results`
+                                                        : 'No results'}
                                             </span>
+                                            {!politicianContext && (
+                                                <label className="flex items-center gap-1.5 text-[11px]">
+                                                    Per page
+                                                    <select
+                                                        value={pageSize}
+                                                        onChange={(e) => {
+                                                            const v = Number(e.target.value);
+                                                            setPageSize(v);
+                                                            fetchGrievances(1, v);
+                                                        }}
+                                                        className="border border-slate-200 rounded-md px-1.5 py-0.5 text-[11px] bg-white"
+                                                    >
+                                                        {[20, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+                                                    </select>
+                                                </label>
+                                            )}
                                         </div>
 
-                                        {displayedGrievances.map((grievance) => (
-                                            <GrievanceCard
-                                                key={grievance.id}
-                                                grievance={grievance}
-                                                onAction={handleAction}
-                                                getProxiedMediaUrl={getProxiedMediaUrl}
-                                                downloadState={downloadStates[grievance.id]}
-                                                isSelected={selectedGrievance?.id === grievance.id && window.innerWidth >= 1280}
-                                                isActioned={actionedGrievanceIds.includes(grievance.id)}
-                                                compact={true}
-                                            />
-                                        ))}
+                                        {/* Masonry grid — CSS columns handle variable card heights natively */}
+                                        <div className="columns-1 md:columns-2 2xl:columns-3 gap-4">
+                                            {displayedGrievances.map((grievance, i) => (
+                                                <div key={grievance.id} className="break-inside-avoid-column mb-4">
+                                                    <GrievanceCard
+                                                        grievance={grievance}
+                                                        onAction={handleAction}
+                                                        getProxiedMediaUrl={getProxiedMediaUrl}
+                                                        downloadState={downloadStates[grievance.id]}
+                                                        isSelected={selectedGrievance?.id === grievance.id && window.innerWidth >= 1280}
+                                                        isActioned={actionedGrievanceIds.includes(grievance.id)}
+                                                        compact={true}
+                                                        enableSpecialActions
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
 
-                                        {/* Load More */}
-                                        {pagination.hasMore && (
-                                            <div className="flex justify-center py-4">
+                                        {/* Pagination */}
+                                        {!politicianContext && totalPages > 1 && (
+                                            <div className="flex items-center justify-center gap-1 py-4">
                                                 <Button
                                                     variant="outline"
-                                                    onClick={() => fetchGrievances(pagination.nextCursor)}
-                                                    disabled={loadingMore}
-                                                    className="gap-2"
+                                                    size="sm"
+                                                    onClick={() => fetchGrievances(page - 1)}
+                                                    disabled={page <= 1 || loadingMore}
+                                                    className="gap-1 px-2"
                                                 >
-                                                    {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronDown className="h-4 w-4" />}
-                                                    Load More
+                                                    <ChevronLeft className="h-4 w-4" />
+                                                </Button>
+
+                                                {pageWindow.map((p, i) => (
+                                                    p === '…' ? (
+                                                        <span key={`ellipsis_${i}`} className="px-1.5 text-xs text-muted-foreground select-none">…</span>
+                                                    ) : (
+                                                        <Button
+                                                            key={p}
+                                                            variant={p === page ? 'default' : 'outline'}
+                                                            size="sm"
+                                                            onClick={() => p !== page && fetchGrievances(p)}
+                                                            disabled={loadingMore}
+                                                            className="min-w-[32px] px-2"
+                                                        >
+                                                            {p}
+                                                        </Button>
+                                                    )
+                                                ))}
+
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => fetchGrievances(page + 1)}
+                                                    disabled={(page >= totalPages && !pagination.hasMore) || loadingMore}
+                                                    className="gap-1 px-2"
+                                                >
+                                                    {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronRight className="h-4 w-4" />}
                                                 </Button>
                                             </div>
                                         )}
-
-
                                     </div>
                                 )}
                             </div>

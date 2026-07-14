@@ -23,6 +23,7 @@ import Sources from './Sources';
 import AccessManagement from './AccessManagement';
 import Transcribe from './Transcribe';
 import PolicyManager from '../components/PolicyManager';
+import IntelligenceDashboard from './IntelligenceDashboard';
 import { Badge } from '../components/ui/badge';
 import RichTextEditor from '../components/RichTextEditor';
 import { cn } from '../lib/utils';
@@ -153,7 +154,7 @@ const Settings = () => {
   const [thresholdsLoading, setThresholdsLoading] = useState(false);
 
 
-  const validTabs = ['general', 'sources', 'keywords', 'templates', 'access', 'policies', 'transcribe'];
+  const validTabs = ['general', 'sources', 'keywords', 'templates', 'access', 'policies', 'transcribe', 'reports'];
   const tabFromUrl = searchParams.get('tab');
   const initialTab = validTabs.includes(tabFromUrl) ? tabFromUrl : 'general';
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -618,6 +619,7 @@ const Settings = () => {
           <TabsTrigger value="access" className="text-xs px-5 py-2 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md data-[state=active]:font-semibold">Access Management</TabsTrigger>
           <TabsTrigger value="policies" className="text-xs px-5 py-2 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md data-[state=active]:font-semibold">Policy Manager</TabsTrigger>
           <TabsTrigger value="transcribe" className="text-xs px-5 py-2 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md data-[state=active]:font-semibold">Transcribe</TabsTrigger>
+          <TabsTrigger value="reports" className="text-xs px-5 py-2 rounded-md data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md data-[state=active]:font-semibold">Download Reports</TabsTrigger>
         </TabsList>
 
       {/* Unsaved changes dialog */}
@@ -1302,6 +1304,11 @@ const Settings = () => {
         {/* ═══ Transcribe Tab ═══ */}
         <TabsContent value="transcribe" className="mt-2">
           <Transcribe />
+        </TabsContent>
+
+        {/* ═══ Download Reports Tab ═══ */}
+        <TabsContent value="reports" className="mt-2 -mx-4 md:-mx-6 lg:-mx-8">
+          <IntelligenceDashboard />
         </TabsContent>
 
         {/* Template Preview Dialog */}

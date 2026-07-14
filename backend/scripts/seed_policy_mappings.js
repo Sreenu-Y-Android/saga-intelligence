@@ -1,6 +1,9 @@
 /**
- * One-time script: seed 12 PolicyMapping categories into MongoDB.
- * Run: node scripts/seed_policy_mappings.js
+ * Seed PolicyMapping categories (BNS legal sections + platform-policy mappings)
+ * into MongoDB.
+ *
+ * Run:  node scripts/seed_policy_mappings.js
+ *       node scripts/seed_policy_mappings.js --force   (overwrite existing)
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
@@ -248,16 +251,25 @@ const categories = [
 ];
 
 async function seed() {
+  const force = process.argv.slice(2).includes('--force');
+
   try {
     await mongoose.connect(process.env.MONGODB_URI, { dbName: process.env.DB_NAME });
     console.log('Connected to MongoDB');
 
-    let inserted = 0, skipped = 0;
+    let inserted = 0, updated = 0, skipped = 0;
     for (const cat of categories) {
-      const exists = await PolicyMapping.findOne({ category_id: cat.category_id });
-      if (exists) {
-        console.log(`  SKIP  ${cat.category_id} (already exists)`);
-        skipped++;
+      const existing = await PolicyMapping.findOne({ category_id: cat.category_id });
+      if (existing) {
+        if (force) {
+          existing.set(cat);
+          await existing.save();
+          console.log(`  UPDATE ${cat.category_id}`);
+          updated++;
+        } else {
+          console.log(`  SKIP   ${cat.category_id} (already exists)`);
+          skipped++;
+        }
       } else {
         await PolicyMapping.create(cat);
         console.log(`  INSERT ${cat.category_id}`);
@@ -265,7 +277,7 @@ async function seed() {
       }
     }
 
-    console.log(`\nDone — inserted: ${inserted}, skipped: ${skipped}`);
+    console.log(`\nDone — inserted: ${inserted}, updated: ${updated}, skipped: ${skipped}`);
     process.exit(0);
   } catch (err) {
     console.error('Seed failed:', err.message);

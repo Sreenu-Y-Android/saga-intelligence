@@ -38,7 +38,9 @@ const formatLeaderLine = (l) =>
 
 const buildOurSideBlock = () => {
   const lines = OUR_LEADERS.map(formatLeaderLine).join('\n');
+  const aliasStr = (OUR_PARTY.aliases || []).filter((a) => a !== OUR_PARTY.name).join(', ');
   return `OUR PARTY (CLIENT): ${OUR_PARTY.full_name} (${OUR_PARTY.name}) — ${OUR_PARTY.role} party in ${OUR_PARTY.state}.
+Also referred to in posts as: ${aliasStr || OUR_PARTY.name}. Treat ANY of these names as OUR side, identical to naming the party in full.
 Chief: ${OUR_PARTY.chief}.
 Leaders (${OUR_LEADERS.length}):
 ${lines}`;
@@ -47,7 +49,9 @@ ${lines}`;
 const buildOppositionBlock = () => {
   const partyChunks = OPPOSITION_PARTIES.map((p) => {
     const lines = p.leaders.map(formatLeaderLine).join('\n');
-    return `${p.name} (${p.full_name}):\n${lines}`;
+    const aliasStr = (p.aliases || []).filter((a) => a !== p.name).join(', ');
+    const aliasNote = aliasStr ? ` — also referred to in posts as: ${aliasStr}. Treat ANY of these names as this party, identical to naming it in full.` : '';
+    return `${p.name} (${p.full_name})${aliasNote}:\n${lines}`;
   }).join('\n\n');
   return `OPPOSITION PARTIES (NOT our client):\n${partyChunks}`;
 };
@@ -148,6 +152,13 @@ D6. Misinformation / fake news ABOUT our side → NEGATIVE.
 D7. Threats, hate speech, communal incitement targeting our side or our
     voter base → NEGATIVE with high risk_score (70+).
 
+D8. Party-only mentions with NO individual leader named ("TRS govt failed",
+    "Congress did nothing", "BRS will win next time") still count as OUR side
+    or OPPOSITION for the matrix in STEP 3 — a party name IS the subject, it
+    does not need an attached leader name. This includes former/alternate
+    party names (e.g. "TRS" = "BRS", same party, renamed in 2022) — apply
+    the matrix exactly as if the leader-level party name had been used.
+
 ════════════════════════
 5. CATEGORY (pick exactly one)
 ════════════════════════
@@ -204,6 +215,14 @@ EX7 "RCB will win IPL this year 🔥"
 
 EX8 "Revanth Reddy is destroying Telangana, worst CM ever"
    → OUR side, Criticism → negative, Political_Attack, Political Criticism, score 55
+
+EX9 "TRS 10 years looted Telangana, good riddance"
+   → OPPOSITION (party-only mention, "TRS" = "BRS", D8), Criticism → positive,
+     Political_Attack, Political Criticism, score 10
+
+EX10 "Congress govt has done nothing in Telangana, total failure"
+   → OUR side (party-only mention, D8), Criticism → negative, Political_Attack,
+     Political Criticism, score 45
 
 ════════════════════════
 9. STRICT JSON OUTPUT (no markdown, no prose)

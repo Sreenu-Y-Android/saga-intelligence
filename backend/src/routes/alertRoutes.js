@@ -4,6 +4,8 @@ const {
     getAlerts,
     getAlertById,
     updateAlert,
+    updateAlertSentiment,
+    deleteAlert,
     getAlertStats,
     getAlertSummary,
     getDashboardStats,
@@ -55,6 +57,8 @@ router.put('/:id', protect, updateAlert);
 router.post('/similar', protect, getSimilarEscalatedAlerts);
 router.get('/:id', getAlertById);
 router.put('/read', requireFeatureAccess('/alerts', () => 'active'), markAllAsRead);
+router.put('/:id/sentiment', updateAlertSentiment);
+router.delete('/:id', deleteAlert);
 router.put('/:id', requireFeatureAccess('/alerts', resolveAlertStatusFromBody, { allowWhenMissing: true }), updateAlert);
 
 module.exports = router;
