@@ -47,6 +47,15 @@ const DarkWebSearch = lazy(() => import('./pages/DarkWebSearch'));
 const PublicWebArticles = lazy(() => import('./pages/PublicWebArticles'));
 const EventsReport = lazy(() => import('./pages/EventsReport'));
 const TelanganaMap = lazy(() => import('./pages/TelanganaMap'));
+
+// ── Geographic & constituency intelligence ────────────────────────
+const GeographicIntelligence = lazy(() => import('./pages/GeographicIntelligence'));
+const GeographicIntelligenceDistrict = lazy(() => import('./pages/GeographicIntelligenceDistrict'));
+const CommandCentre = lazy(() => import('./pages/AndhraPradeshMap'));
+const MlaProfile = lazy(() => import('./pages/MlaProfile'));
+const ConstituencyLogins = lazy(() => import('./pages/ConstituencyLogins'));
+const SearchAnalytics = lazy(() => import('./pages/SearchAnalytics'));
+const UnrestPredictor = lazy(() => import('./pages/UnrestPredictor'));
 // Loading fallback
 const PageLoader = () => (
   <div className="flex items-center justify-center min-h-[400px]">
@@ -85,6 +94,17 @@ function App() {
                     <Route index element={<Navigate to="/dashboard" replace />} />
                     <Route path="dashboard" element={<Dashboard />} />
                     <Route path="telangana-map" element={<TelanganaMap />} />
+                    {/* Executive command centre — the ported AP.Blura.Saga map dashboard */}
+                    <Route path="command-centre" element={<CommandCentre />} />
+                    <Route path="geographic-intelligence" element={<GeographicIntelligence />} />
+                    <Route path="geographic-intelligence/:districtKey" element={<GeographicIntelligenceDistrict />} />
+                    <Route path="mla/:constituency" element={<MlaProfile />} />
+                    <Route path="constituency-logins" element={<ConstituencyLogins />} />
+                    <Route path="search-analytics" element={<SearchAnalytics />} />
+                    <Route path="unrest-predictor" element={<UnrestPredictor />} />
+                    {/* AP-era paths kept so old bookmarks/links do not 404 */}
+                    <Route path="andhra-pradesh-map" element={<Navigate to="/command-centre" replace />} />
+                    <Route path="war-room" element={<Navigate to="/command-centre" replace />} />
                     <Route path="sources" element={<Sources />} />
                     <Route path="content" element={<ContentFeed />} />
                     <Route path="youtube-monitor" element={<YouTubeMonitor />} />

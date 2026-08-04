@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const axios = require('axios');
 const cors = require('cors');
 const connectDB = require('./config/db');
 const { startMonitoring } = require('./services/monitorService');
@@ -73,6 +74,38 @@ app.use('/api/telegram', require('./routes/telegramRoutes'));
 app.use('/api/master-calendar', require('./routes/masterCalendarRoutes'));
 app.use('/api/media-transcribe', require('./routes/transcribeRoutes'));
 
+// ── Intelligence & geographic modules ──────────────────────────────
+app.use('/api/admin', require('./routes/profileSettingsRoutes'));
+app.use('/api/unrest', require('./routes/unrest.routes'));
+app.use('/api/news', require('./routes/newsRoutes'));
+app.use('/api/intelligence-reports', require('./routes/intelligenceReportRoutes'));
+app.use('/api/search-trends', require('./routes/searchTrends'));
+app.use('/api/constituency-intel', require('./routes/constituencyIntelligenceRoutes'));
+app.use('/api/geo-intel', require('./routes/geoIntelRoutes'));
+app.use('/api/dashboard', require('./routes/apDashboardRoutes'));
+app.use('/api/voter-profiles', require('./routes/voterProfileRoutes'));
+app.use('/api/web-articles', require('./routes/webArticleRoutes'));
+
+// Proxy for the Python location-extraction service, so the browser talks to
+// one origin and we avoid a mixed-content block behind HTTPS.
+app.post('/api/location-extraction/:path*', async (req, res) => {
+  try {
+    const locationServiceBaseUrl = String(process.env.LOCATION_SERVICE_URL || 'http://localhost:5002')
+      .trim()
+      .replace(/\/+$/, '');
+    const query = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+    const targetUrl = `${locationServiceBaseUrl}/api/${req.params.path}${query}`;
+    const response = await axios({
+      method: 'post',
+      url: targetUrl,
+      data: req.body,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
 
 app.get('/api/verify-v2', (req, res) => res.json({ status: 'ok', version: 'v2-diagnostic', timestamp: new Date() }));
 app.get('/api/ping', (req, res) => res.json({ status: 'ok', msg: 'Deepfake integration check' }));

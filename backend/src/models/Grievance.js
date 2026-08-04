@@ -304,11 +304,22 @@ const grievanceSchema = new mongoose.Schema({
   },
   // AI Analysis (full pipeline results)
   analysis: {
-    sentiment: { type: String, enum: ['positive', 'negative', 'neutral'] },
+    // 'neutral' is the legacy label for 'moderate'. Both are accepted because
+    // ~7.3k existing documents were written with 'neutral', and narrowing the
+    // enum would make every one of them fail validation on the next save.
+    // New writes should use 'moderate'; scripts/migrate_sentiment_labels.js
+    // converts the historic rows.
+    sentiment: { type: String, enum: ['positive', 'negative', 'moderate', 'neutral'] },
     target_party: { type: String },
     stance: { type: String },
     risk_level: { type: String, enum: ['low', 'medium', 'high', 'critical'] },
     risk_score: { type: Number, default: 0 },
+    // Severity is a semantic alias of risk_level for UI / map colouring.
+    // Kept distinct so future tuning can decouple "risk to the leadership"
+    // from "severity to the citizen".
+    severity: { type: String, enum: ['low', 'medium', 'high', 'critical'] },
+    // Government department best suited to act on this grievance.
+    concerned_department: { type: String, default: null },
     category: { type: String },
     grievance_type: { type: String },
     grievance_topic_reasoning: { type: String },
@@ -321,19 +332,61 @@ const grievanceSchema = new mongoose.Schema({
     highlights: [{ type: String }],
     llm_analysis: { type: mongoose.Schema.Types.Mixed },
     forensic_results: { type: mongoose.Schema.Types.Mixed },
-    analyzed_at: { type: Date }
+    video_transcript: { type: String },
+    analyzed_at: { type: Date },
+    // ── Target-aware political intelligence (client-relative) ──────
+    // Produced by politicalContextService → politicalSentimentService.
+    // `target_sentiment` is sentiment RELATIVE TO the CM/INC leadership;
+    // `generic_sentiment` is the raw emotional tone of the text.
+    target_sentiment: { type: String, enum: ['positive', 'negative', 'moderate'] },
+    generic_sentiment: { type: String, enum: ['positive', 'negative', 'moderate'] },
+    target_entity: { type: String },
+    target_entity_canonical: { type: String },
+    target_relevance: { type: Number, default: 0 },
+    relevance_score: { type: Number, default: 0 },
+    political_stance: {
+      type: String,
+      enum: ['pro_target', 'anti_target', 'pro_target_indirect', 'anti_target_indirect', 'neutral', 'unrelated']
+    },
+    beneficiary: { type: String, enum: ['ours', 'opposition', 'none'] },
+    attack_target: { type: String },
+    narrative_direction: { type: String },
+    political_alignment: { type: String },
+    political_mode: { type: String },
+    mentioned_entities: [{ type: mongoose.Schema.Types.Mixed }],
+    toxicity_level: { type: String, enum: ['none', 'low', 'medium', 'high'] },
+    hate_speech: { type: Boolean, default: false },
+    propaganda_probability: { type: Number, default: 0 },
+    sarcasm_detected: { type: Boolean, default: false },
+    emotional_intensity: { type: Number, default: 0 },
+    misinformation_probability: { type: Number, default: 0 },
+    language_detected: { type: String },
+    political_reasoning: { type: String },
+    political_provider: { type: String }
   },
   // Detected location from tweet text/user profile/hashtags
   detected_location: {
+    location_found: { type: Boolean, default: false },
     city: { type: String },
     district: { type: String },
     constituency: { type: String },
+    lok_sabha: { type: String },
     keyword_matched: { type: String },
+    matched_token: { type: String },
+    match_source: { type: String },
     lat: { type: Number },
     lng: { type: Number },
-    confidence: { type: String },
-    source: { type: String }
+    // Was a String in the legacy shape ('high'/'low'); the classifier now
+    // emits a 0..1 number. Mixed accepts both so old documents still load.
+    confidence: { type: mongoose.Schema.Types.Mixed },
+    source: { type: String },
+    reasoning: { type: String },
+    // Confidence-gated auto-assign vs manual review.
+    auto_assigned: { type: Boolean, default: false },
+    manual_review_required: { type: Boolean, default: false }
   },
+  // Resolved routing fan-out (set by constituencyMasterService.resolveRouting)
+  routing_targets: { type: mongoose.Schema.Types.Mixed, default: null },
   // Persons (MPs, MLAs, CM, opposition leaders) identified in the content or via tagging.
   // Used by:
   //   - Grievance handle filter: a post matches a leader if they're identified here,
@@ -407,6 +460,17 @@ grievanceSchema.index({ 'suggestion.unique_code': 1 }, { sparse: true });
 grievanceSchema.index({ 'detected_location.district': 1 }, { sparse: true });
 grievanceSchema.index({ 'detected_location.constituency': 1 }, { sparse: true });
 grievanceSchema.index({ 'detected_location.city': 1 }, { sparse: true });
+// Compound indexes matching getLocationStats' $match (is_active + location present)
+grievanceSchema.index({ is_active: 1, 'detected_location.city': 1 }, { sparse: true });
+grievanceSchema.index({ is_active: 1, 'detected_location.district': 1 }, { sparse: true });
+grievanceSchema.index({ is_active: 1, 'detected_location.constituency': 1 }, { sparse: true });
+// Sentiment $group during list fetch — speeds up the pill-count aggregation
+grievanceSchema.index({ is_active: 1, 'analysis.sentiment': 1 });
+// Geographic Intelligence: date-filtered + sentiment-filtered district/city rollups
+grievanceSchema.index({ is_active: 1, 'detected_location.district': 1, post_date: -1 });
+grievanceSchema.index({ is_active: 1, 'detected_location.city': 1, post_date: -1 });
+grievanceSchema.index({ is_active: 1, 'detected_location.district': 1, 'analysis.sentiment': 1, post_date: -1 });
+grievanceSchema.index({ is_active: 1, 'detected_location.city': 1, 'analysis.sentiment': 1, post_date: -1 });
 
 // Virtual for generating report number
 grievanceSchema.methods.generateReportNumber = async function () {

@@ -1,0 +1,155 @@
+{
+  "adilabad": [
+    "ADILABAD",
+    "ASIFABAD (ST)",
+    "BOATH (ST)",
+    "KHANAPUR (ST)",
+    "MUDHOLE",
+    "NIRMAL",
+    "SIRPUR"
+  ],
+  "peddapalle": [
+    "BELLAMPALLE (SC)",
+    "CHENNUR (SC)",
+    "DHARMAPURI (SC)",
+    "MANCHERIAL",
+    "MANTHANI",
+    "PEDDAPALLE",
+    "RAMAGUNDAM"
+  ],
+  "nizamabad": [
+    "ARMUR",
+    "BALKONDA",
+    "BODHAN",
+    "JAGTIAL",
+    "KORATLA",
+    "NIZAMABAD (RURAL)",
+    "NIZAMABAD (URBAN)"
+  ],
+  "karimnagar": [
+    "CHOPPADANDI (SC)",
+    "HUSNABAD",
+    "HUZURABAD",
+    "KARIMNAGAR",
+    "MANAKONDUR (SC)",
+    "SIRCILLA",
+    "VEMULAWADA"
+  ],
+  "zahirabad": [
+    "ANDOLE (SC)",
+    "BANSWADA",
+    "JUKKAL (SC)",
+    "KAMAREDDY",
+    "NARAYANKHED",
+    "YELLAREDDY",
+    "ZAHIRABAD (SC)"
+  ],
+  "mahabubabad": [
+    "BHADRACHALAM (ST)",
+    "DORNAKAL (ST)",
+    "MAHABUBABAD (ST)",
+    "MULUG (ST)",
+    "NARSAMPET",
+    "PINAPAKA (ST)",
+    "YELLANDU (ST)"
+  ],
+  "warangal": [
+    "BHUPALPALLE",
+    "GHANPUR (STATION) (SC)",
+    "PALAKURTHI",
+    "PARKAL",
+    "WARADHANAPET (SC)",
+    "WARANGAL EAST",
+    "WARANGAL WEST"
+  ],
+  "medak": [
+    "DUBBAK",
+    "GAJWEL",
+    "MEDAK",
+    "NARSAPUR",
+    "PATANCHERU",
+    "SANGAREDDY",
+    "SIDDIPET"
+  ],
+  "bhongir": [
+    "ALAIR",
+    "BHONGIR",
+    "IBRAHIMPATNAM",
+    "JANGOAN",
+    "MUNUGODE",
+    "NAKREKAL (SC)",
+    "THUNGATHURTHI (SC)"
+  ],
+  "khammam": [
+    "ASWARAOPETA (ST)",
+    "KHAMMAM",
+    "KOTHAGUDEM",
+    "MADHIRA (SC)",
+    "PALAIR",
+    "SATHUPALLE (SC)",
+    "WYRA (ST)"
+  ],
+  "malkajgiri": [
+    "KUKATPALLE",
+    "LAL BAHADUR NAGAR",
+    "MALKAJGIRI",
+    "MEDCHAL",
+    "QUTHBULLAPUR",
+    "SECUNDERABAD CANTT. (SC",
+    "UPPAL"
+  ],
+  "chevella": [
+    "CHEVELLA (SC)",
+    "MAHESWARAM",
+    "PARGI",
+    "RAJENDRANAGAR",
+    "SERILINGAMPALLY",
+    "TANDUR",
+    "VICARABAD (SC)"
+  ],
+  "secunderabad": [
+    "AMBERPET",
+    "JUBILEE HILLS",
+    "KHAIRATABAD",
+    "MUSHEERABAD",
+    "NAMPALLY",
+    "SANATHNAGAR",
+    "SECUNDERABAD"
+  ],
+  "hyderabad": [
+    "BAHADURPURA",
+    "CHANDRAYANGUTTA",
+    "CHARMINAR",
+    "GOSHAMAHAL",
+    "KARWAN",
+    "MALAKPET",
+    "YAKUTPURA"
+  ],
+  "nalgonda": [
+    "DEVARAKONDA (ST)",
+    "HUZURNAGAR",
+    "KODAD",
+    "MIRYALAGUDA",
+    "NAGARJUNA SAGAR",
+    "NALGONDA",
+    "SURYAPET"
+  ],
+  "mahbubnagar": [
+    "DEVARKADRA",
+    "JADCHERLA",
+    "KODANGAL",
+    "MAHBUBNAGAR",
+    "MAKTHAL",
+    "NARAYANPET",
+    "SHADNAGAR"
+  ],
+  "nagarkurnool": [
+    "ACHAMPET (SC)",
+    "ALAMPUR (SC)",
+    "GADWAL",
+    "KALWAKURTHY",
+    "KOLLAPUR",
+    "NAGARKURNOOL",
+    "WANAPARTHY"
+  ]
+}
