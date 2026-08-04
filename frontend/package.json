@@ -79,7 +79,8 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build",
-    "test": "craco test"
+    "test": "craco test",
+    "build:districts": "node scripts/build-district-geojson.js"
   },
   "browserslist": {
     "production": [
@@ -104,6 +105,7 @@
     "eslint-plugin-react": "7.37.4",
     "eslint-plugin-react-hooks": "5.2.0",
     "globals": "15.15.0",
+    "mapshaper": "^0.7.27",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17"
   },

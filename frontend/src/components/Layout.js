@@ -6,7 +6,8 @@ import { useRbac } from '../contexts/RbacContext';
 import AccessDenied from './AccessDenied';
 import {
   Shield, LayoutDashboard, Rss, AlertTriangle, BarChart3,
-  Settings, FileText, LogOut, Menu, X, Moon, Sun, ChevronRight, HelpCircle, Youtube, Twitter, Facebook, Instagram, Globe, CalendarDays, BellOff, MessageSquare, PhoneCall, Monitor, UserSearch, Scan, Search, Wrench
+  Settings, FileText, LogOut, Menu, X, Moon, Sun, ChevronRight, HelpCircle, Youtube, Twitter, Facebook, Instagram, Globe, CalendarDays, BellOff, MessageSquare, PhoneCall, Monitor, UserSearch, Scan, Search, Wrench,
+  Map, MapPin, Newspaper, TrendingUp, Activity
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { toast } from 'sonner';
@@ -78,9 +79,18 @@ const Layout = () => {
     //{ name: 'X Monitor', href: '/x-monitor', icon: Twitter },
     //{ name: 'Facebook Monitor', href: '/facebook-monitor', icon: Facebook },
     //{ name: 'Instagram Monitor', href: '/instagram-monitor', icon: Instagram },
+    // ── Ported from AP.Blura.Saga ────────────────────────────────
+    { name: 'Command Centre', href: '/command-centre', icon: Map },
+    { name: 'Geo Intel', href: '/geographic-intelligence', icon: MapPin },
+    { name: 'Web Articles', href: '/public-web-articles', icon: Newspaper },
+    { name: 'Reports', href: '/intelligence-dashboard', icon: BarChart3 },
+    // ─────────────────────────────────────────────────────────────
     { name: 'Events', href: '/events', icon: CalendarDays },
     //{ name: 'Global Search', href: '/global-search', icon: Globe },
     { name: 'Analysis Tools', href: '/analysis-tools', icon: Wrench },
+    //{ name: 'Search Analytics', href: '/search-analytics', icon: TrendingUp },
+    //{ name: 'Unrest Predictor', href: '/unrest-predictor', icon: Activity },
+    //{ name: 'Constituency Logins', href: '/constituency-logins', icon: UserSearch, roles: ['superadmin'] },
     //{ name: 'Intelligence', href: '/intelligence-dashboard', icon: BarChart3 },
     //{ name: 'Profile', href: '/person-of-interest', icon: UserSearch },
     //{ name: 'Policy Manager', href: '/policies', icon: Shield },
