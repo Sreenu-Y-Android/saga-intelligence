@@ -35,8 +35,7 @@ const loadGeo = (sources) => {
           ...f,
           properties: { ...f.properties, __name: getFeatureName(f.properties), __state: getStateName(f.properties) },
         }));
-        const stateOnly = normalized.filter((f) => normalize(f.properties.__state) === 'telangana');
-        return { ...parsed, features: stateOnly.length ? stateOnly : normalized };
+        return { ...parsed, features: normalized };
       } catch (_e) { /* try next source */ }
     }
     return null;
@@ -45,7 +44,7 @@ const loadGeo = (sources) => {
   return promise;
 };
 
-const FeaturePath = memo(function FeaturePath({ d, fill, isHover, isSelected, strokeWidth, ...rest }) {
+const FeaturePath = memo(function FeaturePath({ d, fill, isHover, isSelected, strokeWidth, name, ...rest }) {
   return (
     <path
       d={d}
@@ -53,8 +52,11 @@ const FeaturePath = memo(function FeaturePath({ d, fill, isHover, isSelected, st
       stroke={isSelected ? '#1e293b' : '#ffffff'}
       strokeWidth={isSelected ? strokeWidth * 2.5 : strokeWidth}
       opacity={isHover ? 1 : 0.95}
-      className="cursor-pointer transition-opacity duration-100"
+      className="cursor-pointer transition-opacity duration-100 outline-none focus-visible:stroke-yellow-500"
       vectorEffect="non-scaling-stroke"
+      role="button"
+      tabIndex={0}
+      aria-label={name}
       {...rest}
     />
   );
@@ -96,15 +98,26 @@ const GeoChoropleth = ({
     return { path: geoPath().projection(projection), features: geo.features };
   }, [geo]);
 
-  const featureData = useMemo(() => {
+  // Geometry (path projection) is invariant across data updates — only
+  // recomputed when the source features/projection change. Color/entry is
+  // split into its own memo so a data-only change (e.g. every ~700ms
+  // Historical Playback frame tick) doesn't re-run the expensive d3 path()
+  // projection for all ~26 features, only the cheap color lookup.
+  const geometryData = useMemo(() => {
     if (!path) return [];
     return features.map((f) => {
       const name = f.properties.__name;
       const key = normalize(name);
-      const entry = dataByKey[key] || null;
-      return { key, name, d: path(f), entry, fill: colorFor(entry) || emptyColor };
+      return { key, name, d: path(f) };
     });
-  }, [features, path, dataByKey, colorFor, emptyColor]);
+  }, [features, path]);
+
+  const featureData = useMemo(() => (
+    geometryData.map((g) => {
+      const entry = dataByKey[g.key] || null;
+      return { ...g, entry, fill: colorFor(entry) || emptyColor };
+    })
+  ), [geometryData, dataByKey, colorFor, emptyColor]);
 
   const handlePointerOver = useCallback((e) => {
     const idx = e.target?.dataset?.idx;
@@ -120,6 +133,14 @@ const GeoChoropleth = ({
     if (idx === undefined) return;
     const f = featureData[Number(idx)];
     if (f) onFeatureClick?.(f.name, f.entry);
+  }, [featureData, onFeatureClick]);
+  const handleKeyDown = useCallback((e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const idx = e.target?.dataset?.idx;
+    if (idx === undefined) return;
+    e.preventDefault();
+    const f = featureData[Number(idx)];
+    if (f) { setHover(f); onFeatureClick?.(f.name, f.entry); }
   }, [featureData, onFeatureClick]);
 
   if (!geo || !path) {
@@ -143,6 +164,7 @@ const GeoChoropleth = ({
         <g
           onPointerOver={handlePointerOver}
           onPointerOut={handlePointerOut}
+          onKeyDown={handleKeyDown}
           style={{ transform: `scale(${zoom})`, transformOrigin: 'center center', transition: 'transform 0.2s ease-out' }}
         >
           {featureData.map((f, idx) => (
@@ -150,6 +172,7 @@ const GeoChoropleth = ({
               key={f.key || idx}
               d={f.d}
               fill={f.fill}
+              name={f.name}
               isHover={hover?.key === f.key}
               isSelected={selectedKey && f.key === selectedKey}
               strokeWidth={0.6}

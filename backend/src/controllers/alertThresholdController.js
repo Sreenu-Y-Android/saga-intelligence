@@ -1,5 +1,6 @@
 const AlertThreshold = require('../models/AlertThreshold');
 const { createAuditLog } = require('../services/auditService');
+const { hasAnyRole } = require('../utils/authIdentity');
 
 // @desc    Get all alert thresholds
 // @route   GET /api/alert-thresholds
@@ -23,7 +24,7 @@ const getAlertThresholds = async (req, res) => {
 // @access  Private (Admin/Analyst)
 const createAlertThreshold = async (req, res) => {
     try {
-        if (!['superadmin', 'super_admin', 'analyst'].includes(req.user.role)) {
+        if (!hasAnyRole(req.user.role, ['superadmin', 'analyst'])) {
             return res.status(403).json({ message: 'Insufficient permissions' });
         }
 
@@ -57,7 +58,7 @@ const createAlertThreshold = async (req, res) => {
 // @access  Private (Admin/Analyst)
 const updateAlertThreshold = async (req, res) => {
     try {
-        if (!['superadmin', 'super_admin', 'analyst'].includes(req.user.role)) {
+        if (!hasAnyRole(req.user.role, ['superadmin', 'analyst'])) {
             return res.status(403).json({ message: 'Insufficient permissions' });
         }
 
@@ -91,7 +92,7 @@ const updateAlertThreshold = async (req, res) => {
 // @access  Private (Admin/Analyst)
 const deleteAlertThreshold = async (req, res) => {
     try {
-        if (!['superadmin', 'super_admin', 'analyst'].includes(req.user.role)) {
+        if (!hasAnyRole(req.user.role, ['superadmin', 'analyst'])) {
             return res.status(403).json({ message: 'Insufficient permissions' });
         }
 
@@ -115,7 +116,7 @@ const deleteAlertThreshold = async (req, res) => {
 // @access  Private (Admin/Analyst)
 const bulkUpdateThresholds = async (req, res) => {
     try {
-        if (!['superadmin', 'super_admin', 'analyst'].includes(req.user.role)) {
+        if (!hasAnyRole(req.user.role, ['superadmin', 'analyst'])) {
             return res.status(403).json({ message: 'Insufficient permissions' });
         }
 

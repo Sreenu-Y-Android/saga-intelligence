@@ -1,22 +1,19 @@
 
 import React, { useState, useRef, useEffect, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageCircle, Repeat, Heart, BarChart2, MoreHorizontal, Share, CheckCircle2, ThumbsUp, Eye, ExternalLink, MessageSquare, Zap, Info, X, AlertTriangle, Shield, ShieldCheck, Download, Loader2, FileText, Share2, Check, XCircle, AlertCircle, FilePlus, ChevronDown, Image, Video, Plus, Twitter, Instagram, Facebook, Users, Trash2, Clock, Globe } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
+import { MessageCircle, Repeat, Heart, BarChart2, MoreHorizontal, Share, CheckCircle2, ThumbsUp, Eye, ExternalLink, MessageSquare, Zap, Info, X, AlertTriangle, Shield, ShieldCheck, Download, Loader2, FileText, Share2, Check, XCircle, AlertCircle, FilePlus, ChevronDown, Image, Video, Plus, Twitter, Instagram, Facebook, Users, Trash2, Clock, Globe, Network, UserPlus, Search, ChevronRight } from 'lucide-react';
+import { formatDistanceToNow, format } from 'date-fns';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { Textarea } from './ui/textarea';
 import { HoverCard, HoverCardTrigger, HoverCardContent } from './ui/hover-card';
+import { ScrollArea } from './ui/scroll-area';
 import api from '../lib/api';
 import ReactPlayer from 'react-player';
 import { toast } from 'sonner';
 import ReasonModal from './ReasonModal';
 import ForensicResults from './ForensicResults';
-import { useAuth } from '../contexts/AuthContext';
-
-const SPECIAL_ACCESS_EMAIL = 'sreenu@gmail.com';
-const RISK_TO_SENTIMENT = { low: 'positive', medium: 'neutral', high: 'negative', critical: 'negative' };
 
 const WHATSAPP_GROUP_LINK = 'https://chat.whatsapp.com/HGGWZCyNXBmHfp4KvYxlXu';
 
@@ -630,38 +627,41 @@ export const VideoPlayer = ({ url, preview, type, autoPlay = false, onError }) =
 
     React.useEffect(() => {
         const video = videoRef.current;
-        if (!video) return;
+        if (!video || !url) return;
 
-        // Use HLS.js if strictly needed or if browser doesn't support native HLS
-        // Note: For proxied MP4s, isHLS will likely be false
         const isHLS = url.includes('.m3u8') || type === 'application/x-mpegURL';
-        const Hls = require('hls.js'); // Require inside effect to avoid SSR issues if any, though here it's CRA
+        const Hls = require('hls.js');
 
-        // Use finalUrl instead of url for loading
         if (isHLS && Hls.isSupported()) {
             const hls = new Hls({
-                xhrSetup: function (xhr, url) {
-                    xhr.withCredentials = false; // Ensure no cookies sent
+                xhrSetup: function (xhr) {
+                    xhr.withCredentials = false;
                 }
             });
-            hls.loadSource(url); // Use finalUrl
+            hls.loadSource(url);
             hls.attachMedia(video);
             hls.on(Hls.Events.MANIFEST_PARSED, function () {
                 if (autoPlay) {
                     video.play().catch(() => { });
                 }
             });
+            hls.on(Hls.Events.ERROR, function (_, data) {
+                if (data?.fatal && typeof onError === 'function') onError();
+            });
             return () => {
                 hls.destroy();
             };
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            // Native HLS support (Safari)
-            video.src = url;
-        } else {
-            // Standard MP4
-            video.src = url;
         }
-    }, [url, type, autoPlay]); // Depend on finalUrl
+
+        // Native HLS (Safari) or standard MP4: assign src and force a reload
+        if (video.src !== url) {
+            video.src = url;
+            video.load();
+            if (autoPlay) {
+                video.play().catch(() => { });
+            }
+        }
+    }, [url, type, autoPlay, onError]);
 
     return (
         <div className="w-full h-full relative flex items-center justify-center bg-black" onClick={(e) => e.stopPropagation()}>
@@ -735,9 +735,7 @@ const URLCard = ({ card }) => {
     );
 };
 
-export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSource, onDelete, onEditSentiment, enableSpecialActions = false, monitoredHandles = [], viewMode = 'list', searchQuery, hideActions = false, report = null, isInvestigatedResult = false, customClass = '' }) => {
-    const { user } = useAuth();
-    const canEditDelete = enableSpecialActions && user?.email === SPECIAL_ACCESS_EMAIL;
+export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSource, onRiskLevelChange, onSentimentChange, onDelete, monitoredHandles = [], viewMode = 'list', searchQuery, hideActions = false, report = null, isInvestigatedResult = false, customClass = '' }) => {
     const [showReasonModal, setShowReasonModal] = useState(false);
     const [showFullTextModal, setShowFullTextModal] = useState(false);
     const [downloading, setDownloading] = useState(false);
@@ -745,6 +743,8 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
     const [downloadStatus, setDownloadStatus] = useState('');
     const [downloadError, setDownloadError] = useState(null);
     const [isMonitored, setIsMonitored] = useState(alert?.is_monitored || false);
+    const [isPostEngagersOpen, setIsPostEngagersOpen] = useState(false);
+    const [postEngagersTab, setPostEngagersTab] = useState('all');
     const navigate = useNavigate();
 
     // Sync isMonitored state when alert prop changes
@@ -870,26 +870,6 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
             toast.error('Failed to update status: ' + (error.response?.data?.error || error.message));
         } finally {
             setActionLoading(false);
-        }
-    };
-
-    const handleEditSentiment = async (sentiment) => {
-        try {
-            const res = await api.put(`/alerts/${alert.id}/sentiment`, { sentiment });
-            onEditSentiment?.(alert.id, res.data.risk_level);
-            toast.success('Sentiment updated');
-        } catch (error) {
-            toast.error(error.response?.data?.message || 'Failed to update sentiment');
-        }
-    };
-
-    const handleDelete = async () => {
-        try {
-            await api.delete(`/alerts/${alert.id}`);
-            onDelete?.(alert.id);
-            toast.success('Alert deleted');
-        } catch (error) {
-            toast.error(error.response?.data?.message || 'Failed to delete alert');
         }
     };
 
@@ -1035,6 +1015,9 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
                 alert={alert}
                 content={content}
                 analysis={analysis}
+                onRiskLevelChange={onRiskLevelChange}
+                onSentimentChange={onSentimentChange}
+                onDelete={onDelete ? async (a) => { await onDelete(a); setShowReasonModal(false); } : undefined}
             />
             <Dialog open={showFullTextModal} onOpenChange={setShowFullTextModal}>
                 <DialogContent className="max-w-2xl">
@@ -1083,29 +1066,6 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
                     </div>
                     {/* Action Controls - right-aligned, wraps left on smaller screens */}
                     <div className="flex items-center gap-2 flex-wrap justify-end mt-3 mb-2">
-
-                        {canEditDelete && (
-                            <select
-                                className="h-7 text-[11px] font-semibold rounded ring-1 ring-slate-200 bg-slate-100 text-slate-700 px-1"
-                                title="Edit sentiment"
-                                value={RISK_TO_SENTIMENT[alert.risk_level] || 'neutral'}
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={(e) => { e.stopPropagation(); handleEditSentiment(e.target.value); }}
-                            >
-                                <option value="positive">Positive</option>
-                                <option value="neutral">Moderate</option>
-                                <option value="negative">Negative</option>
-                            </select>
-                        )}
-                        {canEditDelete && (
-                            <button
-                                onClick={(e) => { e.stopPropagation(); handleDelete(); }}
-                                className="h-7 w-7 flex items-center justify-center text-red-700 bg-red-100 hover:bg-red-200 ring-1 ring-red-200 rounded-md transition-colors"
-                                title="Delete"
-                            >
-                                <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                        )}
 
                         {/* Action Button */}
                         {!hideActions && alert.status === 'active' && (
@@ -1274,6 +1234,40 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
                                             <AlertCircle className="h-3 w-3" />
                                             Escalate
                                         </button>
+
+                                        {/* Risk Level Override */}
+                                        {onRiskLevelChange && (
+                                            <>
+                                                <div className="border-t border-border my-1" />
+                                                <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Risk Level</div>
+                                                {[{ v: 'low', l: 'Low (Positive)', c: 'text-emerald-600' }, { v: 'medium', l: 'Medium (Moderate)', c: 'text-amber-600' }, { v: 'high', l: 'High (Negative)', c: 'text-red-600' }, { v: 'critical', l: 'Critical', c: 'text-red-700' }].map(opt => (
+                                                    <button
+                                                        key={opt.v}
+                                                        onClick={async (e) => { e.stopPropagation(); setShowActionDropdown(false); await onRiskLevelChange(alert, opt.v); }}
+                                                        disabled={actionLoading || alert.risk_level === opt.v}
+                                                        className={`w-full text-left px-3 py-1.5 text-xs font-medium hover:bg-accent flex items-center gap-2 transition-colors ${opt.c} ${alert.risk_level === opt.v ? 'opacity-50 bg-accent' : ''}`}
+                                                    >
+                                                        <Shield className="h-3 w-3" />
+                                                        {opt.l} {alert.risk_level === opt.v ? '✓' : ''}
+                                                    </button>
+                                                ))}
+                                            </>
+                                        )}
+
+                                        {/* Delete */}
+                                        {onDelete && (
+                                            <>
+                                                <div className="border-t border-border my-1" />
+                                                <button
+                                                    onClick={async (e) => { e.stopPropagation(); setShowActionDropdown(false); await onDelete(alert); }}
+                                                    disabled={actionLoading}
+                                                    className="w-full text-left px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2 transition-colors"
+                                                >
+                                                    <Trash2 className="h-3 w-3" />
+                                                    Delete Alert
+                                                </button>
+                                            </>
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -1286,6 +1280,21 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
                         >
                             <FileText className="h-3.5 w-3.5" />
                             {alert.status !== 'escalated' && <span>Format & Share</span>}
+                        </button>
+
+                        {/* Post Engagers (Radial Graph Modal trigger) */}
+                        <button
+                            onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setPostEngagersTab('all');
+                                setIsPostEngagersOpen(true);
+                            }}
+                            className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 flex items-center gap-1 z-20 px-2 py-1.5 rounded-md hover:bg-accent transition-colors"
+                            title="Post Engagers Graph"
+                        >
+                            <Network className="h-3.5 w-3.5" />
+                            <span>Post Engagers</span>
                         </button>
 
                         {canDownload && (
@@ -1304,32 +1313,26 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
                             />
                         )}
 
-                        {/* Engager Analysis button — queues a Frequent Engagers analysis
-                            for this card's handle; view results from the Frequent
-                            Engagers dialog on the Alerts toolbar. */}
+                        {/* Engager Analysis button */}
                         <button
                             onClick={async (e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                if (alert?.platform !== 'x') {
-                                    toast.info('Frequent Engagers is only available for X/Twitter posts');
-                                    return;
-                                }
                                 const tweetHandle = content?.is_repost
-                                    ? content.original_author
+                                    ? (content.original_author)
                                     : (content?.author_handle || source?.handle);
                                 const cleanHandle = tweetHandle ? String(tweetHandle).replace(/^@/, '').trim() : null;
                                 if (!cleanHandle || cleanHandle === 'unknown') {
-                                    toast.error('No X handle found for this alert');
+                                    toast.error('No Twitter handle found for this alert');
                                     return;
                                 }
                                 try {
-                                    const res = await api.post('/engager/engager-analysis', { handle: cleanHandle, period_days: 30 });
+                                    const res = await api.post('/x/engager-analysis', { handle: cleanHandle, period_days: 30 });
                                     const status = res.data?.status;
                                     if (status === 'already_processing') {
                                         toast.warning(`Analysis for @${cleanHandle} is already in progress`);
                                     } else if (status === 'blocked') {
-                                        toast.warning('Another analysis is processing. Please wait.');
+                                        toast.warning(`Another analysis is processing. Please wait.`);
                                     } else {
                                         toast.success(`Engager analysis started for @${cleanHandle}`);
                                     }
@@ -1342,6 +1345,20 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
                         >
                             <Users className="h-4 w-4" />
                         </button>
+
+                        {onDelete && (
+                            <button
+                                onClick={async (e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    await onDelete(alert);
+                                }}
+                                className="p-2 rounded-md hover:bg-red-50 text-red-600 hover:text-red-700 transition-colors z-20"
+                                title="Delete Alert"
+                            >
+                                <Trash2 className="h-4 w-4" />
+                            </button>
+                        )}
 
                         {/* View Details button - always visible */}
                         <button
@@ -1645,28 +1662,40 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
 
                     {/* Engagement Stats Bar */}
                     <div className="flex justify-between items-center py-1.5 px-1">
-                        <div className="group flex items-center gap-1 cursor-pointer text-muted-foreground hover:text-blue-500 transition-colors p-1.5">
+                        <div
+                            onClick={(e) => { e.stopPropagation(); setPostEngagersTab('comment'); setIsPostEngagersOpen(true); }}
+                            className="group flex items-center gap-1 cursor-pointer text-muted-foreground hover:text-blue-500 transition-colors p-1.5"
+                        >
                             <div className="p-1 rounded-full group-hover:bg-blue-50 dark:group-hover:bg-blue-900/20 transition-colors">
                                 <MessageCircle className="h-4 w-4" />
                             </div>
                             <span className="text-[11px] group-hover:text-blue-500">{metrics.replies > 0 ? formatMetric(metrics.replies) : ''}</span>
                         </div>
 
-                        <div className="group flex items-center gap-1 cursor-pointer text-muted-foreground hover:text-emerald-500 transition-colors p-1.5">
+                        <div
+                            onClick={(e) => { e.stopPropagation(); setPostEngagersTab('retweet'); setIsPostEngagersOpen(true); }}
+                            className="group flex items-center gap-1 cursor-pointer text-muted-foreground hover:text-emerald-500 transition-colors p-1.5"
+                        >
                             <div className="p-1 rounded-full group-hover:bg-emerald-50 dark:group-hover:bg-emerald-900/20 transition-colors">
                                 <Repeat className="h-4 w-4" />
                             </div>
                             <span className="text-[11px] group-hover:text-emerald-500">{metrics.retweets > 0 ? formatMetric(metrics.retweets) : ''}</span>
                         </div>
 
-                        <div className="group flex items-center gap-1 cursor-pointer text-muted-foreground hover:text-pink-600 transition-colors p-1.5">
+                        <div
+                            onClick={(e) => { e.stopPropagation(); setPostEngagersTab('like'); setIsPostEngagersOpen(true); }}
+                            className="group flex items-center gap-1 cursor-pointer text-muted-foreground hover:text-pink-600 transition-colors p-1.5"
+                        >
                             <div className="p-1 rounded-full group-hover:bg-pink-50 dark:group-hover:bg-pink-900/20 transition-colors">
                                 <Heart className="h-4 w-4" />
                             </div>
                             <span className="text-[11px] group-hover:text-pink-600">{metrics.likes > 0 ? formatMetric(metrics.likes) : ''}</span>
                         </div>
 
-                        <div className="group flex items-center gap-1 cursor-pointer text-muted-foreground hover:text-blue-500 transition-colors p-1.5">
+                        <div
+                            onClick={(e) => { e.stopPropagation(); setPostEngagersTab('all'); setIsPostEngagersOpen(true); }}
+                            className="group flex items-center gap-1 cursor-pointer text-muted-foreground hover:text-blue-500 transition-colors p-1.5"
+                        >
                             <div className="p-1 rounded-full group-hover:bg-blue-50 dark:group-hover:bg-blue-900/20 transition-colors">
                                 <Share className="h-4 w-4" />
                             </div>
@@ -1679,15 +1708,24 @@ export const TwitterAlertCard = ({ alert, content, source, onResolve, onAddSourc
                     onClose={() => setIsShareModalOpen(false)}
                     initialText={shareText}
                 />
+
+                <PostEngagersDialog
+                    open={isPostEngagersOpen}
+                    onOpenChange={setIsPostEngagersOpen}
+                    contentId={content?.id || alert?.content_id}
+                    platform="x"
+                    onAddSource={onAddSource}
+                    content={content || { id: alert?.content_id, author_handle: alert?.author_handle, author_avatar: alert?.author_avatar }}
+                    initialTab={postEngagersTab}
+                    monitoredHandles={monitoredHandles}
+                />
             </div>
         </>
     );
 };
 TwitterAlertCard.displayName = 'TwitterAlertCard';
 
-export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSource, onDelete, onEditSentiment, enableSpecialActions = false, monitoredHandles = [], viewMode = 'list', hideActions = false, report = null, isInvestigatedResult = false, customClass = '' }) => {
-    const { user } = useAuth();
-    const canEditDelete = enableSpecialActions && user?.email === SPECIAL_ACCESS_EMAIL;
+export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSource, onRiskLevelChange, onSentimentChange, onDelete, monitoredHandles = [], viewMode = 'list', hideActions = false, report = null, isInvestigatedResult = false, customClass = '' }) => {
     const [showReasonModal, setShowReasonModal] = useState(false);
     const [showFullTextModal, setShowFullTextModal] = useState(false);
     const [showActionDropdown, setShowActionDropdown] = useState(false);
@@ -1697,6 +1735,8 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
     const [translatedText, setTranslatedText] = useState('');
     const [isTranslating, setIsTranslating] = useState(false);
     const [isExpanded, setIsExpanded] = useState(false);
+    const [isPostEngagersOpen, setIsPostEngagersOpen] = useState(false);
+    const [postEngagersTab, setPostEngagersTab] = useState('all');
     const dropdownRef = useRef(null);
 
     // Sync isMonitored state when alert prop changes
@@ -1734,27 +1774,6 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
             setActionLoading(false);
         }
     };
-
-    const handleEditSentiment = async (sentiment) => {
-        try {
-            const res = await api.put(`/alerts/${alert.id}/sentiment`, { sentiment });
-            onEditSentiment?.(alert.id, res.data.risk_level);
-            toast.success('Sentiment updated');
-        } catch (error) {
-            toast.error(error.response?.data?.message || 'Failed to update sentiment');
-        }
-    };
-
-    const handleDelete = async () => {
-        try {
-            await api.delete(`/alerts/${alert.id}`);
-            onDelete?.(alert.id);
-            toast.success('Alert deleted');
-        } catch (error) {
-            toast.error(error.response?.data?.message || 'Failed to delete alert');
-        }
-    };
-
     const [downloading, setDownloading] = useState(false);
     const [downloadProgress, setDownloadProgress] = useState(0);
     const [downloadStatus, setDownloadStatus] = useState('');
@@ -1884,6 +1903,9 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
                 alert={alert}
                 content={content}
                 analysis={analysis}
+                onRiskLevelChange={onRiskLevelChange}
+                onSentimentChange={onSentimentChange}
+                onDelete={onDelete ? async (a) => { await onDelete(a); setShowReasonModal(false); } : undefined}
             />
             <Dialog open={showFullTextModal} onOpenChange={setShowFullTextModal}>
                 <DialogContent className="max-w-2xl">
@@ -1952,28 +1974,6 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
                     </div>
                     {/* Action Controls - right-aligned, wraps left on smaller screens */}
                     <div className="flex items-center gap-2 flex-wrap justify-end mt-3">
-                        {canEditDelete && (
-                            <select
-                                className="h-7 text-[11px] font-semibold rounded ring-1 ring-slate-200 bg-slate-100 text-slate-700 px-1"
-                                title="Edit sentiment"
-                                value={RISK_TO_SENTIMENT[alert.risk_level] || 'neutral'}
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={(e) => { e.stopPropagation(); handleEditSentiment(e.target.value); }}
-                            >
-                                <option value="positive">Positive</option>
-                                <option value="neutral">Moderate</option>
-                                <option value="negative">Negative</option>
-                            </select>
-                        )}
-                        {canEditDelete && (
-                            <button
-                                onClick={(e) => { e.stopPropagation(); handleDelete(); }}
-                                className="h-7 w-7 flex items-center justify-center text-red-700 bg-red-100 hover:bg-red-200 ring-1 ring-red-200 rounded-md transition-colors"
-                                title="Delete"
-                            >
-                                <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                        )}
                         {(() => {
                             const targetHandle = content?.channelId || alert.author_handle;
                             if (onAddSource && targetHandle && !isMonitoredHandle(targetHandle)) {
@@ -2017,12 +2017,33 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
                             />
                         )}
                         <button
-                            onClick={(e) => {
+                            onClick={async (e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
+                                const tweetHandle = content?.is_repost
+                                    ? (content.original_author)
+                                    : (content?.author_handle || source?.handle);
+                                const cleanHandle = tweetHandle ? String(tweetHandle).replace(/^@/, '').trim() : null;
+                                if (!cleanHandle || cleanHandle === 'unknown') {
+                                    toast.error('No Twitter handle found for this alert');
+                                    return;
+                                }
+                                try {
+                                    const res = await api.post('/x/engager-analysis', { handle: cleanHandle, period_days: 30 });
+                                    const status = res.data?.status;
+                                    if (status === 'already_processing') {
+                                        toast.warning(`Analysis for @${cleanHandle} is already in progress`);
+                                    } else if (status === 'blocked') {
+                                        toast.warning(`Another analysis is processing. Please wait.`);
+                                    } else {
+                                        toast.success(`Engager analysis started for @${cleanHandle}`);
+                                    }
+                                } catch {
+                                    toast.error('Failed to start engager analysis');
+                                }
                             }}
                             className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-accent-foreground transition-colors"
-                            title="Relation"
+                            title="Analyze Engagers"
                         >
                             <Users className="h-4 w-4" />
                         </button>
@@ -2203,11 +2224,17 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
 
                     <div className="mt-auto flex items-center justify-between text-muted-foreground pt-2 border-t border-border/50">
                         <div className="flex gap-4">
-                            <div className="flex items-center gap-1 text-[11px]">
+                            <div
+                                onClick={(e) => { e.stopPropagation(); setPostEngagersTab('like'); setIsPostEngagersOpen(true); }}
+                                className="flex items-center gap-1 text-[11px] cursor-pointer hover:text-rose-500 transition-colors p-1 -m-1 rounded-sm"
+                            >
                                 <ThumbsUp className="h-3 w-3" />
                                 <span>{formatMetric(metrics.likes || 0)}</span>
                             </div>
-                            <div className="flex items-center gap-1 text-[11px]">
+                            <div
+                                onClick={(e) => { e.stopPropagation(); setPostEngagersTab('comment'); setIsPostEngagersOpen(true); }}
+                                className="flex items-center gap-1 text-[11px] cursor-pointer hover:text-emerald-500 transition-colors p-1 -m-1 rounded-sm"
+                            >
                                 <MessageSquare className="h-3 w-3" />
                                 <span>{formatMetric(metrics.comments || 0)}</span>
                             </div>
@@ -2219,7 +2246,7 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
                     </div>
 
                     {/* Action Bar */}
-                    <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-border/50">
+                    <div className={`grid gap-2 mt-3 pt-3 border-t border-border/50 ${onDelete ? 'grid-cols-4' : 'grid-cols-3'}`}>
                         {!hideActions && alert.status === 'active' && (
                             <div className="relative" ref={dropdownRef}>
                                 <button
@@ -2260,6 +2287,38 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
                                             <XCircle className="h-3 w-3" />
                                             False Positive
                                         </button>
+
+                                        {onRiskLevelChange && (
+                                            <>
+                                                <div className="border-t border-border my-1" />
+                                                <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Risk Level</div>
+                                                {[{ v: 'low', l: 'Low (Positive)', c: 'text-emerald-600' }, { v: 'medium', l: 'Medium (Moderate)', c: 'text-amber-600' }, { v: 'high', l: 'High (Negative)', c: 'text-red-600' }, { v: 'critical', l: 'Critical', c: 'text-red-700' }].map(opt => (
+                                                    <button
+                                                        key={opt.v}
+                                                        onClick={async (e) => { e.stopPropagation(); setShowActionDropdown(false); await onRiskLevelChange(alert, opt.v); }}
+                                                        disabled={actionLoading || alert.risk_level === opt.v}
+                                                        className={`w-full text-left px-3 py-1.5 text-xs font-medium hover:bg-accent flex items-center gap-2 transition-colors ${opt.c} ${alert.risk_level === opt.v ? 'opacity-50 bg-accent' : ''}`}
+                                                    >
+                                                        <Shield className="h-3 w-3" />
+                                                        {opt.l} {alert.risk_level === opt.v ? '✓' : ''}
+                                                    </button>
+                                                ))}
+                                            </>
+                                        )}
+
+                                        {onDelete && (
+                                            <>
+                                                <div className="border-t border-border my-1" />
+                                                <button
+                                                    onClick={async (e) => { e.stopPropagation(); setShowActionDropdown(false); await onDelete(alert); }}
+                                                    disabled={actionLoading}
+                                                    className="w-full text-left px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2 transition-colors"
+                                                >
+                                                    <Trash2 className="h-3 w-3" />
+                                                    Delete Alert
+                                                </button>
+                                            </>
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -2316,6 +2375,38 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
                                             <XCircle className="h-3 w-3" />
                                             Move to False Positive
                                         </button>
+
+                                        {onRiskLevelChange && (
+                                            <>
+                                                <div className="border-t border-border my-1" />
+                                                <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Risk Level</div>
+                                                {[{ v: 'low', l: 'Low (Positive)', c: 'text-emerald-600' }, { v: 'medium', l: 'Medium (Moderate)', c: 'text-amber-600' }, { v: 'high', l: 'High (Negative)', c: 'text-red-600' }, { v: 'critical', l: 'Critical', c: 'text-red-700' }].map(opt => (
+                                                    <button
+                                                        key={opt.v}
+                                                        onClick={async (e) => { e.stopPropagation(); setShowActionDropdown(false); await onRiskLevelChange(alert, opt.v); }}
+                                                        disabled={actionLoading || alert.risk_level === opt.v}
+                                                        className={`w-full text-left px-3 py-1.5 text-xs font-medium hover:bg-accent flex items-center gap-2 transition-colors ${opt.c} ${alert.risk_level === opt.v ? 'opacity-50 bg-accent' : ''}`}
+                                                    >
+                                                        <Shield className="h-3 w-3" />
+                                                        {opt.l} {alert.risk_level === opt.v ? '✓' : ''}
+                                                    </button>
+                                                ))}
+                                            </>
+                                        )}
+
+                                        {onDelete && (
+                                            <>
+                                                <div className="border-t border-border my-1" />
+                                                <button
+                                                    onClick={async (e) => { e.stopPropagation(); setShowActionDropdown(false); await onDelete(alert); }}
+                                                    disabled={actionLoading}
+                                                    className="w-full text-left px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2 transition-colors"
+                                                >
+                                                    <Trash2 className="h-3 w-3" />
+                                                    Delete Alert
+                                                </button>
+                                            </>
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -2361,6 +2452,38 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
                                             <AlertCircle className="h-3 w-3" />
                                             Escalate
                                         </button>
+
+                                        {onRiskLevelChange && (
+                                            <>
+                                                <div className="border-t border-border my-1" />
+                                                <div className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Risk Level</div>
+                                                {[{ v: 'low', l: 'Low (Positive)', c: 'text-emerald-600' }, { v: 'medium', l: 'Medium (Moderate)', c: 'text-amber-600' }, { v: 'high', l: 'High (Negative)', c: 'text-red-600' }, { v: 'critical', l: 'Critical', c: 'text-red-700' }].map(opt => (
+                                                    <button
+                                                        key={opt.v}
+                                                        onClick={async (e) => { e.stopPropagation(); setShowActionDropdown(false); await onRiskLevelChange(alert, opt.v); }}
+                                                        disabled={actionLoading || alert.risk_level === opt.v}
+                                                        className={`w-full text-left px-3 py-1.5 text-xs font-medium hover:bg-accent flex items-center gap-2 transition-colors ${opt.c} ${alert.risk_level === opt.v ? 'opacity-50 bg-accent' : ''}`}
+                                                    >
+                                                        <Shield className="h-3 w-3" />
+                                                        {opt.l} {alert.risk_level === opt.v ? '✓' : ''}
+                                                    </button>
+                                                ))}
+                                            </>
+                                        )}
+
+                                        {onDelete && (
+                                            <>
+                                                <div className="border-t border-border my-1" />
+                                                <button
+                                                    onClick={async (e) => { e.stopPropagation(); setShowActionDropdown(false); await onDelete(alert); }}
+                                                    disabled={actionLoading}
+                                                    className="w-full text-left px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2 transition-colors"
+                                                >
+                                                    <Trash2 className="h-3 w-3" />
+                                                    Delete Alert
+                                                </button>
+                                            </>
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -2386,8 +2509,33 @@ export const YoutubeAlertCard = ({ alert, content, source, onResolve, onAddSourc
                             </svg>
                             <span className={`${alert.status === 'escalated' ? 'hidden' : 'hidden sm:inline'}`}>Share</span>
                         </button>
+
+                        {onDelete && (
+                            <button
+                                className="col-span-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md bg-red-50 hover:bg-red-100 text-red-600 dark:bg-red-900/20 dark:hover:bg-red-900/30 dark:text-red-400 font-medium text-xs transition-all"
+                                onClick={async (e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    await onDelete(alert);
+                                }}
+                            >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                <span className="hidden sm:inline">Delete</span>
+                            </button>
+                        )}
                     </div>
                 </div>
+
+                <PostEngagersDialog
+                    open={isPostEngagersOpen}
+                    onOpenChange={setIsPostEngagersOpen}
+                    contentId={content?.id || alert?.content_id}
+                    platform="youtube"
+                    onAddSource={onAddSource}
+                    content={content || { id: alert?.content_id, author_handle: alert?.author_handle, author_avatar: alert?.author_avatar }}
+                    initialTab={postEngagersTab}
+                    monitoredHandles={monitoredHandles}
+                />
             </div>
         </>
     );
@@ -2404,3 +2552,1286 @@ const AlertTriangleIcon = ({ level }) => {
         </svg>
     )
 }
+
+// Single consistent color for all retweeter nodes
+const getNodeColor = () => '#f65959';
+
+/* ── SVG Radial Tree ── */
+const RetweetTree = ({ sourceHandle, sourceName, sourceAvatar, topRetweeters, totalRetweeters, onNodeClick, isMonitored }) => {
+    const W = 580, H = 440;
+    const cx = W / 2, cy = H / 2 - 10;
+    const SRC_R = 34, NODE_R = 28, ORBIT = 155;
+    const items = topRetweeters.slice(0, 8);
+    const n = items.length;
+
+    if (n === 0) {
+        return (
+            <div className="h-56 flex flex-col items-center justify-center text-muted-foreground gap-2">
+                <Network className="h-10 w-10 opacity-25" />
+                <span className="text-sm">No retweet data for this period.</span>
+                <span className="text-xs">Try a wider date range.</span>
+            </div>
+        );
+    }
+
+    const step = (Math.PI * 2) / n;
+    const startA = -Math.PI / 2;
+    const maxT = Math.max(1, ...items.map(r => r.tweet_count || 1));
+
+    return (
+        <div className="flex justify-center w-full overflow-hidden">
+            <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-[540px]" style={{ maxHeight: 420 }}>
+                <defs>
+                    <filter id="nShadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" floodOpacity="0.08" /></filter>
+                    <filter id="srcGlow" x="-50%" y="-50%" width="200%" height="200%">
+                        <feGaussianBlur stdDeviation="4" result="b" /><feFlood floodColor="#3b82f6" floodOpacity="0.12" /><feComposite in2="b" operator="in" /><feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
+                    </filter>
+                </defs>
+
+                {/* orbit ring */}
+                <circle cx={cx} cy={cy} r={ORBIT} fill="none" stroke="#3b82f6" strokeOpacity="0.08" strokeWidth="1" strokeDasharray="5 5" />
+
+                {/* edges */}
+                {items.map((rt, i) => {
+                    const a = startA + step * i;
+                    const nx = cx + ORBIT * Math.cos(a), ny = cy + ORBIT * Math.sin(a);
+                    const mx = cx + ORBIT * 0.45 * Math.cos(a), my = cy + ORBIT * 0.45 * Math.sin(a);
+                    const w = Math.max(1.5, (rt.tweet_count / maxT) * 4.5);
+                    const c = getNodeColor(rt.tweet_count);
+                    const path = `M ${cx} ${cy} Q ${mx + (ny-cy)*0.12} ${my - (nx-cx)*0.12} ${nx} ${ny}`;
+                    return (
+                        <g key={`e-${i}`}>
+                            <path d={path} fill="none" stroke={c} strokeWidth={w} strokeOpacity="0.3" strokeLinecap="round" />
+                            <circle r="2" fill={c} opacity="0.5"><animateMotion path={path} dur={`${2.8 + i*0.3}s`} repeatCount="indefinite" /></circle>
+                        </g>
+                    );
+                })}
+
+                {/* retweeter nodes */}
+                {items.map((rt, i) => {
+                    const a = startA + step * i;
+                    const nx = cx + ORBIT * Math.cos(a), ny = cy + ORBIT * Math.sin(a);
+                    const c = getNodeColor(rt.tweet_count);
+                    const monitored = isMonitored(rt.handle);
+                    const init = (rt.name || rt.handle || '?')[0].toUpperCase();
+                    const lblY = ny < cy - 30 ? ny - NODE_R - 8 : ny + NODE_R + 14;
+                    return (
+                        <g key={`n-${i}`} className="cursor-pointer" onClick={() => onNodeClick(rt)}>
+                            {/* outer ring */}
+                            <circle cx={nx} cy={ny} r={NODE_R + 3} fill="none" stroke={c} strokeWidth="2.5" strokeOpacity="0.45" />
+                            {/* bg */}
+                            <circle cx={nx} cy={ny} r={NODE_R} fill="white" stroke="#e5e7eb" strokeWidth="1" filter="url(#nShadow)" />
+                            {/* avatar / initial */}
+                            {rt.avatar ? (
+                                <>
+                                    <clipPath id={`cr-${i}`}><circle cx={nx} cy={ny} r={NODE_R-1} /></clipPath>
+                                    <image href={rt.avatar} x={nx-NODE_R+1} y={ny-NODE_R+1} width={(NODE_R-1)*2} height={(NODE_R-1)*2} clipPath={`url(#cr-${i})`} />
+                                </>
+                            ) : (
+                                <text x={nx} y={ny+1} textAnchor="middle" dominantBaseline="central" fontSize="14" fontWeight="700" fill="#374151">{init}</text>
+                            )}
+                            {/* tweet count badge top-right */}
+                            <circle cx={nx+NODE_R-3} cy={ny-NODE_R+3} r="10" fill={c} stroke="white" strokeWidth="1.5" />
+                            <text x={nx+NODE_R-3} y={ny-NODE_R+4} textAnchor="middle" dominantBaseline="central" fontSize="8" fontWeight="700" fill="white">{rt.tweet_count}</text>
+                            {/* verified */}
+                            {rt.verified && <>
+                                <circle cx={nx+NODE_R-3} cy={ny+NODE_R-3} r="7" fill="#3b82f6" stroke="white" strokeWidth="1" />
+                                <text x={nx+NODE_R-3} y={ny+NODE_R-2} textAnchor="middle" dominantBaseline="central" fontSize="7" fill="white">✓</text>
+                            </>}
+                            {/* redirect to X profile top-left */}
+                            <g className="cursor-pointer" onClick={(e) => { e.stopPropagation(); window.open(`https://x.com/${rt.handle}`, '_blank', 'noopener,noreferrer'); }}>
+                                <circle cx={nx-NODE_R+3} cy={ny-NODE_R+3} r="9" fill="#6b7280" stroke="white" strokeWidth="1.5" />
+                                <g transform={`translate(${nx-NODE_R+3},${ny-NODE_R+3}) scale(0.55)`}>
+                                    <path d="M-5,1 L-5,5 a1,1,0,0,0,1,1 L0,6 a1,1,0,0,0,1,-1 L1,1 a1,1,0,0,0,-1,-1 L-4,0" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                    <line x1="-2" y1="4" x2="5" y2="-3" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
+                                    <polyline points="1,-3 5,-3 5,1" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                </g>
+                            </g>
+                            {/* label */}
+                            <text x={nx} y={lblY} textAnchor="middle" fontSize="9" fontWeight="600" fill="#374151">@{rt.handle.length > 13 ? rt.handle.slice(0,11)+'…' : rt.handle}</text>
+                        </g>
+                    );
+                })}
+
+                {/* center source */}
+                <g filter="url(#srcGlow)">
+                    <circle cx={cx} cy={cy} r={SRC_R+3} fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeOpacity="0.35" />
+                    <circle cx={cx} cy={cy} r={SRC_R} fill="#2563eb" stroke="white" strokeWidth="2" />
+                    {sourceAvatar ? (
+                        <><clipPath id="cSrc"><circle cx={cx} cy={cy} r={SRC_R-2} /></clipPath><image href={sourceAvatar} x={cx-SRC_R+2} y={cy-SRC_R+2} width={(SRC_R-2)*2} height={(SRC_R-2)*2} clipPath="url(#cSrc)" /></>
+                    ) : (
+                        <text x={cx} y={cy+1} textAnchor="middle" dominantBaseline="central" fontSize="15" fontWeight="700" fill="white">{(sourceName||sourceHandle||'S')[0].toUpperCase()}</text>
+                    )}
+                </g>
+                <text x={cx} y={cy+SRC_R+16} textAnchor="middle" fontSize="11" fontWeight="700" fill="#1e40af">@{sourceHandle}</text>
+                <text x={cx} y={cy+SRC_R+29} textAnchor="middle" fontSize="9" fill="#6b7280">{totalRetweeters} unique retweeters</text>
+            </svg>
+        </div>
+    );
+};
+
+/* ── Interactive SVG Post Engagers Network Graph ── */
+const PostEngagersGraph = ({ items = [], postAuthorHandle, postAuthorAvatar, onNodeClick, selectedNode, platform }) => {
+    const W = 540, H = 340;
+    const cx = 270, cy = 155;
+    const ORBIT = 115;
+    const SRC_R = 24;
+    const NODE_R = 13;
+
+    // Slice to top 24 engagers to keep the SVG clean and readable
+    const graphItems = items.slice(0, 24);
+    const n = graphItems.length;
+    const step = n > 0 ? (Math.PI * 2) / n : 0;
+    const startA = -Math.PI / 2;
+
+    const getEdgeColor = (type) => {
+        if (type?.includes('retweet') && type?.includes('like')) return '#8b5cf6'; // Violet
+        if (type?.includes('like')) return '#f43f5e'; // Rose
+        return '#3b82f6'; // Blue
+    };
+
+    const getTierColor = (tier) => {
+        switch (tier) {
+            case 'verified-influencer': return '#a855f7'; // Purple
+            case 'super-active': return '#ef4444'; // Red
+            case 'regular': return '#f97316'; // Orange
+            case 'occasional': return '#f59e0b'; // Amber
+            default: return '#94a3b8'; // Slate
+        }
+    };
+
+    return (
+        <div className="flex justify-center w-full overflow-hidden bg-slate-50/50 dark:bg-slate-950/20 border-b border-border py-4 relative">
+            <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-[500px]" style={{ maxHeight: 310 }}>
+                <defs>
+                    <filter id="nodeShadow" x="-20%" y="-20%" width="140%" height="140%">
+                        <feDropShadow dx="0" dy="2" stdDeviation="2.5" floodOpacity="0.08" />
+                    </filter>
+                    <filter id="postGlow" x="-50%" y="-50%" width="200%" height="200%">
+                        <feGaussianBlur stdDeviation="3" result="blur" />
+                        <feFlood floodColor="#3b82f6" floodOpacity="0.2" />
+                        <feComposite in2="blur" operator="in" />
+                        <feMerge>
+                            <feMergeNode />
+                            <feMergeNode in="SourceGraphic" />
+                        </feMerge>
+                    </filter>
+                </defs>
+
+                {/* Orbit ring guide */}
+                <circle cx={cx} cy={cy} r={ORBIT} fill="none" stroke="#3b82f6" strokeOpacity="0.06" strokeWidth="1" strokeDasharray="4 4" />
+
+                {/* Connecting Edges */}
+                {graphItems.map((item, i) => {
+                    const a = startA + step * i;
+                    const nx = cx + ORBIT * Math.cos(a);
+                    const ny = cy + ORBIT * Math.sin(a);
+                    const mx = cx + ORBIT * 0.45 * Math.cos(a);
+                    const my = cy + ORBIT * 0.45 * Math.sin(a);
+                    
+                    const color = getEdgeColor(item.engagement_type);
+                    const path = `M ${cx} ${cy} Q ${mx + (ny - cy) * 0.1} ${my - (nx - cx) * 0.1} ${nx} ${ny}`;
+                    
+                    const isSelected = selectedNode?.handle === item.handle;
+
+                    return (
+                        <g key={`edge-${i}`}>
+                            <path
+                                d={path}
+                                fill="none"
+                                stroke={color}
+                                strokeWidth={isSelected ? 2.5 : 1.5}
+                                strokeOpacity={isSelected ? 0.75 : 0.25}
+                                strokeLinecap="round"
+                            />
+                            {/* Animated particle moving towards the node */}
+                            <circle r="2" fill="white" opacity="0.9">
+                                <animateMotion path={path} dur={`${2.2 + i * 0.2}s`} repeatCount="indefinite" />
+                            </circle>
+                        </g>
+                    );
+                })}
+
+                {/* Orbiting Engager Nodes */}
+                {graphItems.map((item, i) => {
+                    const a = startA + step * i;
+                    const nx = cx + ORBIT * Math.cos(a);
+                    const ny = cy + ORBIT * Math.sin(a);
+                    
+                    const tierColor = getTierColor(item.tier);
+                    const isSelected = selectedNode?.handle === item.handle;
+                    const labelY = ny < cy - 25 ? ny - NODE_R - 10 : ny + NODE_R + 18;
+                    const initials = (item.name || item.handle || '?')[0].toUpperCase();
+
+                    return (
+                        <g key={`node-${i}`} className="cursor-pointer" onClick={() => onNodeClick(item)}>
+                            {/* Selected halo */}
+                            {isSelected && (
+                                <circle cx={nx} cy={ny} r={NODE_R + 6} fill="none" stroke={tierColor} strokeWidth="2.5" strokeOpacity="0.4" className="animate-pulse" />
+                            )}
+                            
+                            {/* Outer Tier Border */}
+                            <circle cx={nx} cy={ny} r={NODE_R + 2} fill="none" stroke={tierColor} strokeWidth="2" strokeOpacity={isSelected ? 1 : 0.8} />
+                            
+                            {/* Node Background */}
+                            <circle cx={nx} cy={ny} r={NODE_R} fill="white" stroke="#e2e8f0" strokeWidth="1" filter="url(#nodeShadow)" />
+                            
+                            {/* User Avatar */}
+                            {item.avatar ? (
+                                <>
+                                    <clipPath id={`clip-node-${i}`}><circle cx={nx} cy={ny} r={NODE_R - 1} /></clipPath>
+                                    <image href={item.avatar} x={nx - NODE_R + 1} y={ny - NODE_R + 1} width={(NODE_R - 1) * 2} height={(NODE_R - 1) * 2} clipPath={`url(#clip-node-${i})`} />
+                                </>
+                            ) : (
+                                <text x={nx} y={ny + 0.5} textAnchor="middle" dominantBaseline="central" fontSize="10" fontWeight="800" fill="#475569">{initials}</text>
+                            )}
+
+                            {/* Label */}
+                            <text
+                                x={nx}
+                                y={labelY}
+                                textAnchor="middle"
+                                fontSize="11"
+                                fontWeight="bold"
+                                fill={isSelected ? '#1e3a8a' : '#334155'}
+                                className="drop-shadow-sm select-none"
+                            >
+                                @{item.handle}
+                            </text>
+                        </g>
+                    );
+                })}
+
+                {/* Central Post Node */}
+                <g filter="url(#postGlow)">
+                    <circle cx={cx} cy={cy} r={SRC_R + 3} fill="none" stroke="#2563eb" strokeWidth="2.5" strokeOpacity="0.25" />
+                    <circle cx={cx} cy={cy} r={SRC_R} fill="#3b82f6" stroke="white" strokeWidth="2" />
+                    {postAuthorAvatar ? (
+                        <>
+                            <clipPath id="clip-post-center"><circle cx={cx} cy={cy} r={SRC_R - 1.5} /></clipPath>
+                            <image href={postAuthorAvatar} x={cx - SRC_R + 1.5} y={cy - SRC_R + 1.5} width={(SRC_R - 1.5) * 2} height={(SRC_R - 1.5) * 2} clipPath="url(#clip-post-center)" />
+                        </>
+                    ) : (
+                        <text x={cx} y={cy + 0.5} textAnchor="middle" dominantBaseline="central" fontSize="14" fontWeight="800" fill="white">
+                            {(postAuthorHandle || 'P')[0].toUpperCase()}
+                        </text>
+                    )}
+                </g>
+                <text x={cx} y={cy + SRC_R + 17} textAnchor="middle" fontSize="12" fontWeight="bold" fill="#1d4ed8" className="select-none">@{postAuthorHandle}</text>
+            </svg>
+
+            {/* Quick legend on top-right of graph */}
+            <div className="absolute right-3 top-3 bg-background/90 dark:bg-slate-900/90 border border-border rounded px-2 py-1.5 flex flex-col gap-1 text-[8px] font-semibold text-muted-foreground shadow-sm">
+                <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-[#f43f5e]" /> Likes</div>
+                <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-[#3b82f6]" /> Retweets</div>
+                <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-[#8b5cf6]" /> Both</div>
+            </div>
+        </div>
+    );
+};
+
+/* ── Post-level Engagers & Commenters Dialog ── */
+export const PostEngagersDialog = ({ open, onOpenChange, contentId, platform, onAddSource, content, initialTab = 'all', monitoredHandles = [] }) => {
+    const [engagers, setEngagers] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [search, setSearch] = useState('');
+    const [activeTab, setActiveTab] = useState('all');
+    const [viewMode, setViewMode] = useState('graph'); // 'graph' | 'list'
+    const [selectedNode, setSelectedNode] = useState(null);
+    const [monitoredHandlesList, setMonitoredHandlesList] = useState(monitoredHandles);
+    const [currentPage, setCurrentPage] = useState(1);
+
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [activeTab, search]);
+
+    useEffect(() => {
+        if (open) {
+            if (Array.isArray(monitoredHandles) && monitoredHandles.length > 0) {
+                setMonitoredHandlesList(monitoredHandles);
+            } else {
+                api.get('/sources')
+                    .then(res => {
+                        const data = Array.isArray(res.data) ? res.data : (res.data?.data || []);
+                        const handles = data.map(s => s.identifier).filter(Boolean);
+                        setMonitoredHandlesList(handles);
+                    })
+                    .catch(err => {
+                        console.error('Failed to load monitored handles in PostEngagersDialog:', err);
+                    });
+            }
+        }
+    }, [open, monitoredHandles]);
+
+    const isMonitored = (handle) => {
+        if (!handle || !Array.isArray(monitoredHandlesList) || monitoredHandlesList.length === 0) return false;
+        const clean = String(handle).replace(/^@/, '').toLowerCase().trim();
+        return monitoredHandlesList.some(h => h && String(h).replace(/^@/, '').toLowerCase().trim() === clean);
+    };
+    const getProfileUrl = (e) => {
+        if (!e) return '#';
+        if (platform === 'x') {
+            if (e.retweet_id) {
+                return `https://x.com/${e.handle}/status/${e.retweet_id}`;
+            }
+            return `https://x.com/${e.handle}`;
+        }
+        return '#';
+    };
+    useEffect(() => {
+        if (open && contentId) {
+            setLoading(true);
+            setSearch('');
+            setActiveTab(initialTab || 'all');
+            setViewMode('graph');
+            setSelectedNode(null);
+            api.get(`/content/${contentId}/engagers`)
+                .then(res => {
+                    setEngagers(res.data?.engagers || []);
+                })
+                .catch(err => {
+                    console.error('Failed to load post engagers:', err);
+                    toast.error('Failed to load post engagers');
+                    setEngagers([]);
+                })
+                .finally(() => setLoading(false));
+        }
+    }, [open, contentId, initialTab]);
+    const filtered = engagers.filter(e => {
+        const type = String(e.engagement_type || '').toLowerCase();
+        // Tab filter
+        if (activeTab === 'like' && !type.includes('like')) return false;
+        if (activeTab === 'retweet' && !type.includes('retweet') && !type.includes('share')) return false;
+        if (activeTab === 'comment' && !type.includes('comment') && !type.includes('reply')) return false;
+
+        // Search filter
+        if (search && search.trim()) {
+            const term = search.toLowerCase().trim();
+            return String(e.handle || '').toLowerCase().includes(term) || String(e.name || '').toLowerCase().includes(term);
+        }
+        return true;
+    });
+    const itemsPerPage = 20;
+    const totalPages = Math.ceil(filtered.length / itemsPerPage);
+    const paginatedItems = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+    const getEngagementBadge = (type) => {
+        if (type === 'retweet') {
+            return <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400">Retweeted</span>;
+        }
+        if (type === 'like') {
+            return <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-rose-100 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400">Liked</span>;
+        }
+        if (type?.includes('retweet') && type?.includes('like')) {
+            return <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-violet-100 text-violet-700 dark:bg-violet-950/30 dark:text-violet-400">Liked & Retweeted</span>;
+        }
+        if (type === 'share') {
+            return <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400">Shared</span>;
+        }
+        return <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400">Commented</span>;
+    };
+
+    const likesCount = engagers.filter(e => e.engagement_type?.includes('like')).length;
+    const retweetsCount = engagers.filter(e => e.engagement_type?.includes('retweet') || e.engagement_type?.includes('share')).length;
+    const commentsCount = engagers.filter(e => e.engagement_type?.includes('comment')).length;
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-[45vw] w-[45vw] max-h-[75vh] p-0 gap-0 overflow-hidden flex flex-col">
+                <DialogHeader className="px-5 pt-4 flex flex-row items-center justify-between">
+                    <div className="flex-1">
+                        <DialogTitle>Post Engagers</DialogTitle>
+                        <DialogDescription>
+                            Review the profiles who engaged or commented on this post.
+                        </DialogDescription>
+                    </div>
+                    {platform === 'x' && (
+                        <div className="flex bg-muted p-0.5 rounded-lg border mr-6 shrink-0">
+                            <button
+                                onClick={() => setViewMode('graph')}
+                                className={`px-2.5 py-1 rounded text-xs font-semibold transition-all ${
+                                    viewMode === 'graph'
+                                        ? 'bg-background text-foreground shadow-sm'
+                                        : 'text-muted-foreground hover:text-foreground'
+                                }`}
+                            >
+                                Graph View
+                            </button>
+                            <button
+                                onClick={() => setViewMode('list')}
+                                className={`px-2.5 py-1 rounded text-xs font-semibold transition-all ${
+                                    viewMode === 'list'
+                                        ? 'bg-background text-foreground shadow-sm'
+                                        : 'text-muted-foreground hover:text-foreground'
+                                }`}
+                            >
+                                List View
+                            </button>
+                        </div>
+                    )}
+                </DialogHeader>
+
+                {loading ? (
+                    <div className="flex-grow h-[430px] flex flex-col items-center justify-center gap-3 text-muted-foreground bg-background/50 backdrop-blur-xs">
+                        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+                        <span className="text-xs font-semibold">Fetching post engagers...</span>
+                    </div>
+                ) : (
+                    <>
+                        {/* Post Stats Bar (Clickable Filter Tabs) */}
+                        {(content?.engagement || engagers.length > 0) && (
+                            <div className="px-5 py-2 bg-slate-50 dark:bg-slate-900/30 border-y border-border flex flex-wrap items-center gap-2 text-[10px] font-semibold text-muted-foreground">
+                                <span className="text-foreground/80 font-bold uppercase tracking-wider text-[9px] mr-2">Filters:</span>
+                                
+                                <button
+                                    onClick={() => setActiveTab('all')}
+                                    className={`px-2 py-1 rounded text-[10px] transition-all font-bold ${
+                                        activeTab === 'all'
+                                            ? 'bg-blue-600 text-white shadow-sm'
+                                            : 'bg-background hover:bg-accent text-muted-foreground border border-border'
+                                    }`}
+                                >
+                                    All ({engagers.length})
+                                </button>
+
+                                <button
+                                    onClick={() => setActiveTab('like')}
+                                    className={`px-2 py-1 rounded text-[10px] transition-all font-bold flex items-center gap-1 ${
+                                        activeTab === 'like'
+                                            ? 'bg-rose-600 text-white shadow-sm'
+                                            : 'bg-background hover:bg-accent text-muted-foreground border border-border'
+                                    }`}
+                                >
+                                    {platform === 'x' ? '❤️' : '👍'} Likes ({likesCount})
+                                </button>
+
+                                <button
+                                    onClick={() => setActiveTab('retweet')}
+                                    className={`px-2 py-1 rounded text-[10px] transition-all font-bold flex items-center gap-1 ${
+                                        activeTab === 'retweet'
+                                            ? 'bg-blue-600 text-white shadow-sm'
+                                            : 'bg-background hover:bg-accent text-muted-foreground border border-border'
+                                    }`}
+                                >
+                                    🔄 {platform === 'x' ? 'Retweets' : 'Shares'} ({retweetsCount})
+                                </button>
+
+                                <button
+                                    onClick={() => setActiveTab('comment')}
+                                    className={`px-2 py-1 rounded text-[10px] transition-all font-bold flex items-center gap-1 ${
+                                        activeTab === 'comment'
+                                            ? 'bg-emerald-600 text-white shadow-sm'
+                                            : 'bg-background hover:bg-accent text-muted-foreground border border-border'
+                                    }`}
+                                >
+                                    💬 Comments ({commentsCount})
+                                </button>
+
+                                {content?.engagement?.views > 0 && (
+                                    <span className="flex items-center gap-1 text-[9px] opacity-75 font-normal ml-auto shrink-0 pr-1">
+                                        👁️ {content.engagement.views} Views
+                                    </span>
+                                )}
+                            </div>
+                        )}
+
+                        {/* GRAPH VIEW PANEL */}
+                        {platform === 'x' && viewMode === 'graph' && (
+                    <div className="flex flex-col flex-1 min-h-0">
+                        <PostEngagersGraph
+                            items={filtered}
+                            postAuthorHandle={content?.author_handle || 'Post'}
+                            postAuthorAvatar={content?.author_avatar}
+                            onNodeClick={(node) => setSelectedNode(node)}
+                            selectedNode={selectedNode}
+                            platform={platform}
+                        />
+                        {/* Selected Node Details Card */}
+                        <div className="p-3 bg-slate-50/50 dark:bg-slate-900/10 min-h-[64px] flex items-center justify-between border-t border-border mt-auto">
+                            {selectedNode ? (
+                                <div className="flex items-center justify-between w-full animate-in fade-in slide-in-from-bottom-2 duration-200">
+                                    <div className="flex items-center gap-3">
+                                        {selectedNode.avatar ? (
+                                            <a href={getProfileUrl(selectedNode)} target="_blank" rel="noopener noreferrer" className="hover:opacity-80 transition-opacity">
+                                                <img src={selectedNode.avatar} alt="" className="w-9 h-9 rounded-full object-cover border border-border" />
+                                            </a>
+                                        ) : (
+                                            <a href={getProfileUrl(selectedNode)} target="_blank" rel="noopener noreferrer" className="hover:opacity-80 transition-opacity">
+                                                <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center text-xs font-bold border">
+                                                    {(selectedNode.handle || selectedNode.name || '?')[0].toUpperCase()}
+                                                </div>
+                                            </a>
+                                        )}
+                                        <div>
+                                            <div className="flex items-center gap-1.5 flex-wrap">
+                                                <a
+                                                    href={getProfileUrl(selectedNode)}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="font-bold text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline"
+                                                >
+                                                    @{selectedNode.handle}
+                                                </a>
+                                                {selectedNode.verified && (
+                                                    <span className="inline-flex items-center justify-center bg-blue-500 text-white rounded-full p-0.5 w-3 h-3">
+                                                        <Check className="h-1.5 w-1.5 stroke-[3]" />
+                                                    </span>
+                                                )}
+                                                {getEngagementBadge(selectedNode.engagement_type)}
+                                                {selectedNode.tier && (
+                                                    <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                                                        selectedNode.tier === 'verified-influencer' ? 'bg-purple-100 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400 border border-purple-200/50' :
+                                                        selectedNode.tier === 'super-active' ? 'bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400 border border-red-200/50' :
+                                                        selectedNode.tier === 'regular' ? 'bg-orange-100 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400 border border-orange-200/50' :
+                                                        selectedNode.tier === 'occasional' ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-200/50' :
+                                                        selectedNode.tier === 'new-engager' ? 'bg-slate-100 text-slate-600 dark:bg-slate-900/30 dark:text-slate-400' :
+                                                        'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400'
+                                                    }`}>
+                                                        {selectedNode.tier.replace('-', ' ')}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <p className="text-[10px] text-muted-foreground">{selectedNode.name}</p>
+                                        </div>
+                                    </div>
+                                    {onAddSource && (
+                                        isMonitored(selectedNode.handle) ? (
+                                            <span className="inline-flex items-center gap-0.5 text-[10px] text-green-600 font-semibold shrink-0 ml-3 shadow-xs"><Check className="h-3.5 w-3.5" /> Monitored</span>
+                                        ) : (
+                                            <button
+                                                onClick={() => onAddSource({ platform: 'x', identifier: selectedNode.handle, display_name: selectedNode.name || selectedNode.handle, category: 'unknown' })}
+                                                className="text-[10px] font-semibold text-primary bg-background hover:bg-accent px-2.5 py-1.5 rounded border border-border shrink-0 ml-3 shadow-xs"
+                                            >
+                                                Monitor Profile
+                                            </button>
+                                        )
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="w-full text-center py-2 text-xs text-muted-foreground flex items-center justify-center gap-1.5">
+                                    <Users className="h-4 w-4 opacity-40" />
+                                    <span>Click any profile node in the graph to view details</span>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* LIST VIEW PANEL */}
+                {(platform !== 'x' || viewMode === 'list') && (
+                    <div className="flex flex-col flex-1 min-h-0">
+                        <div className="px-5 pt-2.5 pb-2.5 border-b border-border">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Profiles fetched from this specific post
+                                    </p>
+                                </div>
+                                <div className="relative w-48">
+                                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                                    <input
+                                        type="text"
+                                        placeholder="Search profiles…"
+                                        value={search}
+                                        onChange={(e) => setSearch(e.target.value)}
+                                        className="w-full pl-6 pr-2 py-1 text-[11px] rounded border bg-background placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <ScrollArea className="flex-1 min-h-0 w-full">
+                            <div className="p-4">
+                                {filtered.length === 0 ? (
+                                    <div className="h-48 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+                                        <Users className="h-10 w-10 opacity-25" />
+                                        <p className="text-xs">No engagers found for this post</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {paginatedItems.map((e, idx) => (
+                                            <div key={idx} className="flex items-start justify-between p-2 rounded-lg border hover:bg-accent/10 transition-colors">
+                                                <div className="flex items-start gap-3 min-w-0 flex-1">
+                                                    {e.avatar ? (
+                                                        <a href={getProfileUrl(e)} target="_blank" rel="noopener noreferrer" className="shrink-0 mt-0.5 hover:opacity-80 transition-opacity">
+                                                            <img src={e.avatar} alt="" className="h-8 w-8 rounded-full object-cover shrink-0 mt-0.5" />
+                                                        </a>
+                                                    ) : (
+                                                        <a href={getProfileUrl(e)} target="_blank" rel="noopener noreferrer" className="shrink-0 mt-0.5 hover:opacity-80 transition-opacity">
+                                                            <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+                                                                {(e.handle || '?')[0].toUpperCase()}
+                                                            </div>
+                                                        </a>
+                                                    )}
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                            {platform === 'x' ? (
+                                                                <a
+                                                                    href={getProfileUrl(e)}
+                                                                    target="_blank"
+                                                                    rel="noopener noreferrer"
+                                                                    className="font-semibold text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline truncate"
+                                                                >
+                                                                    @{e.handle}
+                                                                </a>
+                                                            ) : (
+                                                                <span className="font-semibold text-xs text-foreground truncate">
+                                                                    {e.name}
+                                                                </span>
+                                                            )}
+                                                            {platform === 'x' && e.name && e.name !== e.handle && (
+                                                                <span className="text-[10px] text-muted-foreground truncate max-w-[120px]">{e.name}</span>
+                                                            )}
+                                                            {e.verified && (
+                                                                <span className="inline-flex items-center justify-center bg-blue-500 text-white rounded-full p-0.5 w-3 h-3">
+                                                                    <Check className="h-2 w-2 stroke-[3]" />
+                                                                </span>
+                                                            )}
+                                                            {getEngagementBadge(e.engagement_type)}
+                                                            {e.tier && (
+                                                                <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                                                                    e.tier === 'verified-influencer' ? 'bg-purple-100 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400 border border-purple-200/50' :
+                                                                    e.tier === 'super-active' ? 'bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400 border border-red-200/50' :
+                                                                    e.tier === 'regular' ? 'bg-orange-100 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400 border border-orange-200/50' :
+                                                                    e.tier === 'occasional' ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border border-amber-200/50' :
+                                                                    e.tier === 'new-engager' ? 'bg-slate-100 text-slate-600 dark:bg-slate-900/30 dark:text-slate-400' :
+                                                                    'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400'
+                                                                }`}>
+                                                                    {e.tier.replace('-', ' ')}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        {e.text && (
+                                                            <p className="text-[11px] text-muted-foreground mt-1 bg-muted/40 p-1.5 rounded border border-border/40 whitespace-pre-wrap leading-normal italic">
+                                                                "{e.text}"
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                {onAddSource && platform === 'x' && (
+                                                    isMonitored(e.handle) ? (
+                                                        <span className="inline-flex items-center gap-0.5 text-[10px] text-green-600 font-semibold shrink-0 ml-3"><Check className="h-3.5 w-3.5" /> Monitored</span>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => onAddSource({ platform: 'x', identifier: e.handle, display_name: e.name || e.handle, category: 'unknown' })}
+                                                            className="text-[10px] font-semibold text-primary hover:bg-accent px-2 py-1 rounded border border-border shrink-0 ml-3"
+                                                        >
+                                                            Monitor
+                                                        </button>
+                                                    )
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </ScrollArea>
+                        {totalPages > 1 && (
+                            <div className="flex items-center justify-between px-5 py-2.5 border-t border-border mt-auto bg-slate-50 dark:bg-slate-900/30">
+                                <button
+                                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                                    disabled={currentPage === 1}
+                                    className="px-2.5 py-1 text-[10px] font-semibold border rounded bg-background hover:bg-accent disabled:opacity-50 transition-opacity"
+                                >
+                                    Previous
+                                </button>
+                                <span className="text-[10px] text-muted-foreground font-semibold">
+                                    Page {currentPage} of {totalPages}
+                                </span>
+                                <button
+                                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                                    disabled={currentPage === totalPages}
+                                    className="px-2.5 py-1 text-[10px] font-semibold border rounded bg-background hover:bg-accent disabled:opacity-50 transition-opacity"
+                                >
+                                    Next
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                )}
+                    </>
+                )}
+            </DialogContent>
+        </Dialog>
+    );
+};
+
+/* ── On-Demand Engager Analysis Dialog ── */
+const FREQ_ROW_COLORS = {
+    'super-active': 'bg-red-100 dark:bg-red-900/40',
+    regular: 'bg-orange-100 dark:bg-orange-900/35',
+    occasional: 'bg-amber-50 dark:bg-amber-900/25',
+    'one-time': ''
+};
+const FREQ_LEGEND = [
+    { key: 'super-active', label: 'Frequent', color: 'bg-red-300 dark:bg-red-700' },
+    { key: 'regular', label: 'Regular', color: 'bg-orange-300 dark:bg-orange-700' },
+    { key: 'occasional', label: 'Occasional', color: 'bg-amber-200 dark:bg-amber-700' },
+    { key: 'one-time', label: 'One-time', color: 'bg-gray-300 dark:bg-gray-600' }
+];
+
+export const FrequentEngagersDialog = ({ open, onOpenChange, onAddSource, monitoredHandles = [] }) => {
+    const [analyses, setAnalyses] = useState([]);
+    const [topEngagers, setTopEngagers] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
+    const [mainTab, setMainTab] = useState('top'); // 'top' | 'accounts'
+    const [selectedHandle, setSelectedHandle] = useState(null);
+    const [selectedAnalysis, setSelectedAnalysis] = useState(null);
+    const [detailLoading, setDetailLoading] = useState(false);
+    const [activeTab, setActiveTab] = useState('hierarchy');
+    const [engagerPage, setEngagerPage] = useState(1);
+    const [retweetSearch, setRetweetSearch] = useState('');
+    const [listSearch, setListSearch] = useState('');
+    const [listPage, setListPage] = useState(1);
+    const [showFailedAccounts, setShowFailedAccounts] = useState(false);
+    const [topSearch, setTopSearch] = useState('');
+    const [topPage, setTopPage] = useState(1);
+    const LIST_PAGE_SIZE = 20;
+    const TOP_PAGE_SIZE = 25;
+    const PAGE_SIZE = 20;
+
+    const isMonitored = (handle) => {
+        if (!handle || !Array.isArray(monitoredHandles) || monitoredHandles.length === 0) return false;
+        const clean = String(handle).replace(/^@/, '').toLowerCase().trim();
+        return monitoredHandles.some(h => h && String(h).replace(/^@/, '').toLowerCase().trim() === clean);
+    };
+
+    const handleAddSource = (rt) => {
+        if (!onAddSource) return;
+        onAddSource({ platform: 'x', identifier: rt.handle, display_name: rt.name || rt.handle, category: 'unknown' });
+    };
+
+    const retriggerAnalysis = async (handle) => {
+        try {
+            const res = await api.post('/x/engager-analysis', { handle, period_days: 30 });
+            const status = res.data?.status;
+            if (status === 'already_processing') {
+                toast.warning(`Analysis for @${handle} is already in progress.`);
+                return;
+            }
+            if (status === 'blocked') {
+                toast.warning(`Another analysis (@${res.data?.blocked_by}) is still processing. Please wait.`);
+                return;
+            }
+            toast.success(`Re-analysis started for @${handle}`);
+            setAnalyses(prev => prev.map(a => a.handle?.toLowerCase() === handle.toLowerCase() ? { ...a, status: 'processing', error: null, analyzed_at: new Date().toISOString() } : a));
+        } catch {
+            toast.error('Failed to start analysis');
+        }
+    };
+
+    const loadAnalyses = async ({ silent = false } = {}) => {
+        if (silent) setRefreshing(true);
+        else setLoading(true);
+        try {
+            const [allRes, topRes] = await Promise.allSettled([
+                api.get('/x/engager-analysis-all'),
+                api.get('/x/engager-top')
+            ]);
+            if (allRes.status === 'fulfilled') {
+                setAnalyses(allRes.value.data?.analyses || []);
+            } else if (!silent) {
+                console.error('[FrequentEngagers] Failed to load analyses:', allRes.reason);
+                setAnalyses([]);
+            }
+            if (topRes.status === 'fulfilled') {
+                setTopEngagers(topRes.value.data?.engagers || []);
+            } else if (!silent) {
+                console.error('[FrequentEngagers] Failed to load top engagers:', topRes.reason);
+                setTopEngagers([]);
+                toast.error(topRes.reason?.response?.data?.message || 'Failed to load top engagers');
+            }
+        } catch {
+            if (!silent) {
+                setAnalyses([]);
+                setTopEngagers([]);
+            }
+        } finally {
+            if (silent) setRefreshing(false);
+            else setLoading(false);
+        }
+    };
+
+    const openDetail = async (handle) => {
+        setSelectedHandle(handle);
+        setDetailLoading(true);
+        setActiveTab('hierarchy');
+        setEngagerPage(1);
+        setRetweetSearch('');
+        try {
+            const res = await api.get('/x/engager-analysis/latest', { params: { handle } });
+            setSelectedAnalysis(res.data);
+        } catch {
+            setSelectedAnalysis(null);
+        } finally { setDetailLoading(false); }
+    };
+
+    const goBack = () => {
+        setSelectedHandle(null);
+        setSelectedAnalysis(null);
+        loadAnalyses();
+    };
+
+    useEffect(() => {
+        if (open) {
+            loadAnalyses();
+            setSelectedHandle(null);
+            setSelectedAnalysis(null);
+            setListSearch('');
+            setListPage(1);
+            setShowFailedAccounts(false);
+            setTopSearch('');
+            setTopPage(1);
+            setMainTab('top');
+        }
+    }, [open]);
+
+    // Auto-poll every 5s while any analysis is processing
+    useEffect(() => {
+        if (!open || selectedHandle) return;
+        const hasProcessing = analyses.some(a => a.status === 'processing');
+        if (!hasProcessing) return;
+        const iv = setInterval(() => loadAnalyses({ silent: true }), 5000);
+        return () => clearInterval(iv);
+    }, [open, selectedHandle, analyses]);
+
+    const analysis = selectedAnalysis;
+    const engagers = analysis?.engagers || [];
+    const sourceLabel = analysis?.display_name || selectedHandle || '';
+    const sourceAvatar = analysis?.avatar || null;
+    const searchTerm = retweetSearch.trim().toLowerCase();
+    const filteredEngagers = searchTerm
+        ? engagers.filter(e => (e.handle || '').toLowerCase().includes(searchTerm) || (e.name || '').toLowerCase().includes(searchTerm))
+        : engagers;
+
+    const listSearchTerm = listSearch.trim().toLowerCase();
+    const visibleAnalyses = showFailedAccounts
+        ? analyses
+        : analyses.filter(a => a.status !== 'failed');
+    const failedAnalysesCount = analyses.filter(a => a.status === 'failed').length;
+    const filteredAnalyses = listSearchTerm
+        ? visibleAnalyses.filter(a => (a.handle || '').toLowerCase().includes(listSearchTerm) || (a.display_name || '').toLowerCase().includes(listSearchTerm))
+        : visibleAnalyses;
+    const listTotalPages = Math.max(1, Math.ceil(filteredAnalyses.length / LIST_PAGE_SIZE));
+    const pagedAnalyses = filteredAnalyses.slice((listPage - 1) * LIST_PAGE_SIZE, listPage * LIST_PAGE_SIZE);
+
+    const topSearchTerm = topSearch.trim().toLowerCase();
+    const filteredTop = topSearchTerm
+        ? topEngagers.filter(e => (e.handle || '').toLowerCase().includes(topSearchTerm) || (e.name || '').toLowerCase().includes(topSearchTerm))
+        : topEngagers;
+    const topTotalPages = Math.max(1, Math.ceil(filteredTop.length / TOP_PAGE_SIZE));
+    const pagedTop = filteredTop.slice((topPage - 1) * TOP_PAGE_SIZE, topPage * TOP_PAGE_SIZE);
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-[65vw] w-[65vw] max-h-[82vh] p-0 gap-0 overflow-hidden">
+                <DialogHeader className="sr-only">
+                    <DialogTitle>Frequent Engagers</DialogTitle>
+                    <DialogDescription>
+                        Review top engagers and account-level engagement analysis for monitored X handles.
+                    </DialogDescription>
+                </DialogHeader>
+                {!selectedHandle ? (
+                    <>
+                        <div className="px-5 pt-4 pb-3 border-b border-border">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <h2 className="text-sm font-semibold">Frequent Engagers</h2>
+                                    <p className="text-[10px] text-muted-foreground mt-0.5 flex items-center gap-1.5">
+                                        <span>All Twitter engagers ranked by total engagement · auto-updated every 15 min</span>
+                                        {refreshing && <Loader2 className="h-3 w-3 animate-spin text-blue-500" />}
+                                    </p>
+                                </div>
+                                <div className="relative w-52">
+                                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                                    <input type="text" placeholder={mainTab === 'top' ? 'Search engagers…' : 'Search accounts…'}
+                                        value={mainTab === 'top' ? topSearch : listSearch}
+                                        onChange={(e) => { if (mainTab === 'top') { setTopSearch(e.target.value); setTopPage(1); } else { setListSearch(e.target.value); setListPage(1); } }}
+                                        className="w-full pl-6 pr-6 py-1 text-[11px] rounded border bg-background placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary"
+                                    />
+                                    {(mainTab === 'top' ? topSearch : listSearch) && (
+                                        <button onClick={() => { if (mainTab === 'top') { setTopSearch(''); setTopPage(1); } else { setListSearch(''); setListPage(1); } }} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                                            <X className="h-3 w-3" />
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                            {/* Tabs */}
+                            <div className="flex gap-1 mt-3">
+                                <button onClick={() => setMainTab('top')} className={`text-[11px] font-medium px-3 py-1 rounded-md transition-colors ${mainTab === 'top' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent'}`}>
+                                    Top Engagers {topEngagers.length > 0 && <span className="ml-1 opacity-70">({topEngagers.length})</span>}
+                                </button>
+                                <button onClick={() => setMainTab('accounts')} className={`text-[11px] font-medium px-3 py-1 rounded-md transition-colors ${mainTab === 'accounts' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent'}`}>
+                                    Accounts {visibleAnalyses.length > 0 && <span className="ml-1 opacity-70">({visibleAnalyses.length})</span>}
+                                </button>
+                            </div>
+                        </div>
+                        <ScrollArea className="flex-1" style={{ maxHeight: 'calc(82vh - 100px)' }}>
+                            <div className="p-4">
+                                {loading ? (
+                                    <div className="h-48 flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-blue-500" /></div>
+                                ) : mainTab === 'top' ? (
+                                    /* ── Top Engagers combined view ── */
+                                    topEngagers.length === 0 ? (
+                                        <div className="h-48 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+                                            <Users className="h-10 w-10 opacity-25" />
+                                            <p className="text-sm">No engager data yet</p>
+                                            <p className="text-xs text-center text-muted-foreground">Analysis runs automatically every 15 min for all Twitter handles in your alerts.</p>
+                                        </div>
+                                    ) : (
+                                        <>
+                                        <div className="border rounded-lg overflow-hidden">
+                                            <table className="w-full text-xs">
+                                                <thead className="bg-muted/50">
+                                                    <tr>
+                                                        <th className="text-left px-3 py-2 font-semibold w-8">#</th>
+                                                        <th className="text-left px-3 py-2 font-semibold">Engager</th>
+                                                        <th className="text-center px-3 py-2 font-semibold">Total Engagements</th>
+                                                        <th className="text-center px-3 py-2 font-semibold">Accounts Engaged</th>
+                                                        <th className="text-center px-3 py-2 font-semibold">Type</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {pagedTop.map((e, idx) => {
+                                                        const rank = (topPage - 1) * TOP_PAGE_SIZE + idx + 1;
+                                                        const freqColors = {
+                                                            'super-active': 'bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400',
+                                                            'regular': 'bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400',
+                                                            'occasional': 'bg-yellow-100 text-yellow-700 dark:bg-yellow-950/30 dark:text-yellow-400',
+                                                            'one-time': 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                                                        };
+                                                        return (
+                                                            <tr key={e._id || e.handle} className="border-t hover:bg-accent/30 transition-colors">
+                                                                <td className="px-3 py-2 text-muted-foreground font-medium">{rank}</td>
+                                                                <td className="px-3 py-2">
+                                                                    <div className="flex items-center gap-2">
+                                                                        {e.avatar ? (
+                                                                            <img src={e.avatar} alt="" className="h-6 w-6 rounded-full object-cover shrink-0" />
+                                                                        ) : (
+                                                                            <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center text-[9px] font-bold shrink-0">
+                                                                                {(e.handle || '?')[0].toUpperCase()}
+                                                                            </div>
+                                                                        )}
+                                                                        <div>
+                                                                            <span className="font-medium">@{e.handle}</span>
+                                                                            {e.name && e.name !== e.handle && <span className="text-[10px] text-muted-foreground ml-1.5">{e.name}</span>}
+                                                                        </div>
+                                                                    </div>
+                                                                </td>
+                                                                <td className="px-3 py-2 text-center font-bold">{e.total_engagements}</td>
+                                                                <td className="px-3 py-2 text-center text-muted-foreground">{e.accounts_engaged_count ?? (e.accounts_engaged || []).length}</td>
+                                                                <td className="px-3 py-2 text-center">
+                                                                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${freqColors[e.top_frequency] || freqColors['one-time']}`}>
+                                                                        {e.top_frequency || 'one-time'}
+                                                                    </span>
+                                                                </td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        {topTotalPages > 1 && (
+                                            <div className="flex items-center justify-between pt-3">
+                                                <span className="text-[9px] text-muted-foreground">{filteredTop.length} engager{filteredTop.length !== 1 ? 's' : ''} · Page {topPage}/{topTotalPages}</span>
+                                                <div className="flex gap-1">
+                                                    <Button size="sm" variant="outline" className="h-6 text-[9px] px-2" disabled={topPage <= 1} onClick={() => setTopPage(p => p - 1)}>Prev</Button>
+                                                    <Button size="sm" variant="outline" className="h-6 text-[9px] px-2" disabled={topPage >= topTotalPages} onClick={() => setTopPage(p => p + 1)}>Next</Button>
+                                                </div>
+                                            </div>
+                                        )}
+                                        {topSearchTerm && filteredTop.length === 0 && (
+                                            <div className="h-24 flex items-center justify-center text-xs text-muted-foreground">No engagers match "{topSearch}"</div>
+                                        )}
+                                        </>
+                                    )
+                                ) : (
+                                    /* ── Accounts tab ── */
+                                    visibleAnalyses.length === 0 ? (
+                                        <div className="h-48 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+                                            <Users className="h-10 w-10 opacity-25" />
+                                            <p className="text-sm">{failedAnalysesCount > 0 && !showFailedAccounts ? 'No visible analyses' : 'No analyses yet'}</p>
+                                            <p className="text-xs text-muted-foreground">
+                                                {failedAnalysesCount > 0 && !showFailedAccounts
+                                                    ? `All currently hidden rows are failed analyses. Use "Show failed (${failedAnalysesCount})" to review them.`
+                                                    : 'Analysis runs automatically for monitored X handles.'}
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <>
+                                        <div className="mb-3 flex items-center justify-between gap-3">
+                                            <div className="text-[10px] text-muted-foreground">
+                                                Showing completed and in-progress monitored X accounts first.
+                                            </div>
+                                            {failedAnalysesCount > 0 && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { setShowFailedAccounts(v => !v); setListPage(1); }}
+                                                    className="text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors"
+                                                >
+                                                    {showFailedAccounts ? 'Hide' : 'Show'} failed ({failedAnalysesCount})
+                                                </button>
+                                            )}
+                                        </div>
+                                        <div className="border rounded-lg overflow-hidden">
+                                            <table className="w-full text-xs">
+                                                <thead className="bg-muted/50">
+                                                    <tr>
+                                                        <th className="text-left px-3 py-2 font-semibold">Account</th>
+                                                        <th className="text-center px-3 py-2 font-semibold">Status</th>
+                                                        <th className="text-center px-3 py-2 font-semibold">Tweets</th>
+                                                        <th className="text-center px-3 py-2 font-semibold">Engagers</th>
+                                                        <th className="text-center px-3 py-2 font-semibold">Last Analyzed</th>
+                                                        <th className="text-center px-3 py-2 font-semibold w-16"></th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {pagedAnalyses.map(a => (
+                                                        <tr key={a.id || a._id || a.handle_lower}
+                                                            className={`border-t transition-colors ${a.status === 'completed' ? 'cursor-pointer hover:bg-accent/50' : ''} ${a.status === 'processing' ? 'bg-yellow-50 dark:bg-yellow-950/10' : a.status === 'failed' ? 'bg-red-50/50 dark:bg-red-950/5' : ''}`}
+                                                            onClick={() => a.status === 'completed' ? openDetail(a.handle) : null}
+                                                        >
+                                                            <td className="px-3 py-2">
+                                                                <div className="flex items-center gap-2">
+                                                                    {a.avatar ? (
+                                                                        <img src={a.avatar} alt="" className="h-6 w-6 rounded-full object-cover shrink-0" />
+                                                                    ) : (
+                                                                        <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center text-[9px] font-bold shrink-0">
+                                                                            {(a.display_name || a.handle || '?')[0].toUpperCase()}
+                                                                        </div>
+                                                                    )}
+                                                                    <div>
+                                                                        <span className="font-medium">@{a.handle}</span>
+                                                                        {a.display_name && a.display_name !== a.handle && <span className="text-[10px] text-muted-foreground ml-1.5">{a.display_name}</span>}
+                                                                    </div>
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-3 py-2 text-center">
+                                                                <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${
+                                                                    a.status === 'completed' ? 'bg-green-100 text-green-700 dark:bg-green-950/30 dark:text-green-400' :
+                                                                    a.status === 'processing' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-950/30 dark:text-yellow-400' :
+                                                                    a.status === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400' :
+                                                                    'bg-gray-100 text-gray-600'
+                                                                }`}>
+                                                                    {a.status === 'processing' && <Loader2 className="h-2.5 w-2.5 animate-spin inline mr-0.5" />}
+                                                                    {a.status}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-3 py-2 text-center font-medium">{a.tweets_analyzed || '-'}</td>
+                                                            <td className="px-3 py-2 text-center font-medium">{a.unique_retweeters || '-'}</td>
+                                                            <td className="px-3 py-2 text-center text-muted-foreground">
+                                                                {a.analyzed_at ? format(new Date(a.analyzed_at), 'MMM d, h:mm a') : '-'}
+                                                            </td>
+                                                            <td className="px-3 py-2 text-center">
+                                                                {a.status === 'failed' && (
+                                                                    <Button size="sm" variant="outline" className="h-5 text-[9px] px-1.5" onClick={(e) => { e.stopPropagation(); retriggerAnalysis(a.handle); }}>
+                                                                        Retry
+                                                                    </Button>
+                                                                )}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        {listTotalPages > 1 && (
+                                            <div className="flex items-center justify-between pt-3">
+                                                <span className="text-[9px] text-muted-foreground">{filteredAnalyses.length} account{filteredAnalyses.length !== 1 ? 's' : ''} · Page {listPage}/{listTotalPages}</span>
+                                                <div className="flex gap-1">
+                                                    <Button size="sm" variant="outline" className="h-6 text-[9px] px-2" disabled={listPage <= 1} onClick={() => setListPage(p => p - 1)}>Prev</Button>
+                                                    <Button size="sm" variant="outline" className="h-6 text-[9px] px-2" disabled={listPage >= listTotalPages} onClick={() => setListPage(p => p + 1)}>Next</Button>
+                                                </div>
+                                            </div>
+                                        )}
+                                        {listSearchTerm && filteredAnalyses.length === 0 && (
+                                            <div className="h-24 flex items-center justify-center text-xs text-muted-foreground">No accounts match "{listSearch}"</div>
+                                        )}
+                                        </>
+                                    )
+                                )}
+                            </div>
+                        </ScrollArea>
+                    </>
+                ) : (
+                    <>
+                        <div className="px-5 pt-4 pb-3 border-b border-border">
+                            <div className="flex items-center gap-3">
+                                <button onClick={goBack} className="text-muted-foreground hover:text-foreground transition-colors">
+                                    <ChevronRight className="h-4 w-4 rotate-180" />
+                                </button>
+                                <div className="flex items-center gap-2 min-w-0">
+                                    {sourceAvatar ? (
+                                        <img src={sourceAvatar} alt="" className="h-8 w-8 rounded-full object-cover" />
+                                    ) : (
+                                        <div className="h-8 w-8 rounded-full bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center">
+                                            <Users className="h-4 w-4 text-white" />
+                                        </div>
+                                    )}
+                                    <div>
+                                        <h2 className="text-sm font-semibold">@{selectedHandle}</h2>
+                                        {analysis && <p className="text-[10px] text-muted-foreground">{analysis.tweets_analyzed} tweets · {analysis.unique_retweeters} engagers · {analysis.period_days}-day window</p>}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {detailLoading ? (
+                            <div className="h-64 flex items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-blue-500" /></div>
+                        ) : !analysis ? (
+                            <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">No completed analysis found.</div>
+                        ) : (
+                            <div className="flex flex-col lg:flex-row overflow-hidden" style={{ height: 'calc(82vh - 100px)' }}>
+                                {/* LEFT — Network Map */}
+                                <div className="lg:w-[45%] w-full shrink-0 border-b lg:border-b-0 lg:border-r border-border flex flex-col">
+                                    <div className="px-4 py-2 border-b border-border bg-muted/10 shrink-0">
+                                        <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                                            <Network className="h-3.5 w-3.5" /> Network Map
+                                        </div>
+                                    </div>
+                                    <div className="flex-1 flex items-center justify-center p-3">
+                                        <RetweetTree
+                                            sourceHandle={selectedHandle}
+                                            sourceName={sourceLabel}
+                                            sourceAvatar={sourceAvatar}
+                                            topRetweeters={engagers.slice(0, 8).map(e => ({ ...e, tweet_count: e.tweets_retweeted }))}
+                                            totalRetweeters={analysis.unique_retweeters || 0}
+                                            onNodeClick={handleAddSource}
+                                            isMonitored={isMonitored}
+                                        />
+                                    </div>
+                                    <div className="flex items-start gap-2 px-3 py-2 border-t border-border bg-muted/10 shrink-0">
+                                        <Info className="h-3 w-3 text-blue-500 mt-0.5 shrink-0" />
+                                        <p className="text-[9px] text-muted-foreground leading-relaxed">
+                                            Click any node to <strong>add them as a monitoring source</strong>.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {/* RIGHT — Engager Table */}
+                                <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+                                    <div className="px-3 pt-2 pb-0 shrink-0 space-y-2">
+                                        <div className="flex items-center gap-2">
+                                            <div className="flex border-b border-border">
+                                                <button onClick={() => { setActiveTab('hierarchy'); setEngagerPage(1); setRetweetSearch(''); }} className={`flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium border-b-2 transition-colors -mb-px ${activeTab === 'hierarchy' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+                                                    <Users className="h-3 w-3" /> All Engagers
+                                                    <span className={`ml-0.5 text-[9px] px-1 py-0.5 rounded-full font-bold ${activeTab === 'hierarchy' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>{analysis.unique_retweeters}</span>
+                                                </button>
+                                            </div>
+                                            <div className="flex-1" />
+                                            <div className="relative w-48">
+                                                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+                                                <input type="text" placeholder="Search…" value={retweetSearch}
+                                                    onChange={(e) => { setRetweetSearch(e.target.value); setEngagerPage(1); }}
+                                                    className="w-full pl-6 pr-6 py-1 text-[11px] rounded border bg-background placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary"
+                                                />
+                                                {retweetSearch && (
+                                                    <button onClick={() => { setRetweetSearch(''); setEngagerPage(1); }} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                                                        <X className="h-3 w-3" />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                        {searchTerm && <div className="text-[9px] text-muted-foreground">{filteredEngagers.length} result{filteredEngagers.length !== 1 ? 's' : ''}</div>}
+                                    </div>
+
+                                    <ScrollArea className="flex-1">
+                                        <div className="px-3 py-2">
+                                            {(() => {
+                                                const totalPages = Math.ceil(filteredEngagers.length / PAGE_SIZE);
+                                                const paged = filteredEngagers.slice((engagerPage - 1) * PAGE_SIZE, engagerPage * PAGE_SIZE);
+                                                return (
+                                                <div className="space-y-2">
+                                                    {filteredEngagers.length === 0 ? (
+                                                        <div className="h-32 flex items-center justify-center text-xs text-muted-foreground">
+                                                            {searchTerm ? 'No engagers match your search.' : 'No retweeters found.'}
+                                                        </div>
+                                                    ) : (<>
+                                                        <div className="border rounded-lg overflow-hidden">
+                                                            <table className="w-full table-fixed text-[11px]">
+                                                                <colgroup>
+                                                                    <col style={{ width: '55%' }} />
+                                                                    <col style={{ width: '25%' }} />
+                                                                    <col style={{ width: '20%' }} />
+                                                                </colgroup>
+                                                                <thead className="bg-muted/50">
+                                                                    <tr>
+                                                                        <th className="text-left px-2 py-1.5 font-semibold">Engager</th>
+                                                                        <th className="text-center px-2 py-1.5 font-semibold">Retweeted</th>
+                                                                        <th className="text-center px-2 py-1.5 font-semibold">Monitor</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody>
+                                                                    {paged.map((rt) => {
+                                                                        const already = isMonitored(rt.handle);
+                                                                        const freq = rt.frequency || 'one-time';
+                                                                        return (
+                                                                            <tr key={rt.handle} className={`border-t transition-colors ${FREQ_ROW_COLORS[freq] || ''}`}>
+                                                                                <td className="px-2 py-1.5 align-middle">
+                                                                                    <div className="flex items-center gap-1.5">
+                                                                                        {rt.avatar ? (
+                                                                                            <img src={rt.avatar} alt="" className="h-5 w-5 rounded-full object-cover shrink-0" />
+                                                                                        ) : (
+                                                                                            <div className="h-5 w-5 rounded-full bg-muted flex items-center justify-center text-[8px] font-bold shrink-0">
+                                                                                                {(rt.name || rt.handle || '?')[0].toUpperCase()}
+                                                                                            </div>
+                                                                                        )}
+                                                                                        <div className="flex flex-col min-w-0">
+                                                                                            <a href={`https://x.com/${rt.handle}`} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline text-[11px] break-all leading-tight">@{rt.handle}</a>
+                                                                                            {rt.name && rt.name !== rt.handle && <span className="text-[9px] text-muted-foreground leading-tight truncate">{rt.name}</span>}
+                                                                                        </div>
+                                                                                        {rt.verified && <CheckCircle2 className="h-2.5 w-2.5 text-blue-500 shrink-0" />}
+                                                                                    </div>
+                                                                                </td>
+                                                                                <td className="px-2 py-1.5 text-center align-middle">
+                                                                                    <span className="font-bold">{rt.tweets_retweeted}</span>
+                                                                                    <span className="text-[9px] text-muted-foreground"> / {analysis.tweets_analyzed}</span>
+                                                                                </td>
+                                                                                <td className="px-2 py-1.5 text-center align-middle">
+                                                                                    {onAddSource && !already ? (
+                                                                                        <Button size="sm" variant="outline" className="h-5 gap-0.5 text-[9px] px-1.5 border-green-300 text-green-700 hover:bg-green-50 dark:hover:bg-green-950/20 dark:text-green-400 dark:border-green-800" onClick={() => handleAddSource(rt)}>
+                                                                                            <UserPlus className="h-2.5 w-2.5" /> Add
+                                                                                        </Button>
+                                                                                    ) : already ? (
+                                                                                        <span className="inline-flex items-center gap-0.5 text-[9px] text-green-600 font-medium"><Check className="h-2.5 w-2.5" /> Monitored</span>
+                                                                                    ) : null}
+                                                                                </td>
+                                                                            </tr>
+                                                                        );
+                                                                    })}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                        {totalPages > 1 && (
+                                                            <div className="flex items-center justify-between pt-1">
+                                                                <span className="text-[9px] text-muted-foreground">{filteredEngagers.length} total · Page {engagerPage}/{totalPages}</span>
+                                                                <div className="flex gap-1">
+                                                                    <Button size="sm" variant="outline" className="h-6 text-[9px] px-2" disabled={engagerPage <= 1} onClick={() => setEngagerPage(p => p - 1)}>Prev</Button>
+                                                                    <Button size="sm" variant="outline" className="h-6 text-[9px] px-2" disabled={engagerPage >= totalPages} onClick={() => setEngagerPage(p => p + 1)}>Next</Button>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </>)}
+                                                </div>
+                                                );
+                                            })()}
+                                        </div>
+                                    </ScrollArea>
+
+                                    <div className="flex items-center gap-3 px-3 py-1.5 border-t border-border bg-muted/10 shrink-0 flex-wrap">
+                                        {FREQ_LEGEND.map(f => (
+                                            <div key={f.key} className="flex items-center gap-1">
+                                                <div className={`w-2.5 h-2.5 rounded-sm ${f.color}`} />
+                                                <span className="text-[9px] text-muted-foreground">{f.label}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </>
+                )}
+            </DialogContent>
+        </Dialog>
+    );
+};

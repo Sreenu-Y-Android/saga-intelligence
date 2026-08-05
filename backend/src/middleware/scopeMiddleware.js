@@ -10,8 +10,8 @@
  *   • superadmin / super_admin  → full visibility (canSeeAll = true)
  *   • mla                       → exactly one assigned_constituency
  *   • mp                        → one assigned_lok_sabha (all child ACs)
- *   • special_leader             → one assigned_constituency (e.g. the Deputy CM's seat);
- *                                  by default; super admin may grant more
+ *   • special_leader               → one assigned_constituency (set per
+ *                                  deployment; super admin may grant more
  *                                  via extra_constituencies)
  *   • anything else (level-1, analyst, viewer, …) → backwards-compatible
  *                                  full visibility, to avoid breaking the
@@ -30,7 +30,7 @@ const normalizeKey = (value) =>
     .replace(/[^a-z0-9]/g, '')
     .trim();
 
-const SCOPED_ROLES = new Set(['mla', 'mp', 'special_leader', 'constituency_manager', 'nara_lokesh']);
+const SCOPED_ROLES = new Set(['mla', 'mp', 'special_leader', 'constituency_manager']);
 
 // Roles that see every constituency but are NOT super admins (read-only state view).
 const STATEWIDE_READ_ROLES = new Set(['party_leadership']);

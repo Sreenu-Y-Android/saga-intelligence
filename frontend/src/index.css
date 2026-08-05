@@ -336,7 +336,7 @@ code {
     .animate-fade-in {
         animation: fadeIn 0.3s ease-out forwards;
     }
-    
+
     @keyframes fadeIn {
         from {
             opacity: 0;
@@ -347,12 +347,12 @@ code {
             transform: translateY(0);
         }
     }
-    
+
     /* Slide-in from left (for sidebar) */
     .animate-slide-in-left {
         animation: slideInLeft 0.3s ease-out forwards;
     }
-    
+
     @keyframes slideInLeft {
         from {
             transform: translateX(-100%);
@@ -361,7 +361,7 @@ code {
             transform: translateX(0);
         }
     }
-    
+
     /* Pulse for status indicators */
     .animate-pulse-slow {
         animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
@@ -384,6 +384,80 @@ code {
         100% {
             transform: translateX(100%) scaleX(0.5);
         }
+    }
+}
+
+/* ========================
+   TDP Brand Animations
+   (used by Login page and hero sections)
+   ======================== */
+@layer utilities {
+
+    /* TDP accent flag wave */
+    .tdp-flag-wave {
+        animation: tdpFlagWave 5s ease-in-out infinite;
+        transform-origin: left center;
+    }
+
+    @keyframes tdpFlagWave {
+        0%, 100% { transform: skewY(0deg) translateY(0px); }
+        25%      { transform: skewY(-2deg) translateY(-3px); }
+        50%      { transform: skewY(0deg) translateY(0px); }
+        75%      { transform: skewY(2deg) translateY(3px); }
+    }
+
+    /* Glow ring around the leader photo */
+    .tdp-glow {
+        animation: tdpGlow 3.4s ease-in-out infinite;
+    }
+
+    @keyframes tdpGlow {
+        0%, 100% {
+            box-shadow:
+                0 0 0 4px rgba(255,210,0,0.35),
+                0 0 36px 6px rgba(255,210,0,0.55),
+                0 0 80px 12px rgba(217,119,6,0.35);
+        }
+        50% {
+            box-shadow:
+                0 0 0 6px rgba(251,191,36,0.55),
+                0 0 60px 10px rgba(251,191,36,0.8),
+                0 0 120px 18px rgba(217,119,6,0.55);
+        }
+    }
+
+    /* Slow shimmering gradient sweep for headlines/buttons */
+    .tdp-gradient-shimmer {
+        background-size: 200% 100%;
+        animation: tdpGradientShimmer 4s linear infinite;
+    }
+
+    @keyframes tdpGradientShimmer {
+        0%   { background-position:   0% 50%; }
+        100% { background-position: 200% 50%; }
+    }
+
+    /* Rising particles (small dots, used behind login card) */
+    .tdp-particle {
+        animation: tdpParticleRise var(--particle-duration, 9s) linear infinite;
+        animation-delay: var(--particle-delay, 0s);
+    }
+
+    @keyframes tdpParticleRise {
+        0%   { transform: translateY(20vh) translateX(0); opacity: 0; }
+        10%  { opacity: 0.85; }
+        90%  { opacity: 0.85; }
+        100% { transform: translateY(-110vh) translateX(var(--particle-drift, 40px)); opacity: 0; }
+    }
+
+    /* Pulse the gold accent line under brand titles */
+    .tdp-underline-pulse {
+        animation: tdpUnderlinePulse 2.4s ease-in-out infinite;
+    }
+
+    @keyframes tdpUnderlinePulse {
+        0%, 100% { opacity: 0.7; transform: scaleX(0.85); }
+        50%      { opacity: 1;   transform: scaleX(1.05); }
     }
 }
 

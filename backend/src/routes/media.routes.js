@@ -436,8 +436,16 @@ router.get('/stream', async (req, res) => {
 
     console.log(`[MediaProxy] Streaming: ${hostname} (UA: ${req.headers['user-agent']})`);
 
+    // Decide whether to fetch as buffer (so we can rewrite manifests) or stream.
+    // HLS manifests (.m3u8) and DASH manifests (.mpd) must be rewritten so the
+    // segment URLs they reference also flow through this proxy. Everything else
+    // streams as-is for performance.
+    const lowerPath = (parsed.pathname || '').toLowerCase();
+    const isManifest = lowerPath.endsWith('.m3u8') || lowerPath.endsWith('.mpd');
+
     const upstream = await axios.get(rawUrl, {
-      responseType: 'stream',
+      // Buffer manifests so we can rewrite them; stream everything else.
+      responseType: isManifest ? 'arraybuffer' : 'stream',
       httpsAgent: new https.Agent({ rejectUnauthorized: false }),
       headers: {
         ...(range ? { Range: range } : {}),
@@ -450,7 +458,10 @@ router.get('/stream', async (req, res) => {
         'Sec-Fetch-Site': 'cross-site'
       },
       validateStatus: (status) => true,
-      decompress: false,
+      // Always decompress: HLS.js / <video> expect identity-encoded bytes once
+      // Content-Encoding is stripped, and we'd otherwise serve gzipped blobs
+      // labeled as plain m3u8/video.
+      decompress: true,
       maxContentLength: Infinity,
       maxBodyLength: Infinity,
       timeout: 30000
@@ -460,18 +471,19 @@ router.get('/stream', async (req, res) => {
       console.warn(`[MediaProxy] Upstream returned ${upstream.status} for ${hostname}`);
     }
 
-    // If upstream returns HTML for a media request, the URL has expired or redirected to an
-    // error page. Abort early so the browser gets a clean 502 instead of an HTML blob that
-    // gets saved as .html when the user tries to save the image/video.
     const upstreamContentType = (upstream.headers?.['content-type'] || '').toLowerCase();
-    if (upstreamContentType.includes('text/html')) {
-      upstream.data.destroy();
+
+    // For streamed responses, abort on HTML (expired URL or login page).
+    if (!isManifest && upstreamContentType.includes('text/html')) {
+      upstream.data.destroy?.();
       return res.status(502).json({ error: 'Upstream returned HTML — media URL may have expired' });
     }
 
+    // Headers to forward as-is. NOTE: we intentionally drop content-encoding and
+    // content-length because axios has already decompressed the body, so the
+    // upstream-reported length/encoding no longer match what we're about to send.
     const passthroughHeaders = [
       'content-type',
-      'content-length',
       'accept-ranges',
       'content-range',
       'etag',
@@ -484,9 +496,40 @@ router.get('/stream', async (req, res) => {
       if (value) res.setHeader(headerName, value);
     }
 
-    // If upstream returned partial content, preserve it.
-    res.status(upstream.status);
+    if (isManifest) {
+      // Rewrite all URLs inside the manifest to also flow through this proxy.
+      const text = Buffer.from(upstream.data).toString('utf8');
+      const baseHref = rawUrl.replace(/[^/]*$/, ''); // directory of the manifest
+      const proxyBase = `/api/media/stream?url=`;
+      const rewriteUrl = (raw) => {
+        let abs = raw;
+        if (!/^https?:\/\//i.test(abs)) {
+          try { abs = new URL(abs, baseHref).toString(); } catch (_) { return raw; }
+        }
+        return `${proxyBase}${encodeURIComponent(abs)}`;
+      };
 
+      const rewritten = text
+        .split(/\r?\n/)
+        .map((line) => {
+          if (!line || line.startsWith('#')) {
+            // Rewrite URIs inside attribute lists (e.g. #EXT-X-KEY:URI="..."
+            // or #EXT-X-MAP:URI="...") and EXT-X-MEDIA URI references.
+            return line.replace(/URI="([^"]+)"/g, (_, u) => `URI="${rewriteUrl(u)}"`);
+          }
+          // Non-comment lines in m3u8 are segment URIs.
+          return rewriteUrl(line.trim());
+        })
+        .join('\n');
+
+      const body = Buffer.from(rewritten, 'utf8');
+      res.setHeader('content-length', body.length);
+      res.status(upstream.status === 206 ? 200 : upstream.status);
+      return res.end(body);
+    }
+
+    // For non-manifest streamed responses, preserve the upstream status (incl. 206 partial).
+    res.status(upstream.status);
     upstream.data.pipe(res);
     upstream.data.on('error', (err) => {
       console.error('[StreamProxy] Upstream stream error:', err.message);
@@ -589,6 +632,40 @@ router.get('/proxy/:videoId', async (req, res) => {
     res.status(error.response?.status || 500).json({
       error: error.response?.data?.detail || 'Failed to download video. It may have been cleaned up.'
     });
+  }
+});
+
+// Fetch a fresh direct MP4 URL for a Twitter/X video using the syndication API.
+// Useful when the stored video.twimg.com URL has expired and S3 archival was not available.
+router.get('/twitter-video', async (req, res) => {
+  const tweetId = String(req.query.tweetId || '').trim();
+  if (!tweetId || !/^\d{5,25}$/.test(tweetId)) {
+    return res.status(400).json({ error: 'Valid numeric tweetId required' });
+  }
+  try {
+    const response = await axios.get('https://cdn.syndication.twimg.com/tweet-result', {
+      params: { id: tweetId, token: 'x' },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Referer': 'https://platform.twitter.com/'
+      },
+      timeout: 10000
+    });
+    const mediaDetails = response.data?.mediaDetails || [];
+    for (const m of mediaDetails) {
+      if ((m.type === 'video' || m.type === 'animated_gif') && m.video_info?.variants) {
+        const mp4s = m.video_info.variants
+          .filter(v => v.content_type === 'video/mp4')
+          .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+        if (mp4s.length > 0) {
+          return res.json({ url: mp4s[0].url, source: 'syndication' });
+        }
+      }
+    }
+    return res.status(404).json({ error: 'No video found for this tweet' });
+  } catch (err) {
+    console.error(`[MediaRoutes] Twitter syndication failed for ${tweetId}: ${err.message}`);
+    return res.status(502).json({ error: 'Syndication API unavailable' });
   }
 });
 

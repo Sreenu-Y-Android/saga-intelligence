@@ -1,5 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { hasAnyRole } = require('../utils/authIdentity');
+const { buildScope } = require('./scopeMiddleware');
 
 const protect = async (req, res, next) => {
   let token;
@@ -22,6 +24,8 @@ const protect = async (req, res, next) => {
         return res.status(401).json({ message: 'Not authorized, user not found' });
       }
 
+      req.scope = buildScope(req.user);
+
       next();
     } catch (error) {
       console.error(error);
@@ -36,7 +40,7 @@ const protect = async (req, res, next) => {
 
 const authorize = (...roles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    if (!hasAnyRole(req.user.role, roles)) {
       return res.status(403).json({ 
         message: `User role ${req.user.role} is not authorized to access this route`
       });

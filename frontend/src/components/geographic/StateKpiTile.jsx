@@ -2,6 +2,7 @@ import React from 'react';
 import { ArrowUpRight, ArrowDownRight, Info } from 'lucide-react';
 import Sparkline from './Sparkline';
 import useCountUp from '../../hooks/useCountUp';
+import { formatPctChange } from './formatPctChange';
 
 const STATUS_DOT = {
   good: 'bg-emerald-500',
@@ -57,18 +58,6 @@ const StateKpiTile = ({
       ? (up ? 'text-amber-600' : 'text-slate-400')
       : ((up === changeIsGood) ? 'text-emerald-600' : 'text-red-500');
 
-  const formatChange = (val, unit) => {
-    const abs = Math.abs(val);
-    if (unit === 'pp') {
-      return `${abs} pp`;
-    }
-    if (abs >= 1000) {
-      const times = (abs / 100).toFixed(1);
-      return `${parseFloat(times)}x`;
-    }
-    return `${abs}%`;
-  };
-
   return (
     <div
       onClick={onClick}
@@ -85,9 +74,15 @@ const StateKpiTile = ({
           {status && <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[status] || STATUS_DOT.neutral}`} />}
         </div>
         {tooltip && (
-          <div className="relative">
-            <Info className="h-3 w-3 text-slate-300 group-hover:text-slate-400 cursor-help" />
-            <div className="pointer-events-none absolute right-0 top-5 z-20 w-48 rounded-lg bg-slate-800 text-white text-[10px] leading-snug px-2.5 py-2 opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
+          <div className="relative group/tip">
+            <button
+              type="button"
+              className="text-slate-300 hover:text-slate-400 focus-visible:text-slate-500 cursor-help outline-none"
+              aria-label={`How ${label} is calculated`}
+            >
+              <Info className="h-3 w-3" />
+            </button>
+            <div className="pointer-events-none absolute right-0 top-5 z-20 w-48 rounded-lg bg-slate-800 text-white text-[10px] leading-snug px-2.5 py-2 opacity-0 group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 transition-opacity shadow-lg">
               {tooltip}
             </div>
           </div>
@@ -104,7 +99,7 @@ const StateKpiTile = ({
               {changePct !== undefined && changePct !== null && (
                 <span className={`inline-flex items-center gap-0.5 font-bold ${trendColor}`}>
                   {up ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
-                  {formatChange(changePct, changeUnit)}
+                  {formatPctChange(changePct, changeUnit)}
                 </span>
               )}
               <span className="text-slate-400 truncate">{detail || compareLabel}</span>

@@ -3,9 +3,10 @@ import { useSearchParams } from 'react-router-dom';
 import api, { extractLocationsBatch } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
 import {
-    Search, Shield, FileText, CheckCircle2, Calendar, Clock,
+    Search, Shield, FileText, CheckCircle2, Calendar, Clock, ArrowLeft,
     AlertCircle, X, RefreshCw, Plus, Trash2, Loader2, Download,
-    Building2, Users, BadgeCheck, CalendarDays, Filter, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Tag, MapPin
+    Building2, Users, BadgeCheck, CalendarDays, Filter, ChevronDown, ExternalLink, Tag, Rss,
+    LayoutGrid, LayoutList, ImageOff, Video as VideoIcon
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -32,23 +33,137 @@ import { format } from 'date-fns';
 import { VideoPlayer, normalizeMediaList } from '../components/AlertCards';
 import { GrievanceCard } from '../components/grievances/GrievanceCard';
 import { GrievanceTopNavbar } from '../components/grievances/GrievanceTopNavbar';
-import { TopMlaWatchCard } from '../components/grievances/TopMlaWatchCard';
 import { CriticismPopup } from '../components/grievances/CriticismPopup';
 import { CriticismReports } from '../components/grievances/CriticismReports';
 import { GrievancePopup } from '../components/grievances/GrievancePopup';
 import { GrievanceWorkflowReports } from '../components/grievances/GrievanceWorkflowReports';
 import { GrievanceStatusChangePopup } from '../components/grievances/GrievanceStatusChangePopup';
-import { FrequentEngagersDialog } from '../components/FrequentEngagersDialog';
 import { QueryPopup } from '../components/grievances/QueryPopup';
 import { QueryReports } from '../components/grievances/QueryReports';
 import { SuggestionPopup } from '../components/grievances/SuggestionPopup';
 import { SuggestionReports } from '../components/grievances/SuggestionReports';
 import GrievanceAnalysisModal from '../components/grievances/GrievanceAnalysisModal';
+import { RssNewsCard } from '../components/grievances/RssNewsCard';
 import { useRbac } from '../contexts/RbacContext';
-import { usePoliticianNavigation } from '../contexts/PoliticianNavigationContext';
-import { buildKeywordList, scoreRelevance } from '../utils/keywordService';
-import { TOP_10_MINISTERS, getMinisterById, getMinisterInitials } from '../data/telanganaMinistersData';
-import { MlaAnalyticsSummary } from '../components/grievances/MlaAnalyticsSummary';
+import { canManageRestrictedGrievanceUi } from '../lib/grievanceUiPermissions';
+//added
+
+const EMPTY_SENTIMENT_LEADERS = {
+    positive: [],
+    negative: [],
+    moderate: []
+};
+
+/* ─── Fullscreen Image with fallback chain ─── */
+const FullscreenImage = ({ url, fallbackUrl, allUrls = [] }) => {
+    const candidates = React.useMemo(() => {
+        const seen = new Set();
+        const out = [];
+        for (const u of [url, fallbackUrl, ...allUrls]) {
+            if (!u || seen.has(u)) continue;
+            seen.add(u);
+            out.push(u);
+        }
+        return out;
+    }, [url, fallbackUrl, allUrls]);
+
+    const [idx, setIdx] = React.useState(0);
+
+    if (!candidates.length || idx >= candidates.length) {
+        return (
+            <div className="flex flex-col items-center justify-center text-white/50 select-none">
+                <ImageOff className="h-16 w-16 mb-3" />
+                <span className="text-sm font-medium uppercase tracking-wider">Image unavailable</span>
+            </div>
+        );
+    }
+
+    return (
+        <img
+            src={candidates[idx]}
+            alt="Media"
+            className="max-w-full max-h-full object-contain"
+            referrerPolicy="no-referrer"
+            onError={() => setIdx((i) => i + 1)}
+        />
+    );
+};
+/* ─── Fullscreen Video Player with full fallback chain ─── */
+const RobustVideoPlayer = ({ selectedMedia, selectedGrievance, getProxiedMediaUrl, videoRefreshUrl, setVideoRefreshUrl, videoRefreshing, setVideoRefreshing, BACKEND_URL }) => {
+    const candidates = React.useMemo(() => {
+        const raw = [
+            videoRefreshUrl,
+            selectedGrievance?.content?.archived_video_url,
+            selectedMedia?.video_url,
+            selectedMedia?.s3_url,
+            selectedMedia?.url,
+            selectedMedia?.original_url,
+            selectedMedia?.original_video_url
+        ].filter(u => typeof u === 'string' && u.length > 0);
+        const proxied = raw.map(u => getProxiedMediaUrl(u)).filter(Boolean);
+        const seen = new Set();
+        return [...raw, ...proxied].filter(u => { if (!u || seen.has(u)) return false; seen.add(u); return true; });
+    }, [selectedMedia, selectedGrievance, getProxiedMediaUrl, videoRefreshUrl]);
+
+    const [urlIdx, setUrlIdx] = React.useState(0);
+    const [triedRefresh, setTriedRefresh] = React.useState(false);
+
+    const currentUrl = candidates[urlIdx];
+
+    const handleError = React.useCallback(async () => {
+        // Try next URL in the chain
+        if (urlIdx + 1 < candidates.length) {
+            setUrlIdx(i => i + 1);
+            return;
+        }
+        // Last resort: try Twitter API refresh
+        if (!triedRefresh && !videoRefreshing) {
+            const tweetId = selectedMedia?.tweet_id;
+            if (tweetId && /^\d{5,25}$/.test(tweetId)) {
+                setVideoRefreshing(true);
+                setTriedRefresh(true);
+                try {
+                    const resp = await fetch(`${BACKEND_URL}/api/media/twitter-video?tweetId=${tweetId}`);
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        if (data.url) {
+                            setVideoRefreshUrl(getProxiedMediaUrl(data.url));
+                            return;
+                        }
+                    }
+                } catch (_) {}
+                setVideoRefreshing(false);
+            }
+        }
+        toast.error('Failed to load video.');
+    }, [urlIdx, candidates, triedRefresh, videoRefreshing, selectedMedia, BACKEND_URL, getProxiedMediaUrl, setVideoRefreshUrl, setVideoRefreshing]);
+
+    if (!currentUrl) {
+        return (
+            <div className="flex flex-col items-center justify-center text-white/50 select-none">
+                <VideoIcon className="h-16 w-16 mb-3" />
+                <span className="text-sm font-medium uppercase tracking-wider">Video unavailable</span>
+            </div>
+        );
+    }
+
+    return (
+        <VideoPlayer
+            url={currentUrl}
+            preview={getProxiedMediaUrl(selectedMedia?.preview_url)}
+            type={selectedMedia?.type}
+            autoPlay={selectedMedia?.type === 'animated_gif'}
+            onError={handleError}
+        />
+    );
+};
+
+const parseDateParam = (dateStr) => {
+    if (!dateStr) return null;
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? null : d;
+};
+
 /* ═══════════════════════════════════════════════════════════════ */
 /*                       MAIN COMPONENT                          */
 /* ═══════════════════════════════════════════════════════════════ */
@@ -59,6 +174,7 @@ const Grievances = () => {
     // Get logged-in user from AuthContext (full_name is the canonical field)
     const { user: authUser } = useAuth();
     const userName = authUser?.full_name || authUser?.name || authUser?.email?.split('@')[0] || 'Operator';
+    const canManageSpecialGrievanceUi = canManageRestrictedGrievanceUi(authUser);
     const [downloadStates, setDownloadStates] = useState({});
 
     const updateDownloadState = useCallback((id, updates) => {
@@ -74,12 +190,20 @@ const Grievances = () => {
 
     const getProxiedMediaUrl = useCallback((rawUrl) => {
         if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
-        // Render every platform's media (Twitter/X, Facebook, Instagram, YouTube, S3, etc.)
-        // directly from its source URL instead of round-tripping through the backend
-        // proxy — the proxy adds a hard dependency on BACKEND_URL being reachable from
-        // the browser, which breaks playback (ERR_CONNECTION_REFUSED) whenever it isn't.
+        if (rawUrl.startsWith('/api/media/stream') || rawUrl.startsWith('/api/media/proxy')) return `${BACKEND_URL}${rawUrl}`;
+        if (rawUrl.startsWith('/') || rawUrl.startsWith(BACKEND_URL)) return rawUrl;
+        const needsProxy = (
+            rawUrl.includes('twimg.com') ||
+            rawUrl.includes('fbcdn.net') ||
+            rawUrl.includes('cdninstagram.com') ||
+            rawUrl.includes('fbsbx.com') ||
+            rawUrl.includes('googleusercontent.com')
+        );
+        if (needsProxy) {
+            return `${BACKEND_URL}/api/media/stream?url=${encodeURIComponent(rawUrl)}`;
+        }
         return rawUrl;
-    }, []);
+    }, [BACKEND_URL]);
 
     const triggerBlobDownload = useCallback(async (url, filename) => {
         try {
@@ -292,21 +416,19 @@ const Grievances = () => {
         }
     };
 
-    const { navigateToPoliticianGrievances } = usePoliticianNavigation();
-
     /* ─── State ─── */
     const [searchParams, setSearchParams] = useSearchParams();
     const [grievances, setGrievances] = useState([]);
     const [loading, setLoading] = useState(true);
     const [loadingMore, setLoadingMore] = useState(false);
     const [activeTab, setActiveTab] = useState('all');
-    const [, setStats] = useState({ total: 0, pending: 0, escalated: 0, closed: 0, converted_to_fir: 0 });
-    const [, setWorkflowStats] = useState({ total: 0, pending: 0, escalated: 0, closed: 0, fir: 0 });
+    const [stats, setStats] = useState({ total: 0, pending: 0, escalated: 0, closed: 0, converted_to_fir: 0 });
+    const [workflowStats, setWorkflowStats] = useState({ total: 0, pending: 0, escalated: 0, closed: 0, fir: 0 });
     const [activeReportSubTab, setActiveReportSubTab] = useState('grievance'); // grievance, suggestion, criticism
-    const [pagination, setPagination] = useState({ hasMore: false, nextCursor: null, total: 0, pages: 0 });
-    const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(50);
+    const [pagination, setPagination] = useState({ hasMore: false, nextCursor: null, total: 0 });
     const fetchAbortRef = useRef(null); // AbortController for cancelling stale requests
+    const locationEnrichmentInFlightRef = useRef(new Set());
+    const locationEnrichmentCacheRef = useRef(new Map());
 
     // Sources
     const [sources, setSources] = useState([]);
@@ -317,7 +439,6 @@ const Grievances = () => {
     const [addSourceDept, setAddSourceDept] = useState('');
     const [addingSource, setAddingSource] = useState(false);
     const [fetchingSource, setFetchingSource] = useState(null);
-    const [showEngagersDialog, setShowEngagersDialog] = useState(false);
     const [fetchingHashtag, setFetchingHashtag] = useState(false);
     const [showSourcePanel, setShowSourcePanel] = useState(true);
 
@@ -332,6 +453,120 @@ const Grievances = () => {
     const [isMediaOpen, setIsMediaOpen] = useState(false);
     const [isFirConfirmOpen, setIsFirConfirmOpen] = useState(false);
     const [deleteConfirmSource, setDeleteConfirmSource] = useState(null);
+    const [sentimentLeadersOpen, setSentimentLeadersOpen] = useState(false);
+    const [sentimentLeadersLoading, setSentimentLeadersLoading] = useState(false);
+    const [sentimentLeadersTab, setSentimentLeadersTab] = useState('positive');
+    const [sentimentLeadersPlatform, setSentimentLeadersPlatform] = useState('all');
+    const [sentimentLeadersSearch, setSentimentLeadersSearch] = useState('');
+    const [sentimentLeaders, setSentimentLeaders] = useState(EMPTY_SENTIMENT_LEADERS);
+
+    // ─── View mode (grid / list) — persisted across sessions ──────
+    const [viewMode, setViewMode] = useState(() => {
+        try { return localStorage.getItem('mentions:viewMode') || 'grid'; } catch (_) { return 'grid'; }
+    });
+    useEffect(() => {
+        try { localStorage.setItem('mentions:viewMode', viewMode); } catch (_) {}
+    }, [viewMode]);
+
+    // ─── Add Tweet by URL/ID ──────────────────────────────────────
+    const [addTweetOpen, setAddTweetOpen] = useState(false);
+    const [addTweetInput, setAddTweetInput] = useState('');
+    const [addTweetLoading, setAddTweetLoading] = useState(false);
+
+    // ─── Tracked keywords (auto-fetcher) ──────────────────────
+    const [keywordsOpen, setKeywordsOpen] = useState(false);
+    const [trackedKeywords, setTrackedKeywords] = useState([]);
+    const [trackedKeywordsLoading, setTrackedKeywordsLoading] = useState(false);
+    const [newKeywordInput, setNewKeywordInput] = useState('');
+    const [newKeywordCategory, setNewKeywordCategory] = useState('other');
+    const [newKeywordLang, setNewKeywordLang] = useState('en');
+    const [keywordSaving, setKeywordSaving] = useState(false);
+    const [triggerFetchLoading, setTriggerFetchLoading] = useState(false);
+
+    const fetchTrackedKeywords = useCallback(async () => {
+        setTrackedKeywordsLoading(true);
+        try {
+            const res = await api.get('/keywords');
+            const list = Array.isArray(res.data) ? res.data : res.data?.keywords || [];
+            // Show client / mention-style keywords first
+            list.sort((a, b) => (b.weight || 0) - (a.weight || 0));
+            setTrackedKeywords(list);
+        } catch (err) {
+            toast.error('Failed to load keywords');
+        } finally {
+            setTrackedKeywordsLoading(false);
+        }
+    }, []);
+
+    const handleAddKeyword = useCallback(async () => {
+        const kw = newKeywordInput.trim();
+        if (!kw) return;
+        setKeywordSaving(true);
+        try {
+            await api.post('/keywords', {
+                keyword: kw,
+                category: newKeywordCategory,
+                language: newKeywordLang,
+                weight: 75,
+                is_active: true,
+            });
+            toast.success(`Added "${kw}" — next auto-fetch will pick it up`);
+            setNewKeywordInput('');
+            await fetchTrackedKeywords();
+        } catch (err) {
+            toast.error(err?.response?.data?.message || 'Failed to add keyword');
+        } finally {
+            setKeywordSaving(false);
+        }
+    }, [newKeywordInput, newKeywordCategory, newKeywordLang, fetchTrackedKeywords]);
+
+    const handleDeleteKeyword = useCallback(async (id) => {
+        if (!id) return;
+        try {
+            await api.delete(`/keywords/${id}`);
+            toast.success('Keyword removed');
+            await fetchTrackedKeywords();
+        } catch (err) {
+            toast.error('Failed to delete keyword');
+        }
+    }, [fetchTrackedKeywords]);
+
+    // Ref so handlers below can call fetchGrievances even though it's
+    // declared further down in this component (TDZ-safe).
+    const fetchGrievancesRef = useRef(null);
+
+    const handleImportTweet = useCallback(async () => {
+        const raw = addTweetInput.trim();
+        if (!raw) return;
+        setAddTweetLoading(true);
+        try {
+            const res = await api.post('/grievances/import-tweet', { url_or_id: raw });
+            if (res.data?.imported) {
+                toast.success('Tweet imported and analysed');
+                setAddTweetInput('');
+                setAddTweetOpen(false);
+                fetchGrievancesRef.current && fetchGrievancesRef.current();
+            } else {
+                toast.info(res.data?.message || 'Tweet already in feed');
+            }
+        } catch (err) {
+            toast.error(err?.response?.data?.message || 'Import failed');
+        } finally {
+            setAddTweetLoading(false);
+        }
+    }, [addTweetInput]);
+
+    const handleTriggerFetch = useCallback(async () => {
+        setTriggerFetchLoading(true);
+        try {
+            await api.post('/grievances/fetch-keywords');
+            toast.success('Keyword fetch triggered — new mentions arriving');
+        } catch (err) {
+            toast.error('Failed to trigger fetch');
+        } finally {
+            setTriggerFetchLoading(false);
+        }
+    }, []);
 
     // Criticism popup
     const [criticismGrievance, setCriticismGrievance] = useState(null);
@@ -343,106 +578,61 @@ const Grievances = () => {
     // Selected grievance
     const [selectedGrievance, setSelectedGrievance] = useState(null);
     const [selectedMedia, setSelectedMedia] = useState(null);
+    const [videoRefreshUrl, setVideoRefreshUrl] = useState(null);
+    const [videoRefreshing, setVideoRefreshing] = useState(false);
     const [newStatus, setNewStatus] = useState('');
     const [statusUpdateNote, setStatusUpdateNote] = useState('');
     const [firNote, setFirNote] = useState('');
     const [firNumber, setFirNumber] = useState('');
     const [updatingStatus, setUpdatingStatus] = useState(false);
 
-    // Politician context (populated when navigating from MLA panel)
-    const politicianContext = useMemo(() => {
-        const id = searchParams.get('politician_id');
-        const name = searchParams.get('politician_name');
-        const role = searchParams.get('politician_role');
-        // politician_constituency is the preferred param; fall back to 'location' for older URLs
-        const constituency = searchParams.get('politician_constituency') || searchParams.get('location') || '';
-        const entityType = searchParams.get('entity_type') || 'mla';
-        if (!id && !name) return null;
-        return { id, name, shortName: name, role: role || 'MLA', constituency, entityType };
-    }, [searchParams]);
-
-    // Full politician record from local data (for image, color, activityScore, etc.)
-    const politicianData = useMemo(
-        () => (politicianContext?.id ? getMinisterById(politicianContext.id) : null),
-        [politicianContext]
-    );
-
-    // Compute analytics from already-fetched grievances (no extra API call)
-    const mlaAnalytics = useMemo(() => {
-        if (!politicianContext || grievances.length === 0) return null;
-        const sentiments = { positive: 0, neutral: 0, negative: 0 };
-        const topics = {};
-        grievances.forEach(g => {
-            const s = g.analysis?.sentiment;
-            if (s && s in sentiments) sentiments[s]++;
-            const t = g.analysis?.grievance_type || g.analysis?.category;
-            if (t && t.trim()) topics[t.trim()] = (topics[t.trim()] || 0) + 1;
-        });
-        const topTopics = Object.entries(topics).sort((a, b) => b[1] - a[1]).slice(0, 4);
-        return { total: grievances.length, sentiments, topTopics };
-    }, [politicianContext, grievances]);
-
-    // MLA keyword management state — resets on politician change, persists for UI toggles
-    const prevPoliticianIdRef = useRef(null);
-    const [customKeywords, setCustomKeywords] = useState([]);
-    const [disabledKeywordIds, setDisabledKeywordIds] = useState(new Set());
-    const [newKeywordInput, setNewKeywordInput] = useState('');
-    const [showKeywordEditor, setShowKeywordEditor] = useState(false);
-
-    // Derived: full keyword list (system + custom) — recomputed on every entity/custom change
-    const mlaModeKeywords = useMemo(() => {
-        if (!politicianContext) return [];
-        const sys = buildKeywordList(politicianContext);
-        const custom = customKeywords.map((term, i) => ({
-            id: `custom_${i}`, term, type: 'custom', label: term, isSystem: false,
-        }));
-        return [...sys, ...custom];
-    }, [politicianContext, customKeywords]);
-
-    const activeMlaKeywords = useMemo(
-        () => mlaModeKeywords.filter(k => !disabledKeywordIds.has(k.id)),
-        [mlaModeKeywords, disabledKeywordIds]
-    );
-
-    // ─── Filters ───────────────────────────────────────────────────────────────
+    // Filters //
     const [searchQuery, setSearchQuery] = useState(() => searchParams.get('search') || '');
-    const [platformFilter, setPlatformFilter] = useState('all');
-    const [dateRange, setDateRange] = useState({ from: null, to: null });
+    const [platformFilter, setPlatformFilter] = useState(() => searchParams.get('platform') || 'all');
+    const [dateRange, setDateRange] = useState(() => {
+        const fromStr = searchParams.get('from');
+        const toStr = searchParams.get('to');
+        return {
+            from: parseDateParam(fromStr),
+            to: parseDateParam(toStr)
+        };
+    });
     const [locationFilter, setLocationFilter] = useState(() => searchParams.get('location') || null);
 
-    // normalizeTopicFilterLabel must be defined before topicFilter useState (used in initializer)
-    const normalizeTopicFilterLabel = useCallback((topic) => {
-        const raw = String(topic || '').trim();
-        if (!raw) return null;
-        const normalized = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
-        if (normalized === 'govt praise' || normalized === 'government praise' || normalized === 'general praise' || normalized === 'general complaint') {
-            return 'General Complaint';
-        }
-        return raw;
-    }, []);
-
-    // ─── Top Navbar Filters — declared before showTopMlaGrid to avoid TDZ ──────
-    const [selectedHandle, setSelectedHandle] = useState(() => searchParams.get('posted_by') || searchParams.get('handle') || null);
-    const [sentimentFilter, setSentimentFilter] = useState(() => searchParams.get('sentiment') || null);
-    const [topicFilter, setTopicFilter] = useState(() => normalizeTopicFilterLabel(searchParams.get('grievance_type')));
-    const [analysisCategoryFilter, setAnalysisCategoryFilter] = useState(() => searchParams.get('analysis_category') || null);
-    // Public Opinion highlights click-through (Overview tab)
-    const [departmentFilter, setDepartmentFilter] = useState(() => searchParams.get('department') || null);
-    const [fakeNewsFlag, setFakeNewsFlag] = useState(() => searchParams.get('flag') || null);
-    const [constituencyFilter, setConstituencyFilter] = useState(() => searchParams.get('location_constituency') || null);
-    const [navbarPlatform, setNavbarPlatform] = useState('all');
+    // Top Navbar Filters //
+    
+    const [navbarPlatform, setNavbarPlatform] = useState(() => searchParams.get('platform') || 'all');
     const [navbarStatus, setNavbarStatus] = useState('total');
 
-    // Debounce search state — must be before showTopMlaGrid
-    const searchTimerRef = useRef(null);
-    const [debouncedSearch, setDebouncedSearch] = useState('');
+    // ── RSS News state ────────────────────────────────────────────
+    const [rssArticles, setRssArticles] = useState([]);
+    const [rssLoading, setRssLoading] = useState(false);
+    const [rssLoadingMore, setRssLoadingMore] = useState(false);
+    const [rssPagination, setRssPagination] = useState({ page: 1, pages: 1, total: 0, limit: 20 });
+    const [rssSearch, setRssSearch] = useState('');
+    const [rssDistrict, setRssDistrict] = useState('all');
+    const [rssCategory, setRssCategory] = useState('all');
+    const [rssSourceType, setRssSourceType] = useState('all');
+    // District + category options, derived from the actual scraped articles
+    // (not a hard-coded list) so the filters only offer what the RSS data holds.
+    const [rssFacets, setRssFacets] = useState({ districts: [], categories: [] });
+    const rssSearchTimer = useRef(null);
 
-    // ─── Derived display flags — all deps declared above ──────────────────────
-    // Top 10 MLA Watch Grid is disabled — default view shows all posts.
-    // When a specific politician is selected (politicianContext), filtered data is shown.
-    const showTopMlaGrid = false;
-
-    const topMlaGridFilters = useMemo(() => ({}), []);
+    // ── RSS Keyword Management state ──────────────────────────────
+    const [rssSubTab, setRssSubTab] = useState('articles'); // 'articles' or 'keywords'
+    const [rssKeywords, setRssKeywords] = useState([]);
+    const [rssKeywordsLoading, setRssKeywordsLoading] = useState(false);
+    const [newRssKeyword, setNewRssKeyword] = useState('');
+    const [newRssKeywordLang, setNewRssKeywordLang] = useState('en');
+    const [rssKeywordError, setRssKeywordError] = useState('');
+    const [rssKeywordSuccess, setRssKeywordSuccess] = useState('');
+    const [isAddRssKeywordOpen, setIsAddRssKeywordOpen] = useState(false);
+    // Languages are DB-managed too — the buckets keywords are grouped into.
+    const [rssLanguages, setRssLanguages] = useState([]);
+    const [isAddRssLanguageOpen, setIsAddRssLanguageOpen] = useState(false);
+    const [newRssLanguageName, setNewRssLanguageName] = useState('');
+    const [newRssLanguageCode, setNewRssLanguageCode] = useState('');
+    const [rssLanguageError, setRssLanguageError] = useState('');
 
     const grievanceStatusFeatureMap = useMemo(() => ({
         total: 'all',
@@ -452,26 +642,33 @@ const Grievances = () => {
         fir: 'fir',
         reports: 'reports',
     }), []);
+    const navbarStatuses = useMemo(
+        () => Object.keys(grievanceStatusFeatureMap),
+        [grievanceStatusFeatureMap]
+    );
 
     const canAccessGrievanceReports = hasFeatureAccess('/grievances', 'reports');
 
-    const allowedNavbarStatuses = useMemo(
-        () => Object.keys(grievanceStatusFeatureMap).filter((status) => (
-            hasFeatureAccess('/grievances', grievanceStatusFeatureMap[status])
-        )),
-        [grievanceStatusFeatureMap, hasFeatureAccess]
-    );
-
-    // Enforce feature access on navbarStatus.
     useEffect(() => {
-        if (allowedNavbarStatuses.length === 0) {
+        if (navbarStatuses.length === 0) {
             setNavbarStatus('');
             return;
         }
-        if (!allowedNavbarStatuses.includes(navbarStatus)) {
-            setNavbarStatus(allowedNavbarStatuses[0]);
+        if (!navbarStatuses.includes(navbarStatus)) {
+            setNavbarStatus(navbarStatuses[0]);
         }
-    }, [allowedNavbarStatuses, navbarStatus]);
+    }, [navbarStatuses, navbarStatus]);
+    const normalizeTopicFilterLabel = useCallback((topic) => {
+        const raw = String(topic || '').trim();
+        if (!raw) return null;
+        const normalized = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (normalized === 'govt praise' || normalized === 'government praise' || normalized === 'general praise' || normalized === 'general complaint') {
+            return 'General Complaint';
+        }
+        if (normalized === 'law and order' || normalized === 'law & order' || normalized === 'law_order') return 'Law & Order';
+        if (normalized === 'road and infrastructure' || normalized === 'road & infrastructure') return 'Road & Infrastructure';
+        return raw.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }, []);
 
     const mapTopicFilterToApi = useCallback((topic) => {
         const normalizedTopic = normalizeTopicFilterLabel(topic);
@@ -479,15 +676,37 @@ const Grievances = () => {
         return normalizedTopic;
     }, [normalizeTopicFilterLabel]);
 
-    const GRIEVANCE_TOPICS = [
-        'Political Criticism', 'Hate Speech', 'Public Complaint', 'Corruption Complaint',
-        'General Complaint', 'Traffic Complaint', 'Public Nuisance', 'Road & Infrastructure',
-        'Law & Order', 'Normal'
-    ];
+    const [selectedHandle, setSelectedHandle] = useState(() => searchParams.get('posted_by') || searchParams.get('handle') || null);
+    const [sentimentFilter, setSentimentFilter] = useState(() => searchParams.get('sentiment') || null);
+    const [topicFilter, setTopicFilter] = useState(() => normalizeTopicFilterLabel(searchParams.get('grievance_type') || searchParams.get('topic')));
+    const [analysisCategoryFilter, setAnalysisCategoryFilter] = useState(() => searchParams.get('analysis_category') || null);
+    const [targetEntityFilter, setTargetEntityFilter] = useState(() => searchParams.get('target_entity') || null);
+    // Was a hardcoded list mixing real AI-classified categories (e.g. "Public
+    // Complaint", "Political Criticism") with values that never actually
+    // occur in analysis.grievance_type (a leftover, separate keyword-lexicon
+    // taxonomy used elsewhere for a live-text scan, e.g. "Welfare"/"Roads") —
+    // picking one of those always returned zero results. Fetched live from
+    // the same distinct-values endpoint IntelligenceDashboard.jsx already
+    // uses, so the dropdown only ever offers topics that exist in the data.
+    const [grievanceTopics, setGrievanceTopics] = useState([]);
+    useEffect(() => {
+        let cancelled = false;
+        api.get('/grievances/topics')
+            .then((res) => {
+                if (!cancelled) setGrievanceTopics(Array.isArray(res.data?.topics) ? res.data.topics : []);
+            })
+            .catch(() => { if (!cancelled) setGrievanceTopics([]); });
+        return () => { cancelled = true; };
+    }, []);
     const [openGReportCode, setOpenGReportCode] = useState('');
     const [openSReportCode, setOpenSReportCode] = useState('');
     const [openCReportCode, setOpenCReportCode] = useState('');
     const [actionedGrievanceIds, setActionedGrievanceIds] = useState([]);
+    const deepLinkGrievanceRef = useRef(null);
+
+    // Debounce search
+    const searchTimerRef = useRef(null);
+    const [debouncedSearch, setDebouncedSearch] = useState('');
 
     const splitPaneRef = useRef(null);
 
@@ -523,6 +742,21 @@ const Grievances = () => {
     const [isResizingModal, setIsResizingModal] = useState(false);
     const modalRef = useRef(null);
 
+    // Keep filter state in sync when URL query params change (e.g. map redirection).
+    const updateURLParams = useCallback((updates) => {
+        setSearchParams((prev) => {
+            const next = new URLSearchParams(prev);
+            Object.entries(updates).forEach(([key, val]) => {
+                if (val === null || val === undefined || val === '') {
+                    next.delete(key);
+                } else {
+                    next.set(key, val);
+                }
+            });
+            return next;
+        }, { replace: true });
+    }, [setSearchParams]);
+
     useEffect(() => {
         if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
         searchTimerRef.current = setTimeout(() => {
@@ -534,19 +768,15 @@ const Grievances = () => {
     // Keep filter state in sync when URL query params change (e.g. map redirection).
     useEffect(() => {
         const urlSearch = searchParams.get('search') || '';
+        const urlLocation = searchParams.get('location') || null;
         const urlSentiment = searchParams.get('sentiment') || null;
         const urlHandle = searchParams.get('posted_by') || searchParams.get('handle') || null;
-        const urlTopic = normalizeTopicFilterLabel(searchParams.get('grievance_type'));
+        const urlTopic = normalizeTopicFilterLabel(searchParams.get('grievance_type') || searchParams.get('topic'));
         const urlAnalysisCategory = searchParams.get('analysis_category') || null;
-        const urlDepartment = searchParams.get('department') || null;
-        const urlFlag = searchParams.get('flag') || null;
-        const urlConstituency = searchParams.get('location_constituency') || null;
-
-        // In politician mode the 'location' param is the constituency, not a user-applied filter.
-        // Using politician_constituency for new navigations; 'location' is a legacy fallback.
-        // Either way, skip setting locationFilter when a politician is active.
-        const hasPoliticianId = !!searchParams.get('politician_id');
-        const urlLocation = hasPoliticianId ? null : (searchParams.get('location') || null);
+        const urlTargetEntity = searchParams.get('target_entity') || null;
+        const urlPlatform = searchParams.get('platform') || 'all';
+        const urlFrom = searchParams.get('from');
+        const urlTo = searchParams.get('to');
 
         setSearchQuery(urlSearch);
         setLocationFilter(urlLocation);
@@ -554,10 +784,29 @@ const Grievances = () => {
         setSelectedHandle(urlHandle);
         setTopicFilter(urlTopic);
         setAnalysisCategoryFilter(urlAnalysisCategory);
-        setDepartmentFilter(urlDepartment);
-        setFakeNewsFlag(urlFlag);
-        setConstituencyFilter(urlConstituency);
+        setTargetEntityFilter(urlTargetEntity);
+        setNavbarPlatform(urlPlatform);
+        setPlatformFilter(urlPlatform);
+        setDateRange({
+            from: parseDateParam(urlFrom),
+            to: parseDateParam(urlTo)
+        });
     }, [searchParams, normalizeTopicFilterLabel]);
+
+    useEffect(() => {
+        const targetId = searchParams.get('id');
+        if (!targetId || deepLinkGrievanceRef.current === targetId) return;
+        deepLinkGrievanceRef.current = targetId;
+        let cancelled = false;
+        api.get(`/grievances/${targetId}`)
+            .then((res) => {
+                if (cancelled) return;
+                setSelectedGrievance(res.data);
+                setIsDetailOpen(true);
+            })
+            .catch(() => { });
+        return () => { cancelled = true; };
+    }, [searchParams]);
 
     // Modal dragging
     useEffect(() => {
@@ -620,60 +869,301 @@ const Grievances = () => {
         }
     };
 
-    /* ─── Politician mode: reset custom keywords when MLA changes ─── */
-    useEffect(() => {
-        const id = politicianContext?.id || null;
-        if (id !== prevPoliticianIdRef.current) {
-            prevPoliticianIdRef.current = id;
-            setCustomKeywords([]);
-            setDisabledKeywordIds(new Set());
-            setNewKeywordInput('');
+    const hasUsableLocation = useCallback((location) => (
+        !!(location && (
+            location.city ||
+            location.district ||
+            location.constituency ||
+            (location.location_found && Number.parseFloat(location.confidence) > 0.8)
+        ))
+    ), []);
+
+    const normalizeDetectedLocation = useCallback((location) => ({
+        location_found: Boolean(location?.location_found),
+        city: location?.city || '',
+        district: location?.district || '',
+        constituency: location?.constituency || '',
+        keyword_matched: location?.keyword_matched || '',
+        lat: location?.lat ?? null,
+        lng: location?.lng ?? null,
+        confidence: location?.confidence ?? null,
+        source: location?.source || ''
+    }), []);
+
+    const applyCachedLocations = useCallback((rows = []) => (
+        rows.map((grievance) => {
+            if (hasUsableLocation(grievance.detected_location)) return grievance;
+            const cachedLocation = locationEnrichmentCacheRef.current.get(grievance.id);
+            if (!cachedLocation?.location_found) return grievance;
+            return {
+                ...grievance,
+                detected_location: normalizeDetectedLocation(cachedLocation)
+            };
+        })
+    ), [hasUsableLocation, normalizeDetectedLocation]);
+
+    const enrichLocationsInBackground = useCallback(async (rows = []) => {
+        const itemsForLocation = rows
+            .filter((grievance) => (
+                grievance?.id &&
+                !hasUsableLocation(grievance.detected_location) &&
+                !locationEnrichmentInFlightRef.current.has(grievance.id) &&
+                (grievance.content?.full_text || grievance.content?.text)
+            ))
+            .map((grievance) => {
+                const text = grievance.content?.full_text || grievance.content?.text || '';
+                const hashtags = (text.match(/#\w+/g) || []).join(' ');
+
+                return {
+                    id: grievance.id,
+                    text,
+                    user_location: grievance.posted_by?.location || '',
+                    user_bio: grievance.posted_by?.bio || grievance.posted_by?.description || '',
+                    hashtags
+                };
+            });
+
+        if (!itemsForLocation.length) return;
+
+        itemsForLocation.forEach((item) => locationEnrichmentInFlightRef.current.add(item.id));
+
+        try {
+            const locationMap = await extractLocationsBatch(itemsForLocation);
+
+            Object.entries(locationMap || {}).forEach(([id, location]) => {
+                if (location?.location_found) {
+                    locationEnrichmentCacheRef.current.set(id, location);
+                }
+            });
+
+            setGrievances((prev) => prev.map((grievance) => {
+                if (hasUsableLocation(grievance.detected_location)) return grievance;
+                const location = locationMap?.[grievance.id];
+                if (!location?.location_found) return grievance;
+                return {
+                    ...grievance,
+                    detected_location: normalizeDetectedLocation(location)
+                };
+            }));
+
+            setSelectedGrievance((prev) => {
+                if (!prev || hasUsableLocation(prev.detected_location)) return prev;
+                const location = locationMap?.[prev.id];
+                if (!location?.location_found) return prev;
+                return {
+                    ...prev,
+                    detected_location: normalizeDetectedLocation(location)
+                };
+            });
+        } catch (e) {
+            console.warn('[Grievances] Location extraction failed:', e);
+        } finally {
+            itemsForLocation.forEach((item) => locationEnrichmentInFlightRef.current.delete(item.id));
         }
-    }, [politicianContext]);
-
-    /* ─── Keyword action handlers ─── */
-    const toggleMlaKeyword = (kwId) => {
-        setDisabledKeywordIds(prev => {
-            const next = new Set(prev);
-            if (next.has(kwId)) next.delete(kwId); else next.add(kwId);
-            return next;
-        });
-    };
-
-    const addMlaKeyword = () => {
-        const term = newKeywordInput.trim();
-        if (!term || customKeywords.includes(term)) return;
-        setCustomKeywords(prev => [...prev, term]);
-        setNewKeywordInput('');
-    };
-
-    const removeMlaKeyword = (term) => {
-        setCustomKeywords(prev => prev.filter(t => t !== term));
-    };
-
-    const clearPoliticianMode = useCallback(() => {
-        setSearchParams(new URLSearchParams());
-    }, [setSearchParams]);
+    }, [hasUsableLocation, normalizeDetectedLocation]);
 
     /* ─── Data Fetching ─── */
     useEffect(() => { fetchSources(); fetchLocationStats(); }, []);
+    // Keep the ref pointing at the current fetchGrievances so handlers
+    // declared before its definition can still call it.
+    useEffect(() => { fetchGrievancesRef.current = fetchGrievances; });
     useEffect(() => {
         if (!navbarStatus) return;
-        if (!allowedNavbarStatuses.includes(navbarStatus)) return;
         fetchDashboardStats();
-        if (showTopMlaGrid) {
-            setLoading(false);
-            setGrievances([]);
-            setPagination({ hasMore: false, nextCursor: null, total: 0 });
-            return;
+        fetchGrievances();
+    }, [activeTab, platformFilter, dateRange, debouncedSearch, navbarPlatform, navbarStatus, selectedHandle, sentimentFilter, topicFilter, analysisCategoryFilter, locationFilter, targetEntityFilter]);
+
+    // ── RSS fetch ─────────────────────────────────────────────────
+    const fetchNewsArticles = useCallback(async (page = 1, append = false) => {
+        if (page === 1) setRssLoading(true);
+        else setRssLoadingMore(true);
+        try {
+            const res = await api.get('/news', {
+                params: {
+                    page,
+                    limit: 20,
+                    search:      rssSearch   || undefined,
+                    district:    rssDistrict  !== 'all' ? rssDistrict  : undefined,
+                    category:    rssCategory  !== 'all' ? rssCategory  : undefined,
+                    source_type: rssSourceType !== 'all' ? rssSourceType : undefined,
+                },
+            });
+            const { articles = [], pagination } = res.data;
+            setRssArticles(prev => append ? [...prev, ...articles] : articles);
+            setRssPagination(pagination || { page: 1, pages: 1, total: 0, limit: 20 });
+        } catch (err) {
+            console.error('[RSS] fetchNewsArticles error:', err);
+        } finally {
+            setRssLoading(false);
+            setRssLoadingMore(false);
         }
-        if (politicianContext) {
-            fetchPoliticianGrievances();
-        } else {
-            fetchGrievances();
+    }, [rssSearch, rssDistrict, rssCategory, rssSourceType]);
+
+    useEffect(() => {
+        if (navbarPlatform !== 'rss') return;
+        setRssArticles([]);
+        fetchNewsArticles(1, false);
+    }, [navbarPlatform, rssSearch, rssDistrict, rssCategory, rssSourceType, fetchNewsArticles]);
+
+    // Admin-only: delete an article / edit its sentiment (mirrors the Mentions flow).
+    const handleDeleteRssArticle = async (article) => {
+        const id = article?._id;
+        if (!id) return;
+        try {
+            await api.delete(`/news/${id}`);
+            setRssArticles((prev) => prev.filter((a) => a._id !== id));
+            toast.success('Article deleted');
+        } catch (err) {
+            toast.error(err?.response?.data?.message || 'Failed to delete article');
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeTab, platformFilter, dateRange, debouncedSearch, navbarPlatform, navbarStatus, selectedHandle, sentimentFilter, topicFilter, analysisCategoryFilter, locationFilter, departmentFilter, fakeNewsFlag, constituencyFilter, allowedNavbarStatuses, politicianContext, disabledKeywordIds, customKeywords, showTopMlaGrid]);
+    };
+
+    const handleRssArticleSentiment = async (article, sentiment) => {
+        const id = article?._id;
+        if (!id) return;
+        try {
+            await api.patch(`/news/${id}/sentiment`, { sentiment });
+            setRssArticles((prev) => prev.map((a) => (a._id === id ? { ...a, sentiment } : a)));
+            toast.success('Sentiment updated');
+        } catch (err) {
+            toast.error(err?.response?.data?.message || 'Failed to update sentiment');
+        }
+    };
+
+    // Load the distinct districts + categories that actually appear in the
+    // scraped articles, to populate the filter dropdowns. Independent of the
+    // active filters so the full option set is always available.
+    const fetchRssFacets = useCallback(async () => {
+        try {
+            const res = await api.get('/news/stats');
+            const districts = (res.data?.byDistrict || [])
+                .map((d) => d._id)
+                .filter(Boolean)
+                .sort((a, b) => a.localeCompare(b));
+            const categories = (res.data?.byCategory || [])
+                .map((c) => c._id)
+                .filter(Boolean);
+            setRssFacets({ districts, categories });
+        } catch (err) {
+            console.error('[RSS] fetchRssFacets error:', err);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (navbarPlatform === 'rss') fetchRssFacets();
+    }, [navbarPlatform, fetchRssFacets]);
+
+    // ── RSS Keywords Fetch/Add/Delete ─────────────────────────────
+    const fetchRssKeywords = useCallback(async () => {
+        setRssKeywordsLoading(true);
+        setRssKeywordError('');
+        try {
+            const res = await api.get('/news/keywords');
+            setRssKeywords(res.data || []);
+        } catch (err) {
+            console.error('[RSS] fetchRssKeywords error:', err);
+            setRssKeywordError('Failed to fetch RSS keywords.');
+        } finally {
+            setRssKeywordsLoading(false);
+        }
+    }, []);
+
+    const handleAddRssKeyword = async (e) => {
+        e.preventDefault();
+        const kw = newRssKeyword.trim();
+        if (!kw) return;
+        setRssKeywordError('');
+        setRssKeywordSuccess('');
+        try {
+            // Backend accepts a comma-separated list and returns how many were
+            // added vs skipped (already existed).
+            const res = await api.post('/news/keywords', { keyword: kw, language: newRssKeywordLang });
+            const added = res.data?.added ?? 1;
+            const skipped = res.data?.skipped ?? 0;
+            setNewRssKeyword('');
+            if (added > 0) {
+                toast.success(`Added ${added} keyword${added !== 1 ? 's' : ''}${skipped ? ` · ${skipped} already existed` : ''}`);
+                setIsAddRssKeywordOpen(false);
+            } else {
+                toast(skipped ? 'All of those keywords already exist' : 'Nothing to add');
+                setRssKeywordError(skipped ? 'All of those keywords already exist.' : 'Enter at least one keyword.');
+            }
+            fetchRssKeywords();
+        } catch (err) {
+            console.error('[RSS] handleAddRssKeyword error:', err);
+            const errMsg = err?.response?.data?.message || 'Failed to add RSS keyword.';
+            setRssKeywordError(errMsg);
+            toast.error(errMsg);
+        }
+    };
+
+    const handleDeleteRssKeyword = async (kw) => {
+        if (!window.confirm(`Are you sure you want to delete the keyword "${kw}"?`)) return;
+        try {
+            await api.delete(`/news/keywords/${encodeURIComponent(kw)}`);
+            toast.success(`Successfully deleted keyword: "${kw}"`);
+            fetchRssKeywords();
+        } catch (err) {
+            console.error('[RSS] handleDeleteRssKeyword error:', err);
+            toast.error('Failed to delete RSS keyword.');
+        }
+    };
+
+    // ── RSS Languages Fetch/Add/Delete ────────────────────────────
+    const fetchRssLanguages = useCallback(async () => {
+        try {
+            const res = await api.get('/news/languages');
+            setRssLanguages(Array.isArray(res.data) ? res.data : []);
+        } catch (err) {
+            console.error('[RSS] fetchRssLanguages error:', err);
+        }
+    }, []);
+
+    const handleAddRssLanguage = async (e) => {
+        e.preventDefault();
+        const name = newRssLanguageName.trim();
+        if (!name) return;
+        setRssLanguageError('');
+        try {
+            const res = await api.post('/news/languages', { name, code: newRssLanguageCode.trim() });
+            setNewRssLanguageName('');
+            setNewRssLanguageCode('');
+            toast.success(`Added language: "${name}"`);
+            setIsAddRssLanguageOpen(false);
+            await fetchRssLanguages();
+            // Select the freshly added language in the keyword form for convenience.
+            if (res.data?.code) setNewRssKeywordLang(res.data.code);
+        } catch (err) {
+            console.error('[RSS] handleAddRssLanguage error:', err);
+            const errMsg = err?.response?.data?.message || 'Failed to add language.';
+            setRssLanguageError(errMsg);
+            toast.error(errMsg);
+        }
+    };
+
+    const handleDeleteRssLanguage = async (lang) => {
+        const count = rssKeywords.filter((k) => k.language === lang.code).length;
+        const warn = count > 0
+            ? `Delete the language "${lang.label}"? This will also remove its ${count} keyword${count === 1 ? '' : 's'}.`
+            : `Delete the language "${lang.label}"?`;
+        if (!window.confirm(warn)) return;
+        try {
+            const res = await api.delete(`/news/languages/${encodeURIComponent(lang.code)}`);
+            const removed = res.data?.keywordsRemoved || 0;
+            toast.success(`Deleted "${lang.label}"${removed ? ` and ${removed} keyword${removed === 1 ? '' : 's'}` : ''}`);
+            await Promise.all([fetchRssLanguages(), fetchRssKeywords()]);
+        } catch (err) {
+            console.error('[RSS] handleDeleteRssLanguage error:', err);
+            toast.error('Failed to delete language.');
+        }
+    };
+
+    useEffect(() => {
+        if (navbarPlatform === 'rss' && rssSubTab === 'keywords') {
+            fetchRssKeywords();
+            fetchRssLanguages();
+        }
+    }, [navbarPlatform, rssSubTab, fetchRssKeywords, fetchRssLanguages]);
 
     const fetchSources = async () => {
         setSourcesLoading(true);
@@ -706,154 +1196,60 @@ const Grievances = () => {
         }
     };
 
-    /* ─── Politician-mode fetch: multi-keyword parallel, merged + relevance-scored ─── */
-    const fetchPoliticianGrievances = async () => {
-        if (!politicianContext) return;
+    const fetchSentimentLeaders = useCallback(async () => {
+        setSentimentLeadersLoading(true);
+        try {
+            const res = await api.get('/grievances/sentiment-leaders', { params: { limit: 100 } });
+            setSentimentLeaders({
+                positive: res.data?.leaders?.positive || [],
+                negative: res.data?.leaders?.negative || [],
+                moderate: res.data?.leaders?.moderate || []
+            });
+        } catch (error) {
+            console.error('Failed to fetch sentiment leaders', error);
+            setSentimentLeaders(EMPTY_SENTIMENT_LEADERS);
+            toast.error('Failed to load sentiment leaders');
+        } finally {
+            setSentimentLeadersLoading(false);
+        }
+    }, []);
 
-        const activeKws = activeMlaKeywords;
-        if (!activeKws.length) {
+    useEffect(() => {
+        if (!sentimentLeadersOpen) return;
+        fetchSentimentLeaders();
+    }, [sentimentLeadersOpen, fetchSentimentLeaders]);
+
+    const fetchGrievances = async (cursor = null) => {
+        if (!navbarStatus) {
             setGrievances([]);
             setPagination({ hasMore: false, nextCursor: null, total: 0 });
-            return;
-        }
-
-        if (fetchAbortRef.current) fetchAbortRef.current.abort();
-        setLoading(true);
-        setGrievances([]);
-
-        const commonParams = {};
-        if (navbarStatus && navbarStatus !== 'total' && navbarStatus !== 'reports') commonParams.status_filter = navbarStatus;
-        if (navbarPlatform !== 'all') commonParams.platform = navbarPlatform;
-        if (sentimentFilter) commonParams.sentiment = sentimentFilter;
-        if (topicFilter) commonParams.grievance_type = mapTopicFilterToApi(topicFilter);
-
-        try {
-            // All name/alias/handle keywords go into ONE query (backend ORs them
-            // together) instead of one full-collection-scan regex query per
-            // keyword — this used to fire up to 5 parallel scans per click.
-            // count=false skips the redundant countDocuments() scan since this
-            // view computes its own total from the merged, re-scored results.
-            const nameTerms = activeKws
-                .filter(k => k.type !== 'constituency')
-                .slice(0, 5)
-                .map(kw => kw.term);
-            const nameReq = nameTerms.length
-                ? api.get('/grievances', { params: { search: nameTerms, limit: 200, count: false, ...commonParams } })
-                    .catch(() => ({ data: { grievances: [] } }))
-                : Promise.resolve({ data: { grievances: [] } });
-
-            // Constituency fetch — supplementary signal only.
-            // Reduced limit (20) because location-only matches are the main source of noise.
-            const constReq = politicianContext.constituency
-                ? api.get('/grievances', {
-                    params: {
-                        location_city: politicianContext.constituency.toLowerCase(),
-                        location: politicianContext.constituency.toLowerCase(),
-                        limit: 20,
-                        count: false,
-                        ...commonParams,
-                    },
-                }).catch(() => ({ data: { grievances: [] } }))
-                : Promise.resolve({ data: { grievances: [] } });
-
-            const responses = await Promise.all([nameReq, constReq]);
-
-            // Merge + deduplicate by grievance ID
-            const seen = new Set();
-            const merged = [];
-            responses.forEach(res => {
-                (Array.isArray(res.data?.grievances) ? res.data.grievances : []).forEach(g => {
-                    if (g.id && !seen.has(g.id)) {
-                        seen.add(g.id);
-                        merged.push(g);
-                    }
-                });
-            });
-
-            // Relevance scoring: primary keyword hits (3pts) > constituency (2pts) > alias (1pt)
-            const primaryKeywords = activeKws.filter(k => k.type === 'primary');
-            const scored = merged.map(g => {
-                const text = [
-                    g.content?.full_text,
-                    g.content?.text,
-                    g.posted_by?.name,
-                    g.posted_by?.display_name,
-                    g.location_city,
-                ].filter(Boolean).join(' ');
-                return { ...g, _relevanceScore: scoreRelevance(text, activeKws) };
-            });
-
-            // ── Two-stage quality gate ──────────────────────────────────────────
-            // Stage 1: Drop anything with zero keyword hits (pure noise).
-            // Stage 2: Drop constituency-location-only matches that don't mention
-            //          the MLA by name — these are the biggest source of irrelevant
-            //          content (e.g. any post from Madhira city, not about the MLA).
-            const relevant = scored.filter(g => {
-                if (g._relevanceScore <= 0) return false;
-                const textLower = [
-                    g.content?.full_text,
-                    g.content?.text,
-                    g.posted_by?.display_name,
-                ].filter(Boolean).join(' ').toLowerCase();
-                const hasPrimaryHit = primaryKeywords.some(k => textLower.includes(k.term.toLowerCase()));
-                // If score is only from constituency match (≤2 pts) and no primary name found → drop
-                if (!hasPrimaryHit && g._relevanceScore <= 2) return false;
-                return true;
-            });
-
-            // Sort by relevance first, then by most recent date
-            relevant.sort((a, b) =>
-                b._relevanceScore !== a._relevanceScore
-                    ? b._relevanceScore - a._relevanceScore
-                    : new Date(b.post_date) - new Date(a.post_date)
-            );
-
-            setGrievances(relevant);
-            setPagination({ hasMore: false, nextCursor: null, total: relevant.length });
-        } catch (err) {
-            if (err?.name !== 'CanceledError' && err?.name !== 'AbortError') {
-                console.error('[MLA mode] Failed to fetch politician grievances', err);
-            }
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const fetchGrievances = async (pageNum = 1, sizeOverride = null) => {
-        if (!navbarStatus || (allowedNavbarStatuses.length > 0 && !allowedNavbarStatuses.includes(navbarStatus))) {
-            setGrievances([]);
-            setPagination({ hasMore: false, nextCursor: null, total: 0, pages: 0 });
             setLoading(false);
             return;
         }
 
         if (navbarStatus === 'reports') {
             setGrievances([]);
-            setPagination({ hasMore: false, nextCursor: null, total: 0, pages: 0 });
+            setPagination({ hasMore: false, nextCursor: null, total: 0 });
             setLoading(false);
             return;
         }
 
-        // A new fetch always supersedes whatever's in flight — page nav, filter
-        // change, or refresh all replace the current page rather than appending.
-        if (fetchAbortRef.current) {
+        // Cancel any in-flight request when filters change (not for "load more")
+        if (!cursor && fetchAbortRef.current) {
             fetchAbortRef.current.abort();
         }
         const abortController = new AbortController();
-        fetchAbortRef.current = abortController;
+        if (!cursor) fetchAbortRef.current = abortController;
 
-        setPage(pageNum);
-        if (pageNum === 1) {
-            setLoading(true);
-        } else {
+        if (cursor) {
             setLoadingMore(true);
+        } else {
+            setLoading(true);
         }
         try {
-            const effectiveSize = sizeOverride ?? pageSize;
             const params = {
                 tab: activeTab === 'fir' ? 'fir' : activeTab,
-                page: pageNum,
-                limit: effectiveSize,
+                limit: 100,
             };
 
             if (navbarStatus && navbarStatus !== 'total' && navbarStatus !== 'reports') {
@@ -868,87 +1264,50 @@ const Grievances = () => {
             if (sentimentFilter) params.sentiment = sentimentFilter;
             if (topicFilter) params.grievance_type = mapTopicFilterToApi(topicFilter);
             if (analysisCategoryFilter) params.analysis_category = analysisCategoryFilter;
-            if (departmentFilter) params.department = departmentFilter;
-            if (fakeNewsFlag) params.flag = fakeNewsFlag;
-            if (constituencyFilter) params.location_constituency = constituencyFilter;
-            if (locationFilter) {
-                // Keep both keys for compatibility with existing and legacy backend handlers.
-                params.location_city = locationFilter;
-                params.location = locationFilter;
-            }
+            if (targetEntityFilter) params.target_entity = targetEntityFilter;
+            if (locationFilter) params.location_city = locationFilter;
             if (debouncedSearch) params.search = debouncedSearch;
             if (dateRange.from) params.from = dateRange.from.toISOString();
             if (dateRange.to) params.to = dateRange.to.toISOString();
+            if (cursor) params.cursor = cursor;
 
             const res = await api.get('/grievances', { params, signal: abortController.signal });
             const data = res.data;
             const rows = Array.isArray(data.grievances) ? data.grievances : [];
+            const rowsWithCachedLocations = applyCachedLocations(rows);
 
-            // ── Location extraction: enrich each grievance with detected location ──
-            // Uses the same 3-step cascade as TweetPulse India:
-            //   Step 1: user_location (profile location field)
-            //   Step 2: text (post/tweet content)
-            //   Step 3: hashtags → user_bio (fallback)
-            const itemsForLocation = rows
-                .filter(g => g.id && (g.content?.full_text || g.content?.text))
-                .map(g => {
-                    const text = g.content?.full_text || g.content?.text || '';
-                    const hashtags = (text.match(/#\w+/g) || []).join(' ');
-                    return {
-                        id: g.id,
-                        text,
-                        user_location: g.posted_by?.location || '',
-                        user_bio: g.posted_by?.bio || g.posted_by?.description || '',
-                        hashtags,
-                    };
-                });
-
-            let locationMap = {};
-            if (itemsForLocation.length > 0) {
-                try {
-                    locationMap = await extractLocationsBatch(itemsForLocation);
-                } catch (e) {
-                    console.warn('[Grievances] Location extraction failed:', e);
-                }
+            if (cursor) {
+                setGrievances(prev => [...prev, ...rowsWithCachedLocations]);
+            } else {
+                setGrievances(rowsWithCachedLocations);
             }
-
-            const enrichedRows = rows.map(g => {
-                const loc = locationMap[g.id];
-                if (loc && loc.location_found) {
-                    return {
-                        ...g,
-                        detected_location: {
-                            city: loc.city,
-                            keyword_matched: loc.keyword_matched,
-                            lat: loc.lat,
-                            lng: loc.lng,
-                            confidence: loc.confidence,
-                            source: loc.source,
-                        },
-                    };
-                }
-                return g;
-            });
-
-            setGrievances(enrichedRows);
-            setPagination({
+            // Carry the server-side sentiment breakdown forward across
+            // Load More clicks (the backend only sends it on page 1).
+            setPagination((prev) => ({
                 hasMore: data.pagination?.hasMore || false,
                 nextCursor: data.pagination?.nextCursor || null,
-                total: data.pagination?.total ?? 0,
-                pages: data.pagination?.pages ?? 0
-            });
-            // Scroll the results back into view on page navigation — otherwise the
-            // user is left staring at the pagination bar at the bottom of the old page.
-            if (pageNum > 1) {
-                splitPaneRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
+                total: data.pagination?.total ?? prev.total ?? 0,
+                sentiment_counts:
+                    data.pagination?.sentiment_counts
+                    || (cursor ? prev.sentiment_counts : undefined)
+            }));
+
+            void enrichLocationsInBackground(rowsWithCachedLocations);
         } catch (error) {
             if (error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') return; // aborted — ignore
             toast.error('Failed to load grievances');
             console.error(error);
         } finally {
-            setLoading(false);
-            setLoadingMore(false);
+            // A superseded (aborted) request must not clear `loading` on behalf
+            // of the newer request that replaced it — only the request that's
+            // still current (i.e. still referenced by fetchAbortRef) may do so.
+            // "Load More" calls never touch fetchAbortRef, so they always clear
+            // loadingMore unconditionally, same as before.
+            if (cursor) {
+                setLoadingMore(false);
+            } else if (fetchAbortRef.current === abortController) {
+                setLoading(false);
+            }
         }
     };
 
@@ -1294,40 +1653,23 @@ const Grievances = () => {
         ));
     };
 
-    const handleDeleteGrievance = async (grievance) => {
-        try {
-            await api.delete(`/grievances/${grievance.id}`);
-            setGrievances(prev => prev.filter(g => g.id !== grievance.id));
-            toast.success('Post deleted');
-        } catch (error) {
-            toast.error(error.response?.data?.message || 'Failed to delete post');
-        }
-    };
-
-    const handleEditGrievanceSentiment = async (grievance, sentiment) => {
-        try {
-            await api.put(`/grievances/${grievance.id}/sentiment`, { sentiment });
-            setGrievances(prev => prev.map(item => (
-                item.id === grievance.id
-                    ? { ...item, analysis: { ...(item.analysis || {}), sentiment, analyzed_at: item.analysis?.analyzed_at || new Date().toISOString() } }
-                    : item
-            )));
-            toast.success('Sentiment updated');
-        } catch (error) {
-            toast.error(error.response?.data?.message || 'Failed to update sentiment');
-        }
-    };
-
     /* ─── Card Actions ─── */
-    const handleAction = (action, { grievance, media, status, sentiment }) => {
-        if (action === 'delete') {
-            handleDeleteGrievance(grievance);
+    const handleDeleteGrievance = async (grievanceId) => {
+        if (!canManageSpecialGrievanceUi) {
+            toast.error('You do not have access to delete grievances');
             return;
         }
-        if (action === 'edit_sentiment') {
-            handleEditGrievanceSentiment(grievance, sentiment);
-            return;
+        try {
+            await api.delete(`/grievances/${grievanceId}`);
+            setGrievances(prev => prev.filter(g => g.id !== grievanceId));
+            toast.success('Grievance deleted successfully');
+            fetchDashboardStats();
+        } catch (error) {
+            toast.error(error.response?.data?.message || 'Failed to delete grievance');
         }
+    };
+
+    const handleAction = (action, { grievance, media, status }) => {
         setSelectedGrievance(grievance);
         if (action === 'view') {
             setIsDetailOpen(true);
@@ -1341,6 +1683,8 @@ const Grievances = () => {
             setIsFirConfirmOpen(true);
         } else if (action === 'view_media') {
             setSelectedMedia(media);
+            setVideoRefreshUrl(null);
+            setVideoRefreshing(false);
             setIsMediaOpen(true);
         } else if (action === 'share_to_excel') {
             // Pre-fill modal with grievance data
@@ -1394,6 +1738,12 @@ const Grievances = () => {
             setIsAnalysisOpen(true);
         } else if (action === 'update_g_workflow_status') {
             handleUpdateGrievanceWorkflowStatus(grievance, status);
+        } else if (action === 'delete') {
+            if (!canManageSpecialGrievanceUi) {
+                toast.error('You do not have access to delete grievances');
+                return;
+            }
+            handleDeleteGrievance(grievance.id);
         }
     };
 
@@ -1481,90 +1831,34 @@ const Grievances = () => {
         setLocationFilter(null);
     };
 
+    const leaderRows = useMemo(() => {
+        const rows = sentimentLeaders[sentimentLeadersTab] || [];
+        const platformRows = sentimentLeadersPlatform === 'all'
+            ? rows
+            : rows.filter((row) => String(row.platform || '').toLowerCase() === sentimentLeadersPlatform);
+        const q = sentimentLeadersSearch.trim().toLowerCase();
+        if (!q) return platformRows;
+        return platformRows.filter((row) => (
+            String(row.handle || '').toLowerCase().includes(q) ||
+            String(row.display_name || '').toLowerCase().includes(q) ||
+            String(row.platform || '').toLowerCase().includes(q)
+        ));
+    }, [sentimentLeaders, sentimentLeadersTab, sentimentLeadersPlatform, sentimentLeadersSearch]);
+
+    const openSentimentLeaderPosts = useCallback((row) => {
+        if (!row?.handle) return;
+        setSentimentFilter(sentimentLeadersTab === 'moderate' ? 'neutral' : sentimentLeadersTab);
+        setSelectedHandle(String(row.handle || '').replace(/^@/, ''));
+        setPlatformFilter(row.platform || 'all');
+        setNavbarStatus('total');
+        setSentimentLeadersOpen(false);
+    }, [sentimentLeadersTab]);
+
     const hasActiveFilters = platformFilter !== 'all' || dateRange.from || debouncedSearch || navbarPlatform !== 'all' || navbarStatus !== 'total' || selectedHandle || locationFilter;
     const isReportsTab = navbarStatus === 'reports';
 
-    const displayedGrievances = useMemo(() => {
-        // In politician mode, fetchPoliticianGrievances already handles constituency-based
-        // filtering server-side. Skip client-side location narrowing to avoid double-filtering.
-        if (!locationFilter || politicianContext) return grievances;
-
-        let target = String(locationFilter).trim().toLowerCase();
-        if (!target) return grievances;
-
-        // If target is "Hyderabad, Telangana", we only want to match "Hyderabad".
-        // Matching both "Hyderabad" AND "Telangana" via OR is too broad.
-        if (target.includes(',')) {
-            target = target.split(',')[0].trim();
-        }
-
-        return grievances.filter((grievance) => {
-            const city = String(grievance?.detected_location?.city || '').toLowerCase().trim();
-            const district = String(grievance?.detected_location?.district || '').toLowerCase().trim();
-            const constituency = String(grievance?.detected_location?.constituency || '').toLowerCase().trim();
-
-            if (!city && !district && !constituency) return false;
-
-            // Strict match first
-            if (city === target || district === target || constituency === target) {
-                // If we matched via district/constituency, but city is broadly "telangana"
-                // and the target is a specific city, exclude it.
-                if (city === 'telangana' && target !== 'telangana') return false;
-                return true;
-            }
-
-            // Flexible matching for cases like "Hyderabad" filter vs "Hyderabad, Telangana" data
-            // We only do this for locations longer than 3 chars to avoid false positives
-            if (city.length > 3 && (city.includes(target) || target.includes(city))) return true;
-
-            // If we match via district or constituency, we must ensure the city isn't just "telangana"
-            // unless the user specifically searched for "telangana".
-            if (district.length > 3 && (district.includes(target) || target.includes(district))) {
-                return (city !== 'telangana' || target === 'telangana');
-            }
-            if (constituency.length > 3 && (constituency.includes(target) || target.includes(constituency))) {
-                return (city !== 'telangana' || target === 'telangana');
-            }
-
-            return false;
-        });
-    }, [grievances, locationFilter]);
-
-    const selectedLocationTotal = useMemo(() => {
-        if (!locationFilter) return null;
-        const selected = uniqueLocations.find((loc) => String(loc.city).toLowerCase() === String(locationFilter).toLowerCase());
-        return selected?.count ?? null;
-    }, [locationFilter, uniqueLocations]);
-
-    const effectiveTotal = locationFilter
-        ? (selectedLocationTotal ?? displayedGrievances.length)
-        : (pagination.total || displayedGrievances.length);
-
-    /* ─── Pagination derived values ─── */
-    const totalPages = Math.max(1, pagination.pages || Math.ceil((pagination.total || 0) / pageSize) || 1);
-    const rangeStart = displayedGrievances.length ? (page - 1) * pageSize + 1 : 0;
-    const rangeEnd = displayedGrievances.length ? rangeStart + displayedGrievances.length - 1 : 0;
-
-    // Windowed page numbers: first, last, current ± 1, with '…' gaps — keeps the
-    // control usable even when there are hundreds of pages.
-    const pageWindow = useMemo(() => {
-        const delta = 1;
-        const range = [];
-        for (let i = Math.max(1, page - delta); i <= Math.min(totalPages, page + delta); i++) {
-            range.push(i);
-        }
-        const withEdges = [];
-        if (range[0] > 1) {
-            withEdges.push(1);
-            if (range[0] > 2) withEdges.push('…');
-        }
-        withEdges.push(...range);
-        if (range[range.length - 1] < totalPages) {
-            if (range[range.length - 1] < totalPages - 1) withEdges.push('…');
-            withEdges.push(totalPages);
-        }
-        return withEdges;
-    }, [page, totalPages]);
+    // No more client-side location filtering — backend handles it via location_city param
+    const displayedGrievances = grievances;
 
     const xSources = sources.filter(s => s.platform === 'x');
     const fbSources = sources.filter(s => s.platform === 'facebook');
@@ -1575,247 +1869,269 @@ const Grievances = () => {
     return (
         <div className="p-4 md:p-6 space-y-0 bg-slate-50 min-h-screen flex flex-col">
 
-            {/* ─── MLA Isolation Mode Banner ─── */}
-            {politicianContext && (() => {
-                const kwTypeStyle = {
-                    primary: 'bg-indigo-600 text-white border-indigo-600',
-                    constituency: 'bg-blue-500 text-white border-blue-500',
-                    alias: 'bg-violet-500 text-white border-violet-500',
-                    custom: 'bg-emerald-600 text-white border-emerald-600',
-                };
-                const activeCount = activeMlaKeywords.length;
-
-                return (
-                    <div className="mx-2 mt-2 mb-0 border border-indigo-200 bg-gradient-to-r from-indigo-50/80 to-violet-50/50 rounded-xl shadow-sm overflow-hidden">
-                        {/* ── Header Row ── */}
-                        <div className="flex items-center justify-between px-4 py-3 border-b border-indigo-100">
-                            <div className="flex items-center gap-3">
-                                {/* Politician avatar */}
-                                <div className="relative shrink-0">
-                                    {politicianData?.image ? (
-                                        <img
-                                            src={politicianData.image}
-                                            alt={politicianContext.name}
-                                            className="h-11 w-11 rounded-full object-cover object-top ring-2 ring-indigo-200 shadow-sm"
-                                            onError={e => { e.currentTarget.style.display = 'none'; e.currentTarget.nextSibling.style.display = 'flex'; }}
-                                        />
-                                    ) : null}
-                                    <div
-                                        className="h-11 w-11 rounded-full bg-indigo-600 text-white font-bold text-sm items-center justify-center ring-2 ring-indigo-200 shadow-sm"
-                                        style={{ display: politicianData?.image ? 'none' : 'flex' }}
-                                    >
-                                        {getMinisterInitials(politicianContext.name)}
-                                    </div>
-                                    {/* Activity indicator dot */}
-                                    <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-emerald-400 ring-2 ring-white" title="Active monitoring" />
-                                </div>
-                                <div>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                        <span className="text-[13px] font-bold text-indigo-900">{politicianContext.name}</span>
-                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-indigo-600 text-white uppercase tracking-wide">
-                                            {politicianContext.role}
-                                        </span>
-                                        {politicianContext.constituency && (
-                                            <span className="flex items-center gap-1 text-[10px] font-medium text-indigo-600">
-                                                <MapPin className="h-2.5 w-2.5" />
-                                                {politicianContext.constituency.charAt(0).toUpperCase() + politicianContext.constituency.slice(1)}
-                                            </span>
-                                        )}
-                                        {politicianData?.department && (
-                                            <span className="text-[10px] text-slate-400 hidden sm:inline">· {politicianData.department}</span>
-                                        )}
-                                    </div>
-                                    <p className="text-[10px] text-indigo-500 mt-0.5">
-                                        {grievances.length} results matched · {activeCount} active keyword{activeCount !== 1 ? 's' : ''} · {mlaModeKeywords.length - activeCount} paused
-                                    </p>
-                                </div>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                                <button
-                                    onClick={() => setShowKeywordEditor(v => !v)}
-                                    aria-expanded={showKeywordEditor}
-                                    className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg transition-colors border ${showKeywordEditor ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'}`}
-                                >
-                                    <Tag className="h-3 w-3" />
-                                    Keywords ({mlaModeKeywords.length})
-                                    <ChevronDown className={`h-3 w-3 transition-transform ${showKeywordEditor ? 'rotate-180' : ''}`} />
-                                </button>
-                                <button
-                                    onClick={clearPoliticianMode}
-                                    className="flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-red-600 px-2 py-1 rounded-lg border border-transparent hover:border-red-200 hover:bg-red-50 transition-all"
-                                >
-                                    <X className="h-3.5 w-3.5" />
-                                    Exit
-                                </button>
-                            </div>
-                        </div>
-
-                        {/* ── Keyword Dropdown — collapsed by default to save vertical space ── */}
-                        {showKeywordEditor && (
-                            <>
-                                <div className="px-4 py-2.5 flex flex-wrap items-center gap-1.5 border-t border-indigo-100">
-                                    <span className="text-[10px] font-semibold text-indigo-400 mr-0.5 shrink-0">Filters:</span>
-                                    {mlaModeKeywords.map(kw => {
-                                        const isDisabled = disabledKeywordIds.has(kw.id);
-                                        return (
-                                            <button
-                                                key={kw.id}
-                                                onClick={() => toggleMlaKeyword(kw.id)}
-                                                title={isDisabled ? 'Click to enable' : 'Click to pause'}
-                                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-semibold transition-all cursor-pointer select-none ${isDisabled
-                                                    ? 'bg-white text-slate-400 border-slate-200 line-through opacity-60'
-                                                    : (kwTypeStyle[kw.type] || kwTypeStyle.primary)
-                                                    }`}
-                                            >
-                                                {kw.label}
-                                                {!kw.isSystem && (
-                                                    <span
-                                                        onClick={e => { e.stopPropagation(); removeMlaKeyword(kw.term); }}
-                                                        className="ml-0.5 text-[11px] leading-none hover:opacity-60"
-                                                    >×</span>
-                                                )}
-                                            </button>
-                                        );
-                                    })}
-
-                                    {/* Inline add-keyword input */}
-                                    <div className="inline-flex items-center gap-1">
-                                        <input
-                                            type="text"
-                                            value={newKeywordInput}
-                                            onChange={e => setNewKeywordInput(e.target.value)}
-                                            onKeyDown={e => e.key === 'Enter' && addMlaKeyword()}
-                                            placeholder="+ add keyword"
-                                            className="h-[22px] px-2 text-[10px] border border-dashed border-indigo-300 rounded-full outline-none focus:border-indigo-500 bg-transparent w-28 text-indigo-700 placeholder:text-indigo-300"
-                                        />
-                                        {newKeywordInput.trim() && (
-                                            <button
-                                                onClick={addMlaKeyword}
-                                                className="h-[22px] px-2 text-[10px] bg-emerald-600 text-white rounded-full font-bold hover:bg-emerald-700 transition-colors"
-                                            >
-                                                +
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-
-                                {/* ── Keyword Legend ── */}
-                                <div className="px-4 pb-3 flex flex-wrap items-center gap-3 text-[10px]">
-                                    {[
-                                        { type: 'primary', label: 'Name keywords' },
-                                        { type: 'constituency', label: 'Constituency' },
-                                        { type: 'alias', label: 'Known aliases' },
-                                        { type: 'custom', label: 'Your additions' },
-                                    ].map(({ type, label }) => (
-                                        <div key={type} className="flex items-center gap-1.5">
-                                            <span className={`inline-block w-2.5 h-2.5 rounded-full ${type === 'primary' ? 'bg-indigo-600' : type === 'constituency' ? 'bg-blue-500' : type === 'alias' ? 'bg-violet-500' : 'bg-emerald-600'}`} />
-                                            <span className="text-slate-500">{label}</span>
-                                        </div>
-                                    ))}
-                                    <span className="text-slate-400 ml-2">· Click any keyword to pause/resume · Strikethrough = paused</span>
-                                </div>
-                            </>
-                        )}
-
-                        {/* ── Isolation mode footer ── */}
-                    </div>
-                );
-            })()}
-
-            {/* ─── MLA Analytics Summary ─── */}
-            {politicianContext && !loading && (
-                <MlaAnalyticsSummary
-                    analytics={mlaAnalytics}
-                    politician={politicianData || politicianContext}
-                    loading={loading}
-                />
-            )}
-
             {/* ─── Page Header ─── */}
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 px-2 py-4">
-                <div>
-                    <h1 className="text-2xl font-bold tracking-tight text-slate-900">Grievance Management</h1>
-                    <p className="text-sm text-muted-foreground mt-0.5">Monitor and resolve public complaints from social platforms</p>
+            <div className="flex items-center justify-between gap-2 px-2 py-2 flex-wrap">
+                <div className="flex items-center gap-3 min-w-0">
+                    <h1 className="text-base font-bold tracking-tight text-slate-900 whitespace-nowrap">Grievance Management</h1>
+                    <span className="hidden sm:inline text-xs text-muted-foreground border-l border-slate-200 pl-3">Monitor and resolve public complaints from social platforms</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
                     <div className="relative">
-                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
+                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" />
                         <input
                             type="text"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                             onKeyDown={(e) => { if (e.key === 'Enter' && searchQuery.trim().startsWith('#')) { e.preventDefault(); handleFetchHashtag(); } }}
                             placeholder="Search handle, name, #hashtag..."
-                            className="bg-white border border-slate-200 rounded-md pl-8 pr-8 py-1.5 text-xs font-medium text-slate-700 w-56 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 placeholder:text-slate-400"
+                            className="bg-white border border-slate-200 rounded-md pl-6 pr-6 py-1 text-xs text-slate-700 w-48 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 placeholder:text-slate-400"
                         />
                         {searchQuery && (
-                            <button
-                                type="button"
-                                onClick={() => setSearchQuery('')}
-                                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                            >
-                                <X className="h-3.5 w-3.5" />
+                            <button type="button" onClick={() => setSearchQuery('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                                <X className="h-3 w-3" />
                             </button>
                         )}
                     </div>
                     {searchQuery.trim().startsWith('#') && searchQuery.trim().length >= 2 && (
-                        <Button
-                            variant="default" size="sm"
-                            onClick={handleFetchHashtag}
-                            disabled={fetchingHashtag}
-                            className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-white"
-                        >
-                            {fetchingHashtag ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                            {fetchingHashtag ? 'Fetching...' : 'Fetch Tweets'}
+                        <Button variant="default" size="sm" onClick={handleFetchHashtag} disabled={fetchingHashtag} className="h-7 gap-1 bg-blue-600 hover:bg-blue-700 text-white text-xs px-2">
+                            {fetchingHashtag ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                            {fetchingHashtag ? 'Fetching...' : 'Fetch'}
                         </Button>
                     )}
                     <div className="relative">
-                        <select
-                            value={topicFilter || ''}
-                            onChange={(e) => setTopicFilter(e.target.value || null)}
-                            className="appearance-none bg-white border border-teal-400 rounded-md pl-7 pr-8 py-1.5 text-xs font-medium text-slate-700 hover:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 cursor-pointer"
-                        >
+                        <select value={topicFilter || ''} onChange={(e) => setTopicFilter(e.target.value || null)} className="appearance-none bg-white border border-slate-200 rounded-md pl-6 pr-6 py-1 text-xs text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-400 cursor-pointer">
                             <option value="">All Topics</option>
-                            {GRIEVANCE_TOPICS.map(t => (
-                                <option key={t} value={t}>{t}</option>
-                            ))}
+                            {grievanceTopics.map(t => <option key={t} value={t}>{t}</option>)}
                         </select>
-                        <Tag className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
-                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" />
+                        <Tag className="absolute left-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" />
+                        <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" />
                     </div>
                     <div className="relative">
-                        <select
-                            value={sentimentFilter || ''}
-                            onChange={(e) => setSentimentFilter(e.target.value || null)}
-                            className="appearance-none bg-white border border-rose-400 rounded-md pl-7 pr-8 py-1.5 text-xs font-medium text-slate-700 hover:border-rose-500 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 cursor-pointer"
-                        >
+                        <select value={sentimentFilter || ''} onChange={(e) => setSentimentFilter(e.target.value || null)} className="appearance-none bg-white border border-slate-200 rounded-md pl-6 pr-6 py-1 text-xs text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400 cursor-pointer">
                             <option value="">All Risk Levels</option>
                             <option value="positive">Positive</option>
                             <option value="neutral">Moderate</option>
                             <option value="negative">Negative</option>
                         </select>
-                        <Shield className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
-                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" />
+                        <Shield className="absolute left-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" />
+                        <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400 pointer-events-none" />
                     </div>
-                    <Button
-                        variant="outline" size="sm"
-                        onClick={handleFetchAll}
-                        disabled={fetchingSource === 'all'}
-                        className="gap-2"
-                    >
-                        {fetchingSource === 'all' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                        Fetch All
+
+                    <Popover>
+                        <PopoverTrigger asChild>
+                            <Button
+                                variant="outline"
+                                className={cn(
+                                    "h-7 justify-start text-left font-normal text-xs px-3 bg-white border-slate-200 hover:bg-slate-50 text-slate-700",
+                                    !dateRange.from && "text-slate-500"
+                                )}
+                            >
+                                <Calendar className="mr-1.5 h-3.5 w-3.5 text-slate-400" />
+                                {dateRange.from ? (
+                                    dateRange.to ? (
+                                        <>
+                                            {format(dateRange.from, "LLL dd, y")} -{" "}
+                                            {format(dateRange.to, "LLL dd, y")}
+                                        </>
+                                    ) : (
+                                        format(dateRange.from, "LLL dd, y")
+                                    )
+                                ) : (
+                                    <span>Date range</span>
+                                )}
+                            </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="end">
+                            <CalendarComponent
+                                initialFocus
+                                mode="range"
+                                defaultMonth={dateRange.from || new Date()}
+                                selected={{
+                                    from: dateRange.from || undefined,
+                                    to: dateRange.to || undefined
+                                }}
+                                onSelect={(range) => {
+                                    updateURLParams({
+                                        from: range?.from ? range.from.toISOString().split('T')[0] : null,
+                                        to: range?.to ? range.to.toISOString().split('T')[0] : null
+                                    });
+                                }}
+                                numberOfMonths={2}
+                            />
+                        </PopoverContent>
+                    </Popover>
+
+                    <Button variant="outline" size="sm" onClick={() => { fetchGrievances(); fetchDashboardStats(); fetchLocationStats(); }} className="h-7 gap-1 text-xs px-2">
+                        <RefreshCw className="h-3 w-3" /> Refresh
                     </Button>
-                    <Button variant="outline" size="sm" onClick={() => { fetchGrievances(); fetchDashboardStats(); fetchLocationStats(); }} className="gap-2">
-                        <RefreshCw className="h-4 w-4" /> Refresh
+                    <Button variant="outline" size="sm" onClick={() => { setSentimentLeadersSearch(''); setSentimentLeadersTab('positive'); setSentimentLeadersOpen(true); }} className="h-7 gap-1 text-xs px-2 border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-400">
+                        <Users className="h-3 w-3" /> Sentiment Leaders
                     </Button>
-                    <Button variant="outline" size="sm" onClick={() => setShowEngagersDialog(true)} className="gap-2">
-                        <Users className="h-4 w-4" /> Frequent Engagers
+                    <Button variant="outline" size="sm" onClick={() => setAddTweetOpen(true)} className="h-7 gap-1 text-xs px-2 border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-400">
+                        <Download className="h-3 w-3" /> Add Tweet
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => { fetchTrackedKeywords(); setKeywordsOpen(true); }} className="h-7 gap-1 text-xs px-2 border-orange-300 bg-orange-50 text-orange-700 hover:bg-orange-100 hover:border-orange-400">
+                        <Tag className="h-3 w-3" /> Keywords
                     </Button>
                 </div>
             </div>
 
-            <FrequentEngagersDialog open={showEngagersDialog} onOpenChange={setShowEngagersDialog} />
+            {/* ─── Add Tweet by URL/ID Modal ─── */}
+            <Dialog open={addTweetOpen} onOpenChange={setAddTweetOpen}>
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Download className="h-4 w-4 text-blue-600" /> Add Tweet manually
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3 pt-1">
+                        <p className="text-xs text-muted-foreground">
+                            Paste any X / Twitter URL or a tweet id. We'll fetch the tweet, run sentiment classification (RapidAPI ChatGPT-42), and add it to the client mentions feed.
+                        </p>
+                        <input
+                            type="text"
+                            value={addTweetInput}
+                            onChange={(e) => setAddTweetInput(e.target.value)}
+                            placeholder="https://x.com/username/status/1234567890  ·  or just 1234567890"
+                            disabled={addTweetLoading}
+                            className="w-full bg-white border border-slate-200 rounded-md px-2.5 py-2 text-sm hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 placeholder:text-slate-400"
+                            autoFocus
+                        />
+                        <div className="flex justify-end gap-2">
+                            <Button variant="outline" size="sm" onClick={() => setAddTweetOpen(false)} disabled={addTweetLoading}>Cancel</Button>
+                            <Button
+                                size="sm"
+                                onClick={handleImportTweet}
+                                disabled={addTweetLoading || !addTweetInput.trim()}
+                                className="gap-1 bg-blue-600 hover:bg-blue-700 text-white"
+                            >
+                                {addTweetLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                                {addTweetLoading ? 'Importing…' : 'Import'}
+                            </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* ─── Keywords Manager Modal ─── */}
+            <Dialog open={keywordsOpen} onOpenChange={setKeywordsOpen}>
+                <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <Tag className="h-4 w-4 text-orange-600" /> Tracking Keywords
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3 pt-1">
+                        <p className="text-xs text-muted-foreground">
+                            These keywords are what the auto-fetcher searches every 10–30 minutes. Add anything related to Revanth Reddy / the INC — names, hashtags, opposition keywords, constituency landmarks. Telugu, Hindi and English all work.
+                        </p>
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                value={newKeywordInput}
+                                onChange={(e) => setNewKeywordInput(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') handleAddKeyword(); }}
+                                placeholder="e.g. #BandiSanjay  ·  Karimnagar paddy procurement  ·  బండి సంజయ్"
+                                disabled={keywordSaving}
+                                className="flex-1 bg-white border border-slate-200 rounded-md px-2.5 py-2 text-sm hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-400 placeholder:text-slate-400"
+                            />
+                            <select
+                                value={newKeywordCategory}
+                                onChange={(e) => setNewKeywordCategory(e.target.value)}
+                                disabled={keywordSaving}
+                                className="bg-white border border-slate-200 rounded-md px-2 py-2 text-xs"
+                            >
+                                <option value="other">Mention</option>
+                                <option value="hate">Hate</option>
+                                <option value="threat">Threat</option>
+                                <option value="violence">Violence</option>
+                            </select>
+                            <select
+                                value={newKeywordLang}
+                                onChange={(e) => setNewKeywordLang(e.target.value)}
+                                disabled={keywordSaving}
+                                className="bg-white border border-slate-200 rounded-md px-2 py-2 text-xs"
+                            >
+                                <option value="en">EN</option>
+                                <option value="te">TE</option>
+                                <option value="hi">HI</option>
+                                <option value="all">All</option>
+                            </select>
+                            <Button
+                                size="sm"
+                                onClick={handleAddKeyword}
+                                disabled={keywordSaving || !newKeywordInput.trim()}
+                                className="gap-1 bg-orange-600 hover:bg-orange-700 text-white"
+                            >
+                                {keywordSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                                Add
+                            </Button>
+                        </div>
+                        <div className="border border-slate-200 rounded-md max-h-[420px] overflow-y-auto">
+                            {trackedKeywordsLoading ? (
+                                <div className="flex items-center justify-center py-8 text-xs text-muted-foreground gap-2">
+                                    <Loader2 className="h-3 w-3 animate-spin" /> Loading keywords…
+                                </div>
+                            ) : trackedKeywords.length === 0 ? (
+                                <div className="text-center py-8 text-xs text-muted-foreground">No keywords yet. Add some above.</div>
+                            ) : (
+                                <table className="w-full text-xs">
+                                    <thead className="bg-slate-50 sticky top-0">
+                                        <tr className="text-left text-slate-500">
+                                            <th className="px-3 py-2 font-semibold">Keyword</th>
+                                            <th className="px-2 py-2 font-semibold">Cat</th>
+                                            <th className="px-2 py-2 font-semibold">Lang</th>
+                                            <th className="px-2 py-2 font-semibold">Weight</th>
+                                            <th className="px-2 py-2"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {trackedKeywords.map((k) => (
+                                            <tr key={k.id || k._id || k.keyword} className="border-t border-slate-100 hover:bg-slate-50/60">
+                                                <td className="px-3 py-1.5 font-medium text-slate-800">{k.keyword}</td>
+                                                <td className="px-2 py-1.5">
+                                                    <span className={cn(
+                                                        'inline-block px-1.5 py-0.5 rounded-sm text-[10px] font-bold uppercase tracking-wider',
+                                                        k.category === 'hate'     ? 'bg-rose-100 text-rose-700'    :
+                                                        k.category === 'threat'   ? 'bg-orange-100 text-orange-700' :
+                                                        k.category === 'violence' ? 'bg-red-100 text-red-700'      :
+                                                                                    'bg-slate-100 text-slate-700'
+                                                    )}>{k.category || 'other'}</span>
+                                                </td>
+                                                <td className="px-2 py-1.5 uppercase text-slate-500">{k.language || 'en'}</td>
+                                                <td className="px-2 py-1.5 text-slate-500">{k.weight ?? 50}</td>
+                                                <td className="px-2 py-1.5 text-right">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleDeleteKeyword(k.id || k._id)}
+                                                        className="text-rose-500 hover:text-rose-700 inline-flex items-center gap-1"
+                                                        title="Delete"
+                                                    >
+                                                        <X className="h-3 w-3" />
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+                        <div className="flex items-center justify-between text-[11px] text-slate-500">
+                            <span>{trackedKeywords.length} keywords tracked · auto-fetched every 10 min</span>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={handleTriggerFetch}
+                                disabled={triggerFetchLoading}
+                                className="h-7 gap-1 text-xs"
+                            >
+                                {triggerFetchLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                                Fetch now
+                            </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
 
             {/* ─── Top Navigation Bar with Filters ─── */}
             <GrievanceTopNavbar
@@ -1823,78 +2139,88 @@ const Grievances = () => {
                 onPlatformChange={setNavbarPlatform}
                 selectedHandle={selectedHandle}
                 onHandleChange={setSelectedHandle}
+                stats={stats}
+                grievances={grievances}
                 sources={sources}
-                onDeleteSource={(source) => setDeleteConfirmSource(source)}
                 onAddSource={() => {
                     if (navbarPlatform !== 'all') {
                         setAddSourcePlatform(navbarPlatform);
                     }
                     setShowAddSource(true);
                 }}
+                onRemoveSource={(source) => setDeleteConfirmSource(source)}
+                onFetchSourceHistory={(source) => setFetchDateDialog(source)}
+                onFetchKeywords={handleFetchKeywords}
+                fetchingSource={fetchingSource}
                 locationFilter={locationFilter}
                 onLocationChange={setLocationFilter}
                 uniqueLocations={uniqueLocations}
-                dateRange={dateRange}
-                onDateRangeChange={setDateRange}
             />
 
             {/* Dashboard Filter Banner */}
-            {(sentimentFilter || selectedHandle || topicFilter || analysisCategoryFilter || locationFilter || departmentFilter || fakeNewsFlag || constituencyFilter) && (
+            {(sentimentFilter || selectedHandle || topicFilter || analysisCategoryFilter || locationFilter || targetEntityFilter || dateRange.from) && (
                 <div className="mx-2 mt-2 flex items-center gap-2 px-3 py-2 bg-violet-50 border border-violet-200 rounded-lg text-xs">
                     <span className="text-violet-700 font-medium">Filtered by:</span>
-                    {fakeNewsFlag === 'fake_news' && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-semibold text-[11px]">
-                            🚩 Fake News (flagged)
-                            <button type="button" onClick={() => setFakeNewsFlag(null)} className="ml-0.5 hover:opacity-70">&times;</button>
-                        </span>
-                    )}
-                    {departmentFilter && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 font-semibold text-[11px]">
-                            🏢 {departmentFilter}
-                            <button type="button" onClick={() => setDepartmentFilter(null)} className="ml-0.5 hover:opacity-70">&times;</button>
-                        </span>
-                    )}
-                    {constituencyFilter && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold text-[11px]">
-                            🏛️ {constituencyFilter}
-                            <button type="button" onClick={() => setConstituencyFilter(null)} className="ml-0.5 hover:opacity-70">&times;</button>
+                    {targetEntityFilter && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800 font-semibold text-[11px]">
+                            {targetEntityFilter === 'revanth' ? 'A. Revanth Reddy' : targetEntityFilter === 'bhatti' ? 'Bhatti Vikramarka' : targetEntityFilter}
+                            <button type="button" onClick={() => updateURLParams({ target_entity: null })} className="ml-0.5 hover:opacity-70">&times;</button>
                         </span>
                     )}
                     {sentimentFilter && (
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-semibold text-[11px] ${sentimentFilter === 'negative' ? 'bg-red-100 text-red-700' :
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-semibold text-[11px] ${
+                            sentimentFilter === 'negative' ? 'bg-red-100 text-red-700' :
                             sentimentFilter === 'positive' ? 'bg-emerald-100 text-emerald-700' :
-                                'bg-amber-100 text-amber-700'}`}>
+                            'bg-amber-100 text-amber-700'}`}>
                             {sentimentFilter === 'negative' ? 'Negative' : sentimentFilter === 'positive' ? 'Positive' : 'Moderate'}
-                            <button type="button" onClick={() => setSentimentFilter(null)} className="ml-0.5 hover:opacity-70">&times;</button>
+                            <button type="button" onClick={() => updateURLParams({ sentiment: null })} className="ml-0.5 hover:opacity-70">&times;</button>
                         </span>
                     )}
                     {analysisCategoryFilter && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 font-semibold text-[11px]">
-                            {analysisCategoryFilter.replace(/_/g, ' ')}
-                            <button type="button" onClick={() => setAnalysisCategoryFilter(null)} className="ml-0.5 hover:opacity-70">&times;</button>
+                            {analysisCategoryFilter.replace(/[_-]+/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                            <button type="button" onClick={() => updateURLParams({ analysis_category: null })} className="ml-0.5 hover:opacity-70">&times;</button>
                         </span>
                     )}
                     {topicFilter && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-100 text-teal-700 font-semibold text-[11px]">
                             {topicFilter}
-                            <button type="button" onClick={() => setTopicFilter(null)} className="ml-0.5 hover:opacity-70">&times;</button>
+                            <button type="button" onClick={() => updateURLParams({ grievance_type: null })} className="ml-0.5 hover:opacity-70">&times;</button>
                         </span>
                     )}
                     {selectedHandle && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-semibold text-[11px]">
                             @{selectedHandle.replace('@', '')}
-                            <button type="button" onClick={() => setSelectedHandle(null)} className="ml-0.5 hover:opacity-70">&times;</button>
+                            <button type="button" onClick={() => updateURLParams({ posted_by: null, handle: null })} className="ml-0.5 hover:opacity-70">&times;</button>
                         </span>
                     )}
                     {locationFilter && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-semibold text-[11px]">
                             📍 {locationFilter}
-                            <button type="button" onClick={() => setLocationFilter(null)} className="ml-0.5 hover:opacity-70">&times;</button>
+                            <button type="button" onClick={() => updateURLParams({ location: null })} className="ml-0.5 hover:opacity-70">&times;</button>
+                        </span>
+                    )}
+                    {dateRange.from && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 font-semibold text-[11px]">
+                            📅 {format(dateRange.from, 'yyyy-MM-dd')}{dateRange.to ? ` to ${format(dateRange.to, 'yyyy-MM-dd')}` : ''}
+                            <button type="button" onClick={() => updateURLParams({ from: null, to: null })} className="ml-0.5 hover:opacity-70">&times;</button>
                         </span>
                     )}
                     <button
                         type="button"
-                        onClick={() => { setSentimentFilter(null); setSelectedHandle(null); setTopicFilter(null); setAnalysisCategoryFilter(null); setLocationFilter(null); setDepartmentFilter(null); setFakeNewsFlag(null); setConstituencyFilter(null); }}
+                        onClick={() => {
+                            updateURLParams({
+                                sentiment: null,
+                                posted_by: null,
+                                handle: null,
+                                grievance_type: null,
+                                analysis_category: null,
+                                location: null,
+                                target_entity: null,
+                                from: null,
+                                to: null
+                            });
+                        }}
                         className="ml-auto text-violet-600 hover:text-violet-800 font-medium"
                     >
                         Clear all
@@ -1905,6 +2231,18 @@ const Grievances = () => {
             {/* ─── Reports Tab Content ─── */}
             {isReportsTab && (
                 <div className="px-4 mt-6 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    <div className="max-w-5xl mx-auto flex justify-start">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setNavbarStatus('total')}
+                            className="gap-2"
+                        >
+                            <ArrowLeft className="h-4 w-4" />
+                            Back to Grievances
+                        </Button>
+                    </div>
                     {/* Big Navigation Buttons */}
                     <div className="grid grid-cols-3 gap-6 max-w-5xl mx-auto">
                         {[
@@ -1985,8 +2323,313 @@ const Grievances = () => {
                 </div>
             )}
 
+            {/* ─── RSS News Feed ─── */}
+            {navbarPlatform === 'rss' && (
+                <div className="mx-2 mt-3 space-y-3">
+                    <style>{`
+                        .mentions-masonry { column-gap: 1rem; column-count: 1; }
+                        @media (min-width: 768px)  { .mentions-masonry { column-count: 2; } }
+                        @media (min-width: 1280px) { .mentions-masonry { column-count: 3; } }
+                        .mentions-masonry > .mention-cell {
+                            break-inside: avoid;
+                            -webkit-column-break-inside: avoid;
+                            page-break-inside: avoid;
+                            display: block;
+                            margin-bottom: 1rem;
+                        }
+                    `}</style>
+                    {/* RSS Sub Tabs */}
+                    <div className="flex gap-4 border-b border-slate-200 pb-1 mb-2">
+                        <button
+                            type="button"
+                            onClick={() => setRssSubTab('articles')}
+                            className={`pb-2 text-xs font-semibold border-b-2 transition-all ${rssSubTab === 'articles' ? 'border-violet-600 text-violet-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                        >
+                            Articles Feed
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setRssSubTab('keywords')}
+                            className={`pb-2 text-xs font-semibold border-b-2 transition-all ${rssSubTab === 'keywords' ? 'border-violet-600 text-violet-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                        >
+                            Keywords
+                        </button>
+                    </div>
+
+                    {rssSubTab === 'articles' && (
+                        <>
+                            {/* Filter bar */}
+                            <div className="flex items-center gap-2 flex-wrap bg-white border border-slate-200 rounded-xl px-4 py-3">
+                        {/* Search */}
+                        <div className="relative flex-1 min-w-[180px]">
+                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
+                            <input
+                                type="text"
+                                placeholder="Search articles..."
+                                value={rssSearch}
+                                onChange={(e) => {
+                                    const v = e.target.value;
+                                    setRssSearch(v);
+                                    clearTimeout(rssSearchTimer.current);
+                                    rssSearchTimer.current = setTimeout(() => {}, 0);
+                                }}
+                                className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-400/30 focus:border-violet-400"
+                            />
+                        </div>
+
+                        {/* District */}
+                        <select
+                            value={rssDistrict}
+                            onChange={(e) => setRssDistrict(e.target.value)}
+                            className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-400/30 focus:border-violet-400 bg-white"
+                        >
+                            <option value="all">All Districts{rssFacets.districts.length ? ` (${rssFacets.districts.length})` : ''}</option>
+                            {rssFacets.districts.map(d => (
+                                <option key={d} value={d}>{d}</option>
+                            ))}
+                        </select>
+
+                        {/* Category */}
+                        <select
+                            value={rssCategory}
+                            onChange={(e) => setRssCategory(e.target.value)}
+                            className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-400/30 focus:border-violet-400 bg-white"
+                        >
+                            <option value="all">All Categories</option>
+                            {rssFacets.categories.map(c => (
+                                <option key={c} value={c}>{String(c).replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</option>
+                            ))}
+                        </select>
+
+                        {/* Source type */}
+                        <select
+                            value={rssSourceType}
+                            onChange={(e) => setRssSourceType(e.target.value)}
+                            className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-400/30 focus:border-violet-400 bg-white"
+                        >
+                            <option value="all">All Sources</option>
+                            <option value="rss">Web Articles</option>
+                            <option value="keyword_search">Search</option>
+                            <option value="domain">Web</option>
+                        </select>
+
+                        {/* Count + Refresh */}
+                        <div className="ml-auto flex items-center gap-2">
+                            {!rssLoading && rssPagination.total > 0 && (
+                                <span className="text-xs text-slate-500 whitespace-nowrap">
+                                    <span className="font-semibold text-slate-700">{rssPagination.total}</span> articles
+                                </span>
+                            )}
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => fetchNewsArticles(1, false)}
+                                disabled={rssLoading}
+                                className="h-7 gap-1.5 text-xs text-violet-600 border-violet-200 hover:bg-violet-50"
+                            >
+                                <RefreshCw className={cn('h-3 w-3', rssLoading && 'animate-spin')} />
+                                Refresh
+                            </Button>
+                            {(rssDistrict !== 'all' || rssCategory !== 'all' || rssSourceType !== 'all' || (rssSearch && rssSearch.trim() !== '')) && (
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => {
+                                        setRssDistrict('all');
+                                        setRssCategory('all');
+                                        setRssSourceType('all');
+                                        setRssSearch('');
+                                    }}
+                                    className="h-7 gap-1 text-xs font-semibold text-slate-500 hover:text-red-600 hover:bg-red-50 border border-slate-200 rounded-lg px-2 transition-colors"
+                                >
+                                    <X className="h-3 w-3" />
+                                    Clear Filters
+                                </Button>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Skeleton loading */}
+                    {rssLoading && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 w-full">
+                            {[...Array(5)].map((_, i) => (
+                                <div key={i} className="bg-white rounded-xl border border-slate-200 h-[175px] flex overflow-hidden animate-pulse">
+                                    <div className="w-44 shrink-0 bg-slate-100" />
+                                    <div className="flex-1 p-4 space-y-3">
+                                        <div className="h-4 bg-slate-100 rounded w-3/4" />
+                                        <div className="h-3 bg-slate-100 rounded w-full" />
+                                        <div className="h-3 bg-slate-100 rounded w-2/3" />
+                                        <div className="h-3 bg-slate-100 rounded w-1/2 mt-auto" />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Empty state */}
+                    {!rssLoading && rssArticles.length === 0 && (
+                        <div className="text-center py-16 bg-white rounded-xl border-2 border-dashed border-slate-200">
+                            <Rss className="h-12 w-12 mx-auto text-slate-200 mb-3" />
+                            <h3 className="text-sm font-semibold text-slate-700">No news articles found</h3>
+                            <p className="text-xs text-slate-400 mt-1">
+                                {(rssDistrict !== 'all' || rssCategory !== 'all' || rssSourceType !== 'all' || rssSearch)
+                                    ? 'Try clearing some filters.'
+                                    : 'Start the Blura Engine to populate news. See Blura-Engine/political_rss.py (entry script for Telangana data).'}
+                            </p>
+                            {(rssDistrict !== 'all' || rssCategory !== 'all' || rssSourceType !== 'all' || rssSearch) && (
+                                <Button variant="outline" size="sm" className="mt-3 text-xs"
+                                    onClick={() => { setRssSearch(''); setRssDistrict('all'); setRssCategory('all'); setRssSourceType('all'); }}>
+                                    Clear Filters
+                                </Button>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Article list */}
+                    {!rssLoading && rssArticles.length > 0 && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 w-full">
+                            {rssArticles.map((article) => (
+                                <RssNewsCard
+                                    key={article._id || article.source_url}
+                                    article={article}
+                                    canManage={canManageSpecialGrievanceUi}
+                                    onDelete={handleDeleteRssArticle}
+                                    onSentimentChange={handleRssArticleSentiment}
+                                />
+                            ))}
+
+                            {/* Load more */}
+                            {rssPagination.page < rssPagination.pages && (
+                                <div className="flex justify-center py-4">
+                                    <Button
+                                        variant="outline"
+                                        onClick={() => {
+                                            const nextPage = rssPagination.page + 1;
+                                            setRssPagination(p => ({ ...p, page: nextPage }));
+                                            fetchNewsArticles(nextPage, true);
+                                        }}
+                                        disabled={rssLoadingMore}
+                                        className="gap-2 text-sm text-violet-600 border-violet-200 hover:bg-violet-50"
+                                    >
+                                        {rssLoadingMore
+                                            ? <><Loader2 className="h-4 w-4 animate-spin" /> Loading...</>
+                                            : <>Load More · Page {rssPagination.page + 1} of {rssPagination.pages}</>
+                                        }
+                                    </Button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    </>
+                    )}
+
+                    {rssSubTab === 'keywords' && (
+                        <div className="bg-white border border-slate-200 rounded-xl p-5 md:p-6 space-y-6">
+                            {/* Header Section */}
+                            <div className="flex justify-between items-center pb-4 border-b border-slate-100">
+                                <h3 className="text-base font-bold text-slate-800">Keywords</h3>
+                                <div className="flex gap-2">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        onClick={() => {
+                                            setRssLanguageError('');
+                                            setNewRssLanguageName('');
+                                            setNewRssLanguageCode('');
+                                            setIsAddRssLanguageOpen(true);
+                                        }}
+                                        className="border-slate-200 text-slate-700 hover:bg-slate-50 font-semibold text-xs flex items-center gap-1"
+                                    >
+                                        <span className="text-sm font-light">+</span> Language
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        onClick={() => {
+                                            setRssKeywordError('');
+                                            setRssKeywordSuccess('');
+                                            setNewRssKeyword('');
+                                            // Default the form to the first available language so the
+                                            // dropdown is never stuck on a code that was deleted.
+                                            setNewRssKeywordLang(rssLanguages[0]?.code || 'en');
+                                            setIsAddRssKeywordOpen(true);
+                                        }}
+                                        className="bg-[#0f172a] hover:bg-slate-800 text-white font-semibold text-xs flex items-center gap-1"
+                                    >
+                                        <span className="text-sm font-light">+</span> Add
+                                    </Button>
+                                </div>
+                            </div>
+
+                            {/* Keywords List Section */}
+                            <div className="space-y-6">
+                                {rssKeywordsLoading ? (
+                                    <div className="flex items-center gap-2 text-xs text-slate-500 py-4">
+                                        <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
+                                        Loading keywords...
+                                    </div>
+                                ) : rssLanguages.length === 0 ? (
+                                    <div className="text-xs text-slate-400 italic py-4">
+                                        No languages configured yet. Use “+ Language” to add one.
+                                    </div>
+                                ) : (
+                                    <div className="space-y-6">
+                                        {/* One section per DB-managed language. Colours cycle so each
+                                            language reads as its own group regardless of how many exist. */}
+                                        {rssLanguages.map((lang, idx) => {
+                                            const palette = [
+                                                { chip: 'bg-violet-50 text-violet-700 border-violet-100', x: 'text-violet-400 hover:text-violet-600' },
+                                                { chip: 'bg-amber-50 text-amber-700 border-amber-100', x: 'text-amber-400 hover:text-amber-600' },
+                                                { chip: 'bg-emerald-50 text-emerald-700 border-emerald-100', x: 'text-emerald-400 hover:text-emerald-600' },
+                                                { chip: 'bg-sky-50 text-sky-700 border-sky-100', x: 'text-sky-400 hover:text-sky-600' },
+                                                { chip: 'bg-rose-50 text-rose-700 border-rose-100', x: 'text-rose-400 hover:text-rose-600' },
+                                                { chip: 'bg-indigo-50 text-indigo-700 border-indigo-100', x: 'text-indigo-400 hover:text-indigo-600' },
+                                            ];
+                                            const c = palette[idx % palette.length];
+                                            const langKeywords = rssKeywords.filter(k => k.language === lang.code);
+                                            return (
+                                                <div key={lang.code}>
+                                                    <div className="flex items-center gap-2 mb-2">
+                                                        <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">{lang.label} Keywords</h4>
+                                                        <span className="text-[10px] text-slate-300">({langKeywords.length})</span>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleDeleteRssLanguage(lang)}
+                                                            title={`Delete language "${lang.label}"`}
+                                                            className="ml-auto text-[10px] font-semibold text-slate-400 hover:text-red-600 inline-flex items-center gap-1 focus:outline-none"
+                                                        >
+                                                            <span className="font-bold">&times;</span> Remove language
+                                                        </button>
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {langKeywords.map((kw) => (
+                                                            <span key={kw.keyword} className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full border font-medium ${c.chip}`}>
+                                                                {kw.keyword}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleDeleteRssKeyword(kw.keyword)}
+                                                                    className={`ml-1 font-bold focus:outline-none ${c.x}`}
+                                                                >
+                                                                    &times;
+                                                                </button>
+                                                            </span>
+                                                        ))}
+                                                        {langKeywords.length === 0 && (
+                                                            <span className="text-xs text-slate-350 italic">No {lang.label} keywords found</span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
             {/* ─── Tab Layout + Content ─── */}
-            {!isReportsTab && (
+            {!isReportsTab && navbarPlatform !== 'rss' && (
                 <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setGrievances([]); }} className="w-full mx-2">
                     <TabsContent value={activeTab} className="mt-4 px-2">
                         <div
@@ -1995,120 +2638,167 @@ const Grievances = () => {
                         >
                             {/* 60%: Grievances */}
                             <div className="space-y-4 relative z-10">
-                                {showTopMlaGrid ? (
-                                    <div className="space-y-4">
-                                        <div className="rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50 via-white to-sky-50 px-5 py-4 shadow-sm">
-                                            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                                                <div>
-                                                    <h3 className="text-base font-semibold text-slate-900">Top 10 MLA Watch Grid</h3>
-                                                    <p className="mt-1 text-sm text-slate-500">
-                                                        Related content for the top 10 MLAs refreshes automatically every 10 minutes. Each card below shows the full thread context for the most relevant recent posts.
-                                                    </p>
-                                                </div>
-                                                <div className="shrink-0 rounded-full bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-600 ring-1 ring-slate-200">
-                                                    2-column monitoring view
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 items-start">
-                                            {TOP_10_MINISTERS.map((politician, index) => (
-                                                <TopMlaWatchCard
-                                                    key={politician.id}
-                                                    politician={politician}
-                                                    rank={index + 1}
-                                                    filters={topMlaGridFilters}
-                                                    onAction={handleAction}
-                                                    getProxiedMediaUrl={getProxiedMediaUrl}
-                                                    downloadStates={downloadStates}
-                                                    actionedGrievanceIds={actionedGrievanceIds}
-                                                    selectedGrievanceId={selectedGrievance?.id}
-                                                />
-                                            ))}
-                                        </div>
-                                    </div>
-                                ) : loading ? (
+                                {loading ? (
                                     <div className="flex flex-col items-center justify-center p-12 bg-white rounded-lg border border-slate-200">
                                         <Loader2 className="h-8 w-8 animate-spin text-slate-400 mb-3" />
                                         <p className="text-sm text-muted-foreground">Loading grievances...</p>
                                     </div>
                                 ) : grievances.length === 0 ? (
-                                    politicianContext ? (
-                                        <div className="text-center p-12 bg-indigo-50 rounded-xl border-2 border-dashed border-indigo-200">
-                                            {politicianData?.image ? (
-                                                <img
-                                                    src={politicianData.image}
-                                                    alt={politicianContext.name}
-                                                    className="h-16 w-16 rounded-full object-cover object-top mx-auto mb-3 ring-2 ring-indigo-200 opacity-60"
-                                                />
-                                            ) : (
-                                                <Users className="h-12 w-12 mx-auto text-indigo-300 mb-3" />
-                                            )}
-                                            <h3 className="text-sm font-semibold text-slate-900">
-                                                No posts found for {politicianContext.name}
-                                            </h3>
-                                            <p className="mt-1 text-sm text-slate-500">
-                                                Try enabling paused keywords or adding new ones using the Keywords panel above.
-                                            </p>
-                                            <Button
-                                                variant="outline" size="sm"
-                                                onClick={() => setShowKeywordEditor(true)}
-                                                className="mt-3 gap-1.5 border-indigo-300 text-indigo-700 hover:bg-indigo-100"
-                                            >
-                                                <Tag className="h-3.5 w-3.5" />
-                                                Manage Keywords
+                                    <div className="text-center p-12 bg-white rounded-lg border-2 border-dashed border-slate-200">
+                                        <FileText className="h-12 w-12 mx-auto text-slate-300 mb-3" />
+                                        <h3 className="text-sm font-semibold text-slate-900">No grievances found</h3>
+                                        <p className="mt-1 text-sm text-slate-500">
+                                            {hasActiveFilters
+                                                ? 'Try adjusting your filters or search terms.'
+                                                : 'Add source accounts and fetch grievances to get started.'}
+                                        </p>
+                                        {hasActiveFilters && (
+                                            <Button variant="outline" size="sm" onClick={clearFilters} className="mt-3">
+                                                Clear Filters
                                             </Button>
-                                        </div>
-                                    ) : (
-                                        <div className="text-center p-12 bg-white rounded-lg border-2 border-dashed border-slate-200">
-                                            <FileText className="h-12 w-12 mx-auto text-slate-300 mb-3" />
-                                            <h3 className="text-sm font-semibold text-slate-900">No grievances found</h3>
-                                            <p className="mt-1 text-sm text-slate-500">
-                                                {hasActiveFilters
-                                                    ? 'Try adjusting your filters or search terms.'
-                                                    : 'Add source accounts and fetch grievances to get started.'}
-                                            </p>
-                                            {hasActiveFilters && (
-                                                <Button variant="outline" size="sm" onClick={clearFilters} className="mt-3">
-                                                    Clear Filters
-                                                </Button>
-                                            )}
-                                        </div>
-                                    )
+                                        )}
+                                    </div>
                                 ) : (
                                     <div className="space-y-4">
-                                        {/* Results summary + page-size selector */}
-                                        <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
-                                            <span>
-                                                {politicianContext
-                                                    ? `${displayedGrievances.length} posts for ${politicianContext.name}`
-                                                    : displayedGrievances.length
-                                                        ? `Showing ${rangeStart}–${rangeEnd}${effectiveTotal ? ` of ${effectiveTotal}` : ''} results`
-                                                        : 'No results'}
-                                            </span>
-                                            {!politicianContext && (
-                                                <label className="flex items-center gap-1.5 text-[11px]">
-                                                    Per page
-                                                    <select
-                                                        value={pageSize}
-                                                        onChange={(e) => {
-                                                            const v = Number(e.target.value);
-                                                            setPageSize(v);
-                                                            fetchGrievances(1, v);
-                                                        }}
-                                                        className="border border-slate-200 rounded-md px-1.5 py-0.5 text-[11px] bg-white"
-                                                    >
-                                                        {[20, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
-                                                    </select>
-                                                </label>
-                                            )}
-                                        </div>
+                                        {/* Sentiment filter pills + counts
+                                          *
+                                          * Counts come from the server's `pagination.sentiment_counts`
+                                          * payload — totals across the full filtered set, not just the
+                                          * rows currently loaded. Falls back to a quick client tally
+                                          * only while the first page is still in flight so the pills
+                                          * never render as 0/0/0.
+                                          */}
+                                        {(() => {
+                                            const serverCounts = pagination.sentiment_counts;
+                                            let counts;
+                                            if (serverCounts) {
+                                                // sentiment_counts is the breakdown ignoring the active
+                                                // sentiment filter, so "All" is their sum — this keeps every
+                                                // pill's count stable no matter which sentiment is selected.
+                                                const positive = serverCounts.positive || 0;
+                                                const negative = serverCounts.negative || 0;
+                                                const neutral  = serverCounts.neutral  || 0;
+                                                counts = { all: positive + negative + neutral, positive, negative, neutral };
+                                            } else {
+                                                counts = { all: displayedGrievances.length, positive: 0, neutral: 0, negative: 0 };
+                                                displayedGrievances.forEach((g) => {
+                                                    const s = String(g?.analysis?.sentiment || '').toLowerCase();
+                                                    if (s === 'positive') counts.positive += 1;
+                                                    else if (s === 'negative') counts.negative += 1;
+                                                    else counts.neutral += 1;
+                                                });
+                                            }
+                                            const pills = [
+                                                { id: null,        label: 'All',       n: counts.all,      active: 'bg-slate-900 text-white border-slate-900',  idle: 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50',       dot: 'bg-slate-400' },
+                                                { id: 'positive',  label: 'Positive',  n: counts.positive, active: 'bg-emerald-600 text-white border-emerald-600', idle: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100', dot: 'bg-emerald-500' },
+                                                { id: 'neutral',   label: 'Moderate',  n: counts.neutral,  active: 'bg-amber-500 text-white border-amber-500',     idle: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100',         dot: 'bg-amber-500' },
+                                                { id: 'negative',  label: 'Negative',  n: counts.negative, active: 'bg-rose-600 text-white border-rose-600',       idle: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100',             dot: 'bg-rose-500' },
+                                            ];
+                                            return (
+                                                <div className="flex items-center justify-between gap-3 flex-wrap px-1">
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        {pills.map((p) => {
+                                                            const isActive = (sentimentFilter || null) === p.id;
+                                                            return (
+                                                                <button
+                                                                    key={String(p.id)}
+                                                                    type="button"
+                                                                    onClick={() => setSentimentFilter(p.id || null)}
+                                                                    className={cn(
+                                                                        'inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold uppercase tracking-wider transition-all duration-150 active:scale-[0.97]',
+                                                                        isActive ? p.active : p.idle
+                                                                    )}
+                                                                >
+                                                                    <span className={cn('h-2 w-2 rounded-full', p.dot)} />
+                                                                    {p.label}
+                                                                    <span className={cn(
+                                                                        'inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-bold',
+                                                                        isActive ? 'bg-white/20 text-white' : 'bg-slate-900/5 text-slate-700'
+                                                                    )}>
+                                                                        {p.n}
+                                                                    </span>
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                    <div className="flex items-center gap-3">
+                                                        {/* View-mode toggle (grid / list) */}
+                                                        <div className="inline-flex items-center rounded-md border border-slate-200 bg-white overflow-hidden">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setViewMode('list')}
+                                                                title="List view"
+                                                                className={cn(
+                                                                    'px-2.5 py-1.5 text-xs font-semibold transition-colors',
+                                                                    viewMode === 'list' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'
+                                                                )}
+                                                            >
+                                                                <LayoutList className="h-3.5 w-3.5" />
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setViewMode('grid')}
+                                                                title="Grid view"
+                                                                className={cn(
+                                                                    'px-2.5 py-1.5 text-xs font-semibold transition-colors border-l border-slate-200',
+                                                                    viewMode === 'grid' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'
+                                                                )}
+                                                            >
+                                                                <LayoutGrid className="h-3.5 w-3.5" />
+                                                            </button>
+                                                        </div>
+                                                        <span className="text-xs text-muted-foreground">
+                                                            Showing {displayedGrievances.length}{pagination.total ? ` of ${pagination.total.toLocaleString()}` : ''} mentions
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })()}
 
-                                        {/* Masonry grid — CSS columns handle variable card heights natively */}
-                                        <div className="columns-1 md:columns-2 2xl:columns-3 gap-4">
-                                            {displayedGrievances.map((grievance, i) => (
-                                                <div key={grievance.id} className="break-inside-avoid-column mb-4">
+                                        {/* ─── Single mixed feed; cards self-colour by sentiment ───
+                                          *
+                                          * Grid mode uses a CSS multi-column (masonry) layout instead of
+                                          * CSS Grid. CSS Grid forces every cell in a row to the row's max
+                                          * height, which leaves short cards with a tall card next to them
+                                          * showing dead whitespace below. Columns pack each card flush
+                                          * against the previous one, so the feed reads like a Pinterest
+                                          * / X-style stream — no gaps between cards.
+                                          */}
+                                        {viewMode === 'grid' ? (
+                                            <>
+                                                <style>{`
+                                                    .mentions-masonry { column-gap: 1rem; column-count: 1; }
+                                                    @media (min-width: 768px)  { .mentions-masonry { column-count: 2; } }
+                                                    @media (min-width: 1280px) { .mentions-masonry { column-count: 3; } }
+                                                    .mentions-masonry > .mention-cell {
+                                                        break-inside: avoid;
+                                                        -webkit-column-break-inside: avoid;
+                                                        page-break-inside: avoid;
+                                                        display: block;
+                                                        margin-bottom: 1rem;
+                                                    }
+                                                `}</style>
+                                                <div className="mentions-masonry">
+                                                    {displayedGrievances.map((grievance) => (
+                                                        <div key={grievance.id} className="mention-cell">
+                                                            <GrievanceCard
+                                                                grievance={grievance}
+                                                                onAction={handleAction}
+                                                                getProxiedMediaUrl={getProxiedMediaUrl}
+                                                                downloadState={downloadStates[grievance.id]}
+                                                                isSelected={selectedGrievance?.id === grievance.id && window.innerWidth >= 1280}
+                                                                isActioned={actionedGrievanceIds.includes(grievance.id)}
+                                                                compact={true}
+                                                            />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <div className="space-y-4">
+                                                {displayedGrievances.map((grievance) => (
                                                     <GrievanceCard
+                                                        key={grievance.id}
                                                         grievance={grievance}
                                                         onAction={handleAction}
                                                         getProxiedMediaUrl={getProxiedMediaUrl}
@@ -2116,53 +2806,27 @@ const Grievances = () => {
                                                         isSelected={selectedGrievance?.id === grievance.id && window.innerWidth >= 1280}
                                                         isActioned={actionedGrievanceIds.includes(grievance.id)}
                                                         compact={true}
-                                                        enableSpecialActions
                                                     />
-                                                </div>
-                                            ))}
-                                        </div>
-
-                                        {/* Pagination */}
-                                        {!politicianContext && totalPages > 1 && (
-                                            <div className="flex items-center justify-center gap-1 py-4">
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => fetchGrievances(page - 1)}
-                                                    disabled={page <= 1 || loadingMore}
-                                                    className="gap-1 px-2"
-                                                >
-                                                    <ChevronLeft className="h-4 w-4" />
-                                                </Button>
-
-                                                {pageWindow.map((p, i) => (
-                                                    p === '…' ? (
-                                                        <span key={`ellipsis_${i}`} className="px-1.5 text-xs text-muted-foreground select-none">…</span>
-                                                    ) : (
-                                                        <Button
-                                                            key={p}
-                                                            variant={p === page ? 'default' : 'outline'}
-                                                            size="sm"
-                                                            onClick={() => p !== page && fetchGrievances(p)}
-                                                            disabled={loadingMore}
-                                                            className="min-w-[32px] px-2"
-                                                        >
-                                                            {p}
-                                                        </Button>
-                                                    )
                                                 ))}
+                                            </div>
+                                        )}
 
+                                        {/* Load More */}
+                                        {pagination.hasMore && (
+                                            <div className="flex justify-center py-4">
                                                 <Button
                                                     variant="outline"
-                                                    size="sm"
-                                                    onClick={() => fetchGrievances(page + 1)}
-                                                    disabled={(page >= totalPages && !pagination.hasMore) || loadingMore}
-                                                    className="gap-1 px-2"
+                                                    onClick={() => fetchGrievances(pagination.nextCursor)}
+                                                    disabled={loadingMore}
+                                                    className="gap-2"
                                                 >
-                                                    {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronRight className="h-4 w-4" />}
+                                                    {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : <ChevronDown className="h-4 w-4" />}
+                                                    Load More
                                                 </Button>
                                             </div>
                                         )}
+
+
                                     </div>
                                 )}
                             </div>
@@ -2189,6 +2853,7 @@ const Grievances = () => {
                     grievance={grievancePopupGrievance}
                     onClose={() => setGrievancePopupGrievance(null)}
                     onReportCreated={handleGrievanceReportCreated}
+                    onAction={handleAction}
                     userName={userName}
                 />
             )}
@@ -2251,6 +2916,145 @@ const Grievances = () => {
             />
 
             {/* Add Source Dialog */}
+            <Dialog open={sentimentLeadersOpen} onOpenChange={setSentimentLeadersOpen}>
+                <DialogContent className="max-w-5xl h-[85vh] overflow-hidden flex flex-col">
+                    <DialogHeader>
+                        <DialogTitle>Top Sentiment Leaders</DialogTitle>
+                        <DialogDescription>
+                            Top 100 profiles across all grievance platforms, ranked by how many positive, negative, or moderate posts they have published.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3 shrink-0">
+                        <div className="flex gap-2 flex-wrap">
+                            {[
+                                { key: 'positive', label: 'Positive', tone: 'bg-emerald-600 text-white border-emerald-600' },
+                                { key: 'negative', label: 'Negative', tone: 'bg-rose-600 text-white border-rose-600' },
+                                { key: 'moderate', label: 'Moderate', tone: 'bg-amber-500 text-white border-amber-500' }
+                            ].map((tab) => {
+                                const active = sentimentLeadersTab === tab.key;
+                                return (
+                                    <Button
+                                        key={tab.key}
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setSentimentLeadersTab(tab.key)}
+                                        className={active ? tab.tone : 'bg-white'}
+                                    >
+                                        {tab.label}
+                                        <span className="ml-1 opacity-80">({sentimentLeaders[tab.key]?.length || 0})</span>
+                                    </Button>
+                                );
+                            })}
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:ml-auto w-full sm:w-auto">
+                            <Select value={sentimentLeadersPlatform} onValueChange={setSentimentLeadersPlatform}>
+                                <SelectTrigger className="w-full sm:w-44 h-10 text-xs font-medium">
+                                    <SelectValue placeholder="All Platforms" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">All Platforms</SelectItem>
+                                    <SelectItem value="x">X (Twitter)</SelectItem>
+                                    <SelectItem value="facebook">Facebook</SelectItem>
+                                    <SelectItem value="instagram">Instagram</SelectItem>
+                                    <SelectItem value="youtube">YouTube</SelectItem>
+                                </SelectContent>
+                            </Select>
+
+                            <div className="relative w-full sm:w-72">
+                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
+                            <input
+                                type="text"
+                                value={sentimentLeadersSearch}
+                                onChange={(e) => setSentimentLeadersSearch(e.target.value)}
+                                placeholder="Search handle, name, platform..."
+                                className="w-full bg-white border border-slate-200 rounded-md pl-8 pr-8 py-2 text-xs font-medium text-slate-700 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 placeholder:text-slate-400"
+                            />
+                            {sentimentLeadersSearch && (
+                                <button
+                                    type="button"
+                                    onClick={() => setSentimentLeadersSearch('')}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                >
+                                    <X className="h-3.5 w-3.5" />
+                                </button>
+                            )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 min-h-0 overflow-y-auto border rounded-xl bg-white">
+                        {sentimentLeadersLoading ? (
+                            <div className="h-64 flex items-center justify-center">
+                                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                            </div>
+                        ) : leaderRows.length === 0 ? (
+                            <div className="h-64 flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+                                <Users className="h-8 w-8 opacity-30" />
+                                <p>No profiles found for this sentiment.</p>
+                            </div>
+                        ) : (
+                            <table className="w-full text-xs">
+                                <thead className="sticky top-0 bg-slate-50 border-b z-10">
+                                    <tr>
+                                        <th className="text-left px-4 py-3 font-semibold text-slate-700">#</th>
+                                        <th className="text-left px-4 py-3 font-semibold text-slate-700">Profile</th>
+                                        <th className="text-left px-4 py-3 font-semibold text-slate-700">Platform</th>
+                                        <th className="text-center px-4 py-3 font-semibold text-slate-700">Posts</th>
+                                        <th className="text-center px-4 py-3 font-semibold text-slate-700">Latest Post</th>
+                                        <th className="text-right px-4 py-3 font-semibold text-slate-700">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {leaderRows.map((row) => (
+                                        <tr key={`${row.platform}-${row.handle}`} className="border-b last:border-b-0 hover:bg-slate-50/70">
+                                            <td className="px-4 py-3 font-semibold text-slate-500">{row.rank}</td>
+                                            <td className="px-4 py-3">
+                                                <div className="flex items-center gap-3 min-w-0">
+                                                    <Avatar className="h-9 w-9 border border-slate-200">
+                                                        <AvatarImage src={row.profile_image_url || ''} alt={row.display_name || row.handle} />
+                                                        <AvatarFallback>{String(row.display_name || row.handle || '?').charAt(0).toUpperCase()}</AvatarFallback>
+                                                    </Avatar>
+                                                    <div className="min-w-0">
+                                                        <div className="font-semibold text-slate-900 truncate">
+                                                            {row.display_name || row.handle}
+                                                        </div>
+                                                        <div className="text-slate-500 truncate">
+                                                            @{String(row.handle || '').replace(/^@/, '')}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <Badge variant="outline" className="capitalize">
+                                                    {row.platform}
+                                                </Badge>
+                                            </td>
+                                            <td className="px-4 py-3 text-center font-bold text-slate-900">{row.post_count}</td>
+                                            <td className="px-4 py-3 text-center text-slate-500">
+                                                {row.latest_post_date ? format(new Date(row.latest_post_date), 'MMM d, h:mm a') : '-'}
+                                            </td>
+                                            <td className="px-4 py-3 text-right">
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => openSentimentLeaderPosts(row)}
+                                                >
+                                                    View Posts
+                                                </Button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
+
             <Dialog open={showAddSource} onOpenChange={setShowAddSource}>
                 <DialogContent className="sm:max-w-md">
                     <DialogHeader>
@@ -2349,6 +3153,126 @@ const Grievances = () => {
                             Fetch by Date
                         </Button>
                     </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Add RSS Relevance Keyword Dialog */}
+            <Dialog open={isAddRssKeywordOpen} onOpenChange={setIsAddRssKeywordOpen}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Add Relevance Keyword</DialogTitle>
+                        <DialogDescription>
+                            The scraper engine will monitor these keywords to match and save relevant articles.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <form onSubmit={handleAddRssKeyword} className="space-y-4">
+                        <div className="space-y-3">
+                            <div>
+                                <label className="text-xs font-semibold text-slate-600 block mb-1">
+                                    Keyword Text <span className="font-normal text-slate-400">(add several at once, comma-separated)</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    placeholder="e.g. revanth, kcr, kaleshwaram"
+                                    value={newRssKeyword}
+                                    onChange={(e) => setNewRssKeyword(e.target.value)}
+                                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-400/30 focus:border-violet-400"
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-semibold text-slate-600 block mb-1">Language</label>
+                                <select
+                                    value={newRssKeywordLang}
+                                    onChange={(e) => setNewRssKeywordLang(e.target.value)}
+                                    className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-violet-400/30"
+                                >
+                                    {rssLanguages.length === 0 ? (
+                                        <option value="">No languages — add one first</option>
+                                    ) : (
+                                        rssLanguages.map((lang) => (
+                                            <option key={lang.code} value={lang.code}>{lang.label}</option>
+                                        ))
+                                    )}
+                                </select>
+                            </div>
+                        </div>
+
+                        {rssKeywordError && (
+                            <div className="p-3 text-xs bg-red-50 border border-red-150 text-red-700 rounded-lg">
+                                {rssKeywordError}
+                            </div>
+                        )}
+                        {rssKeywordSuccess && (
+                            <div className="p-3 text-xs bg-green-50 border border-green-150 text-green-700 rounded-lg">
+                                {rssKeywordSuccess}
+                            </div>
+                        )}
+
+                        <DialogFooter className="gap-2 sm:gap-0">
+                            <Button type="button" variant="outline" size="sm" onClick={() => setIsAddRssKeywordOpen(false)}>
+                                Cancel
+                            </Button>
+                            <Button type="submit" size="sm" className="bg-[#0f172a] hover:bg-slate-800 text-white font-semibold">
+                                Add Keyword
+                            </Button>
+                        </DialogFooter>
+                    </form>
+                </DialogContent>
+            </Dialog>
+
+            {/* Add Language */}
+            <Dialog open={isAddRssLanguageOpen} onOpenChange={setIsAddRssLanguageOpen}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Add Language</DialogTitle>
+                        <DialogDescription>
+                            Add a language bucket that keywords can be grouped under. It appears in the keyword form and as its own section.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <form onSubmit={handleAddRssLanguage} className="space-y-4">
+                        <div className="space-y-3">
+                            <div>
+                                <label className="text-xs font-semibold text-slate-600 block mb-1">Language Name</label>
+                                <input
+                                    type="text"
+                                    placeholder="e.g. Hindi"
+                                    value={newRssLanguageName}
+                                    onChange={(e) => setNewRssLanguageName(e.target.value)}
+                                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-400/30 focus:border-violet-400"
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-semibold text-slate-600 block mb-1">
+                                    Code <span className="font-normal text-slate-400">(optional — auto-generated from the name)</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    placeholder="e.g. hi"
+                                    value={newRssLanguageCode}
+                                    onChange={(e) => setNewRssLanguageCode(e.target.value)}
+                                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-400/30 focus:border-violet-400"
+                                />
+                                <p className="text-[10px] text-slate-400 mt-1">Short identifier stored on each keyword. Lowercase letters/numbers only.</p>
+                            </div>
+                        </div>
+
+                        {rssLanguageError && (
+                            <div className="p-3 text-xs bg-red-50 border border-red-150 text-red-700 rounded-lg">
+                                {rssLanguageError}
+                            </div>
+                        )}
+
+                        <DialogFooter className="gap-2 sm:gap-0">
+                            <Button type="button" variant="outline" size="sm" onClick={() => setIsAddRssLanguageOpen(false)}>
+                                Cancel
+                            </Button>
+                            <Button type="submit" size="sm" className="bg-[#0f172a] hover:bg-slate-800 text-white font-semibold">
+                                Add Language
+                            </Button>
+                        </DialogFooter>
+                    </form>
                 </DialogContent>
             </Dialog>
 
@@ -2501,21 +3425,106 @@ const Grievances = () => {
                                     <div>
                                         <h4 className="text-sm font-semibold text-slate-500 mb-2">Media ({selectedGrievance.content.media.length})</h4>
                                         <div className="grid grid-cols-3 gap-2">
-                                            {selectedGrievance.content.media.map((m, i) => (
-                                                <div key={i} className="aspect-video rounded-lg overflow-hidden bg-slate-100 cursor-pointer border"
+                                            {selectedGrievance.content.media.map((m, i) => {
+                                                const isVideo = m.type === 'video' || m.type === 'animated_gif';
+                                                // For videos: use poster/preview images only (NOT the MP4 url).
+                                                // For images: full candidate chain.
+                                                const rawPosters = isVideo
+                                                    ? [m.s3_preview, m.preview_url, m.preview].filter(Boolean)
+                                                    : [m.s3_preview, m.s3_url, m.preview_url, m.preview, m.url, m.original_url].filter(Boolean);
+                                                const rawVideos = isVideo
+                                                    ? [m.s3_url, m.video_url, m.url, m.original_video_url, m.original_url].filter(Boolean)
+                                                    : [];
+                                                const proxiedPosters = rawPosters.map((u) => getProxiedMediaUrl(u)).filter(Boolean);
+                                                const proxiedVideos = rawVideos.map((u) => getProxiedMediaUrl(u)).filter(Boolean);
+                                                const posterAll = [...new Set([...rawPosters, ...proxiedPosters])];
+                                                const videoAll = [...new Set([...rawVideos, ...proxiedVideos])];
+                                                return (
+                                                <div key={i} className="aspect-video rounded-lg overflow-hidden bg-slate-100 cursor-pointer border relative flex items-center justify-center group"
                                                     onClick={() => {
                                                         setSelectedMedia(m);
+                                                        setVideoRefreshUrl(null);
+                                                        setVideoRefreshing(false);
                                                         setIsMediaOpen(true);
                                                     }}>
-                                                    <img
-                                                        src={getProxiedMediaUrl(m.preview_url || m.url)}
-                                                        alt=""
-                                                        className="w-full h-full object-cover"
-                                                        referrerPolicy="no-referrer"
-                                                        onError={(e) => { e.target.style.display = 'none'; }}
-                                                    />
+                                                    {posterAll.length > 0 ? (
+                                                        <img
+                                                            src={posterAll[0]}
+                                                            alt=""
+                                                            data-fb-idx="0"
+                                                            data-fb-list={posterAll.join('|')}
+                                                            data-vid-list={videoAll.join('|')}
+                                                            className="w-full h-full object-cover"
+                                                            referrerPolicy="no-referrer"
+                                                            onError={(e) => {
+                                                                const list = (e.currentTarget.getAttribute('data-fb-list') || '').split('|').filter(Boolean);
+                                                                const idx = parseInt(e.currentTarget.getAttribute('data-fb-idx') || '0', 10) + 1;
+                                                                if (idx < list.length) {
+                                                                    e.currentTarget.setAttribute('data-fb-idx', String(idx));
+                                                                    e.currentTarget.src = list[idx];
+                                                                    return;
+                                                                }
+                                                                // For videos, try to auto-poster from the actual video element
+                                                                const vidList = (e.currentTarget.getAttribute('data-vid-list') || '').split('|').filter(Boolean);
+                                                                if (isVideo && vidList.length) {
+                                                                    e.currentTarget.style.display = 'none';
+                                                                    const wrapper = e.currentTarget.parentElement;
+                                                                    const existing = wrapper.querySelector('video.media-auto-poster');
+                                                                    if (!existing) {
+                                                                        const v = document.createElement('video');
+                                                                        v.src = vidList[0];
+                                                                        v.muted = true;
+                                                                        v.playsInline = true;
+                                                                        v.preload = 'metadata';
+                                                                        v.className = 'media-auto-poster w-full h-full object-cover';
+                                                                        v.setAttribute('referrerpolicy', 'no-referrer');
+                                                                        v.onloadeddata = () => { try { v.currentTime = 0.1; } catch (_) {} };
+                                                                        v.onerror = () => {
+                                                                            v.style.display = 'none';
+                                                                            const placeholder = wrapper.querySelector('.media-placeholder');
+                                                                            if (placeholder) placeholder.style.display = 'flex';
+                                                                        };
+                                                                        wrapper.insertBefore(v, wrapper.firstChild);
+                                                                    }
+                                                                    return;
+                                                                }
+                                                                e.currentTarget.style.display = 'none';
+                                                                const placeholder = e.currentTarget.parentElement.querySelector('.media-placeholder');
+                                                                if (placeholder) placeholder.style.display = 'flex';
+                                                            }}
+                                                        />
+                                                    ) : isVideo && videoAll.length > 0 ? (
+                                                        <video
+                                                            src={videoAll[0]}
+                                                            className="w-full h-full object-cover media-auto-poster"
+                                                            referrerPolicy="no-referrer"
+                                                            muted
+                                                            playsInline
+                                                            preload="metadata"
+                                                            onLoadedData={(e) => { try { e.currentTarget.currentTime = 0.1; } catch (_) {} }}
+                                                            onError={(e) => {
+                                                                e.currentTarget.style.display = 'none';
+                                                                const placeholder = e.currentTarget.parentElement.querySelector('.media-placeholder');
+                                                                if (placeholder) placeholder.style.display = 'flex';
+                                                            }}
+                                                        />
+                                                    ) : null}
+                                                    <div className="media-placeholder flex-col items-center justify-center text-slate-400 select-none" style={{ display: (posterAll.length > 0 || (isVideo && videoAll.length > 0)) ? 'none' : 'flex' }}>
+                                                        {isVideo ? <VideoIcon className="h-6 w-6 mb-1" /> : <ImageOff className="h-6 w-6 mb-1" />}
+                                                        <span className="text-[10px] font-medium uppercase tracking-wider">
+                                                            {isVideo ? 'Video unavailable' : 'Image unavailable'}
+                                                        </span>
+                                                    </div>
+                                                    {isVideo && (
+                                                        <div className="absolute inset-0 flex items-center justify-center bg-black/30 pointer-events-none transition-colors group-hover:bg-black/40">
+                                                            <div className="bg-black/70 rounded-full p-2.5 backdrop-blur-sm border border-white/40 shadow-lg">
+                                                                <VideoIcon className="h-5 w-5 text-white fill-white" />
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </div>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
                                     </div>
                                 )}
@@ -2558,40 +3567,46 @@ const Grievances = () => {
             {/* Fullscreen Media Preview */}
             <Dialog open={isMediaOpen} onOpenChange={setIsMediaOpen} modal={false}>
                 <DialogContent
-                    className="w-[100vw] h-[100vh] max-w-none p-0 bg-black/95 border-none rounded-none [&>button]:hidden"
+                    className="!flex w-screen h-screen max-w-none max-h-none p-0 bg-black/95 border-none rounded-none top-0 left-0 translate-x-0 translate-y-0 [&>button]:hidden"
                     onOpenAutoFocus={(e) => e.preventDefault()}
                     onCloseAutoFocus={(e) => e.preventDefault()}
                 >
-                    <div className="w-full h-full flex items-center justify-center relative">
+                    <div className="w-full h-full flex items-center justify-center relative overflow-hidden">
                         <button
                             type="button"
-                            onClick={() => setIsMediaOpen(false)}
+                            onClick={() => { setIsMediaOpen(false); setVideoRefreshUrl(null); setVideoRefreshing(false); }}
                             className="absolute top-4 right-4 z-50 rounded-full bg-black/50 p-2 text-white hover:bg-white/20 transition-colors"
                             aria-label="Close preview"
                         >
                             <X className="h-6 w-6" />
                         </button>
-                        {selectedMedia ? (
+                        {selectedMedia && (
                             selectedMedia.type === 'video' || selectedMedia.type === 'animated_gif' ? (
-                                <VideoPlayer
-                                    url={getProxiedMediaUrl(selectedMedia.video_url || selectedMedia.url)}
-                                    preview={getProxiedMediaUrl(selectedMedia.preview_url)}
-                                    type={selectedMedia.type}
-                                    autoPlay={selectedMedia.type === 'animated_gif'}
-                                    onError={(e) => {
-                                        console.error('Video playback error:', e);
-                                        toast.error('Failed to load video.');
-                                    }}
+                                <RobustVideoPlayer
+                                    selectedMedia={selectedMedia}
+                                    selectedGrievance={selectedGrievance}
+                                    getProxiedMediaUrl={getProxiedMediaUrl}
+                                    videoRefreshUrl={videoRefreshUrl}
+                                    setVideoRefreshUrl={setVideoRefreshUrl}
+                                    videoRefreshing={videoRefreshing}
+                                    setVideoRefreshing={setVideoRefreshing}
+                                    BACKEND_URL={BACKEND_URL}
                                 />
                             ) : (
-                                <img
-                                    src={getProxiedMediaUrl(selectedMedia.url || selectedMedia.preview_url)}
-                                    alt="Media"
-                                    className="max-w-full max-h-full object-contain"
-                                    referrerPolicy="no-referrer"
+                                <FullscreenImage
+                                    url={getProxiedMediaUrl(selectedMedia.url || selectedMedia.preview_url)}
+                                    fallbackUrl={getProxiedMediaUrl(selectedMedia.preview_url || selectedMedia.url)}
+                                    allUrls={[
+                                        selectedMedia.s3_preview,
+                                        selectedMedia.s3_url,
+                                        selectedMedia.url,
+                                        selectedMedia.preview_url,
+                                        selectedMedia.preview,
+                                        selectedMedia.original_url
+                                    ].filter(Boolean).map(u => getProxiedMediaUrl(u)).filter(Boolean)}
                                 />
                             )
-                        ) : null}
+                        )}
                     </div>
                 </DialogContent>
             </Dialog>
@@ -2601,6 +3616,54 @@ const Grievances = () => {
                 open={isAnalysisOpen}
                 onClose={() => setIsAnalysisOpen(false)}
                 grievance={selectedGrievance}
+                onRiskLevelChange={canManageSpecialGrievanceUi ? async (g, newLevel) => {
+                    try {
+                        const res = await api.put(`/grievances/${g.id}/risk-level`, { risk_level: newLevel });
+                        const updatedAnalysis = res?.data?.analysis;
+                        if (!updatedAnalysis) throw new Error('No analysis returned');
+
+                        const patch = { ...updatedAnalysis, risk_level: newLevel };
+                        setGrievances(prev => prev.map(item => (
+                            item.id === g.id
+                                ? { ...item, analysis: { ...(item.analysis || {}), ...patch } }
+                                : item
+                        )));
+                        setSelectedGrievance(prev => (
+                            prev && prev.id === g.id
+                                ? { ...prev, analysis: { ...(prev.analysis || {}), ...patch } }
+                                : prev
+                        ));
+                        triggerActionBlink(g.id);
+                        toast.success(`Risk level updated to ${newLevel.toUpperCase()} (${updatedAnalysis.risk_score}%)`);
+                    } catch (error) {
+                        toast.error(error?.response?.data?.message || 'Failed to update risk level');
+                        throw error;
+                    }
+                } : undefined}
+                onSentimentChange={canManageSpecialGrievanceUi ? async (g, newSentiment) => {
+                    try {
+                        const res = await api.put(`/grievances/${g.id}/risk-level`, { sentiment: newSentiment });
+                        const updatedAnalysis = res?.data?.analysis;
+                        if (!updatedAnalysis) throw new Error('No analysis returned');
+
+                        const patch = { ...updatedAnalysis, sentiment: newSentiment };
+                        setGrievances(prev => prev.map(item => (
+                            item.id === g.id
+                                ? { ...item, analysis: { ...(item.analysis || {}), ...patch } }
+                                : item
+                        )));
+                        setSelectedGrievance(prev => (
+                            prev && prev.id === g.id
+                                ? { ...prev, analysis: { ...(prev.analysis || {}), ...patch } }
+                                : prev
+                        ));
+                        triggerActionBlink(g.id);
+                        toast.success(`Sentiment updated to ${newSentiment.toUpperCase()}`);
+                    } catch (error) {
+                        toast.error(error?.response?.data?.message || 'Failed to update sentiment');
+                        throw error;
+                    }
+                } : undefined}
             />
         </div>
     );

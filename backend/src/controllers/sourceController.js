@@ -1,7 +1,16 @@
 const Source = require('../models/Source');
 const POI = require('../models/POI');
 const { createAuditLog } = require('../services/auditService');
+const cacheService = require('../services/cacheService');
 const mongoose = require('mongoose');
+
+const SOURCES_CACHE_PREFIX = 'sources:list:v1';
+const sendShortCacheHeaders = (res, browserSeconds = 30) => {
+  res.set('Cache-Control', `private, max-age=${browserSeconds}`);
+};
+const invalidateSourcesCache = async () => {
+  await cacheService.invalidatePrefix(SOURCES_CACHE_PREFIX);
+};
 
 const normalizeFacebookIdentifier = (rawIdentifier) => {
   if (!rawIdentifier) return '';
@@ -104,6 +113,39 @@ const getSources = async (req, res) => {
       baseQuery.category = category.toLowerCase();
     }
 
+    // RBAC: scoped MLA / MP only sees sources tagged to their seat OR
+    // explicitly marked party_wide. Super admin / party leadership: all.
+    if (req.scope && !req.scope.canSeeAll) {
+      const seats = req.scope.constituencies || [];
+      if (seats.length === 0) {
+        return res.status(200).json([]);
+      }
+      const escape = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = `^(${seats.map(escape).join('|')})$`;
+      baseQuery.$or = [
+        { is_party_wide: true },
+        { constituency: { $regex: rx, $options: 'i' } },
+      ];
+    }
+
+    // Cache the common filter-dropdown call (no search/suggest text), where the
+    // result is a stable list. Search/suggest queries have unbounded cardinality
+    // and small individual cost — skip caching them.
+    const isCacheable = !search && !suggest && !req.query.limit;
+    const scopeKey = req.scope?.canSeeAll
+      ? 'all'
+      : [...(req.scope?.constituencyKeys || [])].sort().join(',');
+    const cacheKey = isCacheable
+      ? `${SOURCES_CACHE_PREFIX}:${platform || ''}:${is_active || ''}:${category || ''}:${scopeKey}`
+      : null;
+    if (cacheKey) {
+      const cached = await cacheService.get(cacheKey);
+      if (cached) {
+        sendShortCacheHeaders(res);
+        return res.status(200).json(cached);
+      }
+    }
+
     let results = [];
 
     // 1. Core Suggestions (Always priority)
@@ -162,6 +204,10 @@ const getSources = async (req, res) => {
     if (queryLimit > 0) {
       res.status(200).json(results.slice(0, queryLimit + 100)); // Buffer for suggest combos
     } else {
+      if (cacheKey) {
+        await cacheService.set(cacheKey, results, 60);
+        sendShortCacheHeaders(res);
+      }
       res.status(200).json(results);
     }
   } catch (error) {
@@ -174,7 +220,7 @@ const getSources = async (req, res) => {
 // @access  Private
 const createSource = async (req, res) => {
   try {
-    let { platform, identifier, display_name, category, priority, follower_count, joined_date, poiData, is_active } = req.body;
+    let { platform, identifier, display_name, category, priority, follower_count, joined_date, poiData, is_active, constituency, is_party_wide } = req.body;
     poiData = poiData || {};
 
     if (platform === 'facebook') {
@@ -201,6 +247,22 @@ const createSource = async (req, res) => {
       return res.status(400).json({ message: 'profile already exist in sources' });
     }
 
+    // RBAC scope: scoped MLA/MP can only create AC-owned sources tagged to one
+    // of their seats and may never create party-wide entries. Super admin may
+    // tag any AC or leave it party-wide.
+    if (req.scope && !req.scope.canSeeAll) {
+      is_party_wide = false;
+      if (!constituency || !req.scope.constituencies?.includes(constituency)) {
+        constituency = req.scope.constituencies?.[0] || null;
+      }
+      if (!constituency) {
+        return res.status(403).json({ message: 'No constituency in scope for this user' });
+      }
+    } else {
+      is_party_wide = is_party_wide ?? !constituency;
+      constituency = constituency || null;
+    }
+
     const source = await Source.create({
       platform,
       identifier,
@@ -210,6 +272,8 @@ const createSource = async (req, res) => {
       follower_count: follower_count || '',
       joined_date: joined_date || '',
       is_active: is_active !== false,
+      constituency,
+      is_party_wide,
       created_by: req.user.id
     });
 
@@ -399,6 +463,7 @@ const createSource = async (req, res) => {
 
     await createAuditLog(req.user, 'create', 'source', source.id, { display_name });
 
+    await invalidateSourcesCache();
     res.status(201).json(source);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -499,6 +564,7 @@ const updateSource = async (req, res) => {
     }
 
     await createAuditLog(req.user, 'update', 'source', source.id || source._id, req.body);
+    await invalidateSourcesCache();
     res.status(200).json(updatedSource);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -534,6 +600,7 @@ const deleteSource = async (req, res) => {
 
     await createAuditLog(req.user, 'delete', 'source', source.id || source._id, {});
 
+    await invalidateSourcesCache();
     res.status(204).json(null);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -595,6 +662,7 @@ const toggleSourceStatus = async (req, res) => {
       is_active: source.is_active
     });
 
+    await invalidateSourcesCache();
     res.status(200).json({
       message: `Monitoring ${action} for ${source.display_name}`,
       source
@@ -719,6 +787,7 @@ const createSourcesBulk = async (req, res) => {
       failed: failed.length
     });
 
+    await invalidateSourcesCache();
     res.status(200).json({ created, skipped, failed });
   } catch (error) {
     res.status(500).json({ message: error.message });

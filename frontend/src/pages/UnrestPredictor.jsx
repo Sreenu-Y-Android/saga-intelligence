@@ -416,7 +416,7 @@ export default function UnrestPredictor() {
                             <div>
                               <p className="text-[11px] uppercase tracking-widest text-gray-400">Constituency Risk Snapshot</p>
                               <h3 className="text-base font-bold text-gray-900">{detail.constituency}</h3>
-                              <p className="text-xs text-gray-500">{detail.district || 'Andhra Pradesh'}</p>
+                              <p className="text-xs text-gray-500">{detail.district || 'Telangana'}</p>
                               <div className="mt-2 flex items-center gap-2">
                                 <LevelBadge level={detail.level} />
                                 <span className="text-xs text-gray-500">{detail.total_grievances} grievances in last {windowDays}d</span>

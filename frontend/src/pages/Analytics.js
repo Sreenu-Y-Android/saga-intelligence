@@ -17,7 +17,7 @@ const Analytics = () => {
     try {
       const [overviewRes, trendsRes] = await Promise.all([
         api.get('/analytics/overview'),
-        api.get('/analytics/trends?days=90')
+        api.get('/analytics/trends?days=7')
       ]);
       setOverview(overviewRes.data);
       setTrends(trendsRes.data);

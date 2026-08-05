@@ -1,6 +1,5 @@
 const GrievanceSource = require('../models/GrievanceSource');
 const Grievance = require('../models/Grievance');
-const { ALL_LEADERS } = require('../config/politicalData');
 const GrievanceSettings = require('../models/GrievanceSettings');
 const grievanceService = require('../services/grievanceService');
 const { extractAndSaveLocation } = require('../services/grievanceService');
@@ -17,8 +16,9 @@ const {
 } = require('../services/grievanceWorkflowService');
 const { createAuditLog } = require('../services/auditService');
 const cacheService = require('../services/cacheService');
+const translationService = require('../services/translationService');
 const crypto = require('crypto');
-const { isSpecialUser } = require('../config/specialAccess');
+const { ISSUE_LEXICON } = require('../services/mlaReferenceService');
 
 const MAX_SOURCES_PER_PLATFORM = 5;
 const TWILIO_ACK_XML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>';
@@ -26,6 +26,14 @@ const TWILIO_ACK_XML = '<?xml version="1.0" encoding="UTF-8"?><Response></Respon
 const invalidateGrievanceCaches = async () => {
     await cacheService.invalidatePrefix('grievances:stats:v2');
     await cacheService.invalidatePrefix('grievances:dashboard:v1');
+    await cacheService.invalidatePrefix('grievances:sentiment-leaders:');
+    await cacheService.invalidatePrefix('grievances:location-stats:v1');
+    await cacheService.invalidatePrefix('grievances:list:v1');
+    await cacheService.invalidatePrefix('geo:');
+    // Bump the list-cache version so a GET already in flight when this ran
+    // (e.g. concurrent with a delete) can't write stale pre-delete data back
+    // into the cache after invalidatePrefix already cleared it above.
+    await cacheService.bumpVersion('grievances:list');
 };
 
 const logAudit = async (req, action, resourceType, resourceId, details = null) => {
@@ -63,7 +71,7 @@ const toIsoStart = (value) => {
     if (!value) return null;
     const date = new Date(value);
     if (isNaN(date.getTime())) return null;
-    date.setHours(0, 0, 0, 0);
+    date.setUTCHours(0, 0, 0, 0);
     return date;
 };
 
@@ -71,7 +79,7 @@ const toIsoEnd = (value) => {
     if (!value) return null;
     const date = new Date(value);
     if (isNaN(date.getTime())) return null;
-    date.setHours(23, 59, 59, 999);
+    date.setUTCHours(23, 59, 59, 999);
     return date;
 };
 
@@ -122,46 +130,6 @@ const mapLegacyFilterStatusToTab = (filterStatus) => {
     return 'all';
 };
 
-// ─── Public Opinion Highlights (Emerging Issues / Fake News / Department / Constituency) ───
-// No ML/LLM misinformation classifier exists in the pipeline yet, so this is a
-// lightweight keyword heuristic — approximate, not a real classification.
-const FAKE_NEWS_KEYWORDS = [
-    'fake news', 'fake video', 'fake photo', 'fake image', 'morphed video', 'morphed photo',
-    'doctored video', 'doctored photo', 'photoshopped', 'edited video', 'rumor', 'rumour',
-    'false claim', 'false news', 'misleading claim', 'fabricated', 'propaganda',
-    'disinformation', 'misinformation', 'deepfake', 'ai generated fake', 'fact check', 'debunk'
-];
-
-// There's no per-post department tagging pipeline today, so department-wise
-// sentiment is derived from the LLM-assigned grievance_type as a proxy
-// (topic implies the department most likely responsible).
-const GRIEVANCE_TYPE_DEPARTMENT_MAP = {
-    'road & infrastructure': 'Roads & Buildings',
-    'traffic complaint': 'Traffic & Transport',
-    'law & order': 'Home / Police',
-    'hate speech': 'Home / Police',
-    'corruption complaint': 'Vigilance & Anti-Corruption',
-    'public nuisance': 'Municipal Administration',
-    'public complaint': 'General Administration',
-    'political criticism': 'General Administration',
-    'government praise': 'General Administration'
-};
-
-const decodeEntities = (value) => String(value || '').replace(/&amp;/gi, '&').trim();
-
-const mapGrievanceTypeToDepartment = (grievanceType) => (
-    GRIEVANCE_TYPE_DEPARTMENT_MAP[decodeEntities(grievanceType).toLowerCase()] || null
-);
-
-// Reverse lookup for the department click-through filter — includes both the
-// plain `&` and `&amp;`-encoded forms since older records were stored either way.
-const DEPARTMENT_TO_GRIEVANCE_TYPES = {};
-Object.entries(GRIEVANCE_TYPE_DEPARTMENT_MAP).forEach(([typeKey, dept]) => {
-    if (!DEPARTMENT_TO_GRIEVANCE_TYPES[dept]) DEPARTMENT_TO_GRIEVANCE_TYPES[dept] = [];
-    const titleCased = typeKey.replace(/\b\w/g, (c) => c.toUpperCase());
-    DEPARTMENT_TO_GRIEVANCE_TYPES[dept].push(titleCased, titleCased.replace(/&/g, '&amp;'));
-});
-
 const buildListQuery = (params = {}, options = {}) => {
     const {
         classification,
@@ -179,12 +147,15 @@ const buildListQuery = (params = {}, options = {}) => {
         to,
         source_id,
         category,
+        topic,
         grievance_type,
         analysis_category,
         risk_level,
-        person_id,
-        department,
-        flag
+        target_entity,
+        location,
+        location_city,
+        location_district,
+        location_constituency
     } = params;
 
     const { includeTab = true } = options;
@@ -196,42 +167,27 @@ const buildListQuery = (params = {}, options = {}) => {
     const finalTab = mappedFilterTab !== 'all' ? mappedFilterTab : (normalizedTab || 'all');
     const query = { is_active: true };
 
-    // Default relevance gate: only return grievances that have at least one
-    // signal of platform relevance (tagged account, detected location, or
-    // identified person).  This prevents noise from broad keyword fetches
-    // that pulled non-Telangana X posts.
-    // Skip this gate when specific filters are active (search, handle,
-    // person_id, source_id) since those imply intentional narrow queries.
-    if (!search && !posted_by_handle && !person_id && !source_id) {
-        query.$or = [
-            { tagged_account: { $exists: true, $ne: '' } },
-            { 'detected_location.city': { $exists: true, $ne: null } },
-            { 'linked_persons.0': { $exists: true } }
-        ];
-    }
-
     if (classification) query.classification = classification;
     if (status) query['complaint.status'] = status;
     const effectiveTaggedAccount = tagged_account || handle;
     if (effectiveTaggedAccount) {
-        // Match a leader's handle against:
-        //   (a) tagged_account_normalized   — post directly tagged the leader
-        //   (b) linked_persons.handle_normalized — leader was identified in the
-        //       content by name (e.g. "Revanth Reddy did good work" → tagged
-        //       under @revanth_anumula even though the post didn't @-mention him).
         const normalized = normalizeTaggedAccount(effectiveTaggedAccount);
+        
+        // Match @mention, #hashtag, or the term as a keyword
+        const mentionRegex = new RegExp(`@${escapeRegex(normalized)}`, 'i');
+        const hashtagRegex = new RegExp(`#${escapeRegex(normalized)}`, 'i');
+        const keywordRegex = new RegExp(`\\b${escapeRegex(normalized)}\\b`, 'i');
+            
         const handleOr = [
             { tagged_account_normalized: normalized },
-            { 'linked_persons.handle_normalized': normalized }
+            { 'content.text': mentionRegex },
+            { 'content.full_text': mentionRegex },
+            { 'content.text': hashtagRegex },
+            { 'content.full_text': hashtagRegex },
+            { 'content.text': keywordRegex },
+            { 'content.full_text': keywordRegex }
         ];
 
-        // Resolve handle to person_id to catch secondary handles (e.g. @TelanganaCMO)
-        const leaderMatch = ALL_LEADERS.find(l => 
-            l.handles_normalized && l.handles_normalized.includes(normalized)
-        );
-        if (leaderMatch) {
-            handleOr.push({ 'linked_persons.person_id': leaderMatch.id });
-        }
         if (query.$or) {
             query.$and = [...(query.$and || []), { $or: query.$or }, { $or: handleOr }];
             delete query.$or;
@@ -240,125 +196,74 @@ const buildListQuery = (params = {}, options = {}) => {
         }
     }
     if (posted_by_handle) {
-        // May be a single handle or an array (e.g. checking authorship against
-        // several of an MLA's known handles in one query instead of one per handle).
-        const handles = Array.isArray(posted_by_handle) ? posted_by_handle : [posted_by_handle];
-        const handleOr = handles
-            .map((h) => String(h || '').trim())
-            .filter(Boolean)
-            .map((h) => ({ 'posted_by.handle': { $regex: new RegExp(`^@?${escapeRegex(h.replace(/^@/, ''))}$`, 'i') } }));
-
-        if (handleOr.length === 1) {
-            Object.assign(query, handleOr[0]);
-        } else if (handleOr.length > 1) {
-            if (query.$or) {
-                query.$and = [...(query.$and || []), { $or: query.$or }, { $or: handleOr }];
-                delete query.$or;
-            } else {
-                query.$or = handleOr;
-            }
-        }
+        query['posted_by.handle'] = { $regex: new RegExp(`^@?${escapeRegex(String(posted_by_handle).replace(/^@/, '').trim())}$`, 'i') };
     }
-    if (sentiment && ['positive', 'negative', 'neutral'].includes(sentiment.toLowerCase())) {
-        query['analysis.sentiment'] = sentiment.toLowerCase();
+    if (sentiment && ['positive', 'negative', 'neutral', 'moderate'].includes(sentiment.toLowerCase())) {
+        const s = sentiment.toLowerCase();
+        // 'moderate' is the new label; transitional rows may still carry 'neutral'.
+        query['analysis.sentiment'] = (s === 'moderate' || s === 'neutral')
+            ? { $in: ['moderate', 'neutral'] }
+            : s;
     }
     if (source_id && source_id !== 'all') query.grievance_source_id = source_id;
-
-    if (person_id && person_id !== 'all') {
-        query['linked_persons.person_id'] = person_id;
-    }
 
     if (platform && platform !== 'all') {
         query.platform = platform;
     }
-    if (category && category !== 'all') {
-        query.$or = [
-            { 'grievance_workflow.category': category },
-            { 'query_workflow.category': category },
-            { 'criticism.category': category },
-            { 'suggestion.category': category }
+    const effectiveTopic = topic || category || grievance_type || analysis_category;
+    if (effectiveTopic && effectiveTopic !== 'all') {
+        const topicRegex = new RegExp(`${escapeRegex(effectiveTopic)}`, 'i');
+        const topicOr = [
+            { 'analysis.grievance_type': topicRegex },
+            { 'analysis.category': topicRegex },
+            { 'grievance_workflow.category': topicRegex },
+            { 'query_workflow.category': topicRegex },
+            { 'criticism.category': topicRegex },
+            { 'suggestion.category': topicRegex }
         ];
-    }
-
-    if (grievance_type && grievance_type !== 'all') {
-        query['analysis.grievance_type'] = grievance_type;
-    }
-
-    if (department && department !== 'all') {
-        // Department-wise click-through from the Public Opinion highlights —
-        // resolves via the same grievance_type -> department proxy map used
-        // to build the highlights themselves.
-        const types = DEPARTMENT_TO_GRIEVANCE_TYPES[department] || [];
-        query['analysis.grievance_type'] = types.length ? { $in: types } : { $in: [] };
-    }
-
-    if (analysis_category && analysis_category !== 'all') {
-        query['analysis.category'] = analysis_category;
+        
+        if (query.$or) {
+            query.$and = [...(query.$and || []), { $or: query.$or }, { $or: topicOr }];
+            delete query.$or;
+        } else {
+            query.$or = topicOr;
+        }
     }
 
     if (risk_level && ['low', 'medium', 'high', 'critical'].includes(risk_level.toLowerCase())) {
         query['analysis.risk_level'] = risk_level.toLowerCase();
     }
 
+    // Leadership filter — content about the primary/secondary target entity,
+    // as resolved by the target-aware political sentiment pipeline. The
+    // allowed entity keys are tenant-specific (see config/politicalEntities),
+    // so any non-empty value is passed through rather than hardcoding keys.
+    if (target_entity && String(target_entity).trim()) {
+        query['analysis.target_entity'] = String(target_entity).toLowerCase();
+    }
+
     // Location filters
-    const { location_city, location_district, location_constituency } = params;
     const addLocationOrFilter = (rawValue, fields) => {
         if (!rawValue || rawValue === 'all') return;
-
-        let target = String(rawValue).trim();
-        // If target is "Hyderabad, Telangana", we only want to match "Hyderabad".
-        if (target.includes(',')) {
-            target = target.split(',')[0].trim();
-        }
-
-        const escaped = escapeRegex(target);
-        const boundaryRegex = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
-        const orConditions = fields.map((field) => ({ [field]: { $regex: boundaryRegex } }));
-
-        const isStateLevelSearch = /^telangana$/i.test(target);
-        let condition;
-
-        if (!isStateLevelSearch) {
-            // Strict filtering: If target isn't "Telangana", exclude results where city is broadly "Telangana"
-            // but the match happened in a lower field (district/constituency).
-            condition = {
-                $and: [
-                    { $or: orConditions },
-                    { 'detected_location.city': { $nin: ['Telangana', 'telangana', 'TELANGANA'] } }
-                ]
-            };
-        } else {
-            condition = { $or: orConditions };
-        }
+        const escaped = escapeRegex(rawValue);
+        const flexRegex = new RegExp(`${escaped}`, 'i');
+        const locationOr = fields.map((field) => ({ [field]: { $regex: flexRegex } }));
 
         if (query.$or) {
-            query.$and = [...(query.$and || []), { $or: query.$or }, condition];
+            query.$and = [...(query.$and || []), { $or: query.$or }, { $or: locationOr }];
             delete query.$or;
             return;
         }
-        query.$and = [...(query.$and || []), condition];
+        query.$and = [...(query.$and || []), { $or: locationOr }];
     };
 
-    // City filter is used by map redirection; allow matches across detected location fields.
-    addLocationOrFilter(location_city, [
-        'detected_location.city',
-        'detected_location.district',
-        'detected_location.constituency'
-    ]);
-
-    addLocationOrFilter(location_district, [
-        'detected_location.district',
-        'detected_location.city',
-        'detected_location.constituency'
-    ]);
-
-    if (location_constituency && location_constituency !== 'all') {
-        // Direct field match — NOT routed through addLocationOrFilter's generic
-        // "exclude city=Telangana" rule. Mahabubnagar round-robin-assigned records
-        // keep a generic "Telangana" city fallback even when constituency is
-        // correctly set, so that exclusion would wrongly drop most real matches here.
-        const boundaryRegex = new RegExp(`(^|[^a-z0-9])${escapeRegex(String(location_constituency).trim())}([^a-z0-9]|$)`, 'i');
-        query['detected_location.constituency'] = { $regex: boundaryRegex };
+    const targetLoc = location || location_city || location_district || location_constituency;
+    if (targetLoc) {
+        addLocationOrFilter(targetLoc, [
+            'detected_location.city',
+            'detected_location.district',
+            'detected_location.constituency'
+        ]);
     }
 
     if (includeTab) {
@@ -374,42 +279,98 @@ const buildListQuery = (params = {}, options = {}) => {
         if (toDate) query.post_date.$lte = toDate;
     }
 
-    // flag=fake_news click-through from the Public Opinion highlights — applies
-    // the same keyword heuristic used to compute the highlight count. An explicit
-    // `search` still wins if the caller passed one.
-    const effectiveSearch = search || (String(flag || '').toLowerCase() === 'fake_news' ? FAKE_NEWS_KEYWORDS : null);
+    if (search) {
+        const textRegex = normalizeSearchRegex(search);
+        const searchOr = [
+            { complaint_code: textRegex },
+            { 'content.text': textRegex },
+            { 'content.full_text': textRegex },
+            { 'posted_by.display_name': textRegex },
+            { 'posted_by.handle': textRegex },
+            { complainant_phone: textRegex }
+        ];
 
-    if (effectiveSearch) {
-        // `search` may be a single term or an array of terms (e.g. all of an
-        // MLA's name/alias/handle keywords) — OR'd into one query instead of
-        // firing one full-collection-scan regex query per term.
-        const terms = Array.isArray(effectiveSearch) ? effectiveSearch : [effectiveSearch];
-        const searchOr = [];
-        terms.forEach((term) => {
-            const trimmed = String(term || '').trim();
-            if (!trimmed) return;
-            const textRegex = normalizeSearchRegex(trimmed);
-            searchOr.push(
-                { complaint_code: textRegex },
-                { 'content.text': textRegex },
-                { 'content.full_text': textRegex },
-                { 'posted_by.display_name': textRegex },
-                { 'posted_by.handle': textRegex },
-                { complainant_phone: textRegex }
-            );
-        });
+        if (query.$or) {
+            query.$and = [{ $or: query.$or }, { $or: searchOr }];
+            delete query.$or;
+        } else {
+            query.$or = searchOr;
+        }
+    }
 
-        if (searchOr.length) {
-            if (query.$or) {
-                query.$and = [...(query.$and || []), { $or: query.$or }, { $or: searchOr }];
-                delete query.$or;
-            } else {
-                query.$or = searchOr;
-            }
+    // ─── Target relevance filter ──────────────────────────────────────────
+    // Mentions feed should only show content actually about the client
+    // leadership / party machinery. We enforce this at query time so anything
+    // ingested by legacy paths (keyword sweeps, manual imports, WhatsApp) is
+    // filtered out unless it mentions a hard target token. Pass
+    // `target_only=false` explicitly to opt out (admin / audit).
+    const hasLocationOrTopic = !!(
+        params.location ||
+        params.location_city ||
+        params.location_district ||
+        params.location_constituency ||
+        params.topic ||
+        params.grievance_type ||
+        params.category ||
+        params.analysis_category
+    );
+    const bskOnly = String(params.target_only ?? (hasLocationOrTopic ? 'false' : 'true')).toLowerCase() !== 'false';
+    if (bskOnly) {
+        const { HARD_TOKENS } = require('../services/targetRelevanceFilterService');
+        // Build one combined case-insensitive regex from the hard tokens.
+        const bskRegex = new RegExp(
+            HARD_TOKENS.map((t) => escapeRegex(t)).join('|'),
+            'i'
+        );
+        const bskOr = [
+            { 'content.text':            { $regex: bskRegex } },
+            { 'content.full_text':       { $regex: bskRegex } },
+            { 'posted_by.handle':        { $regex: bskRegex } },
+            { 'posted_by.display_name':  { $regex: bskRegex } },
+            { tagged_account:            { $regex: bskRegex } },
+            // Anything that came through the BSK or Alerts→Mentions pipeline
+            // is by construction relevant.
+            { tweet_id: { $regex: /^(x:pipe:|alert:)/ } }
+        ];
+
+        if (query.$or) {
+            query.$and = [...(query.$and || []), { $or: query.$or }, { $or: bskOr }];
+            delete query.$or;
+        } else if (query.$and) {
+            query.$and.push({ $or: bskOr });
+        } else {
+            query.$or = bskOr;
         }
     }
 
     return query;
+};
+
+/**
+ * Reusable BSK-relevance `$match` clause for raw aggregations. Mirrors the
+ * filter enforced by `buildListQuery` so that stats endpoints (which build
+ * their own pipelines) count the same universe of rows that the list
+ * endpoint returns. Returns an empty object when `target_only` is explicitly
+ * disabled.
+ */
+const buildBskRelevanceMatch = (params = {}) => {
+    const bskOnly = String(params.target_only ?? 'true').toLowerCase() !== 'false';
+    if (!bskOnly) return {};
+    const { HARD_TOKENS } = require('../services/targetRelevanceFilterService');
+    const bskRegex = new RegExp(
+        HARD_TOKENS.map((t) => escapeRegex(t)).join('|'),
+        'i'
+    );
+    return {
+        $or: [
+            { 'content.text':            { $regex: bskRegex } },
+            { 'content.full_text':       { $regex: bskRegex } },
+            { 'posted_by.handle':        { $regex: bskRegex } },
+            { 'posted_by.display_name':  { $regex: bskRegex } },
+            { tagged_account:            { $regex: bskRegex } },
+            { tweet_id: { $regex: /^(x:pipe:|alert:)/ } }
+        ]
+    };
 };
 
 const workflowTimestampKeys = {
@@ -762,19 +723,73 @@ const getGrievances = async (req, res) => {
             page = 1,
             limit = 200,
             sort = '-post_date',
-            cursor,
-            count
+            cursor
         } = req.query;
 
-        const query = buildListQuery(req.query);
+        // Cache only first-page loads (no cursor). Cursor loads only fire
+        // when the user actively scrolls and are unique per session.
+        const isFirstPage = !cursor;
+        const listCacheVersion = await cacheService.getVersion('grievances:list');
+        const cacheKey = isFirstPage
+            ? `grievances:list:v1:${listCacheVersion}:${JSON.stringify(req.query || {})}`
+            : null;
+        if (cacheKey) {
+            const cached = await cacheService.get(cacheKey);
+            if (cached) {
+                res.set('Cache-Control', 'private, max-age=10');
+                return res.status(200).json(cached);
+            }
+        }
+
+        // Superadmin / unscoped roles see every grievance in the collection,
+        // including legacy rows that lack BSK keywords. This must NOT also
+        // resurrect user-deleted rows: deleteGrievance() soft-deletes via
+        // is_active=false, so stripping the is_active filter here made every
+        // deleted grievance reappear for admin/superadmin logins on the very
+        // next fetch. Only drop the is_active filter when the caller
+        // explicitly opts in (include_inactive=true) — admin view alone
+        // should still default to hiding deleted rows.
+        const isAdminView = !!(req.scope && req.scope.canSeeAll);
+        const includeInactive = String(req.query.include_inactive || '').toLowerCase() === 'true';
+        const queryParams = isAdminView
+            ? { ...req.query, target_only: 'false' }
+            : req.query;
+
+        const query = buildListQuery(queryParams);
+        if (isAdminView && includeInactive) {
+            delete query.is_active;
+        }
+
+        // Limit search space to 400 most recent grievances for location + civic issue categories
+        const hasLocation = queryParams.location_city || queryParams.location_district || queryParams.location_constituency;
+        const isCivicCategory = queryParams.analysis_category && ISSUE_LEXICON[queryParams.analysis_category];
+        if (hasLocation && isCivicCategory) {
+            const baseQueryParams = { ...queryParams };
+            delete baseQueryParams.analysis_category;
+            const baseQuery = buildListQuery(baseQueryParams);
+            if (isAdminView && includeInactive) {
+                delete baseQuery.is_active;
+            }
+            const recentDocs = await Grievance.find(baseQuery)
+                .select('_id')
+                .sort({ post_date: -1 })
+                .limit(400)
+                .lean();
+            const recentIds = recentDocs.map(d => d._id);
+            query._id = { $in: recentIds };
+        }
+
         const limitNum = Math.min(parseInt(limit, 10) || 50, 200); // cap at 200
         const pageNum = parseInt(page, 10);
         const skip = (pageNum - 1) * limitNum;
         const findQuery = { ...query };
-        // Callers that don't render a total/page count (e.g. the MLA-mode
-        // multi-keyword fetch, which merges+re-scores results client-side)
-        // can skip this — countDocuments() re-runs the same regex scan.
-        const skipCount = count === 'false';
+
+        // RBAC row-level scope: clamp results to constituencies the caller is
+        // allowed to see. Super-admins / legacy roles pass through untouched.
+        if (req.scope && !req.scope.canSeeAll) {
+            const { constituencyFilter, mergeFilter } = require('../middleware/scopeMiddleware');
+            mergeFilter(findQuery, constituencyFilter(req.scope, { extraFields: ['routing_targets.constituencies'] }));
+        }
 
         // Cursor format: "<post_date_iso>|<id>"
         if (cursor) {
@@ -810,13 +825,8 @@ const getGrievances = async (req, res) => {
             'content.media.url': 1,
             'content.media.preview_url': 1,
             'content.media.video_url': 1,
-            'content.media.original_url': 1,
-            'content.media.original_video_url': 1,
-            'content.media.original_preview_url': 1,
             'content.media.s3_url': 1,
             'content.media.s3_preview': 1,
-            // Include context for threaded display (parent tweet, quoted tweet, repost)
-            context: 1,
             tweet_url: 1,
             engagement: 1,
             post_date: 1,
@@ -833,8 +843,6 @@ const getGrievances = async (req, res) => {
             'suggestion.category': 1,
             escalation_count: 1,
             'analysis.sentiment': 1,
-            'analysis.target_party': 1,
-            'analysis.stance': 1,
             'analysis.grievance_type': 1,
             'analysis.category': 1,
             'analysis.risk_level': 1,
@@ -852,20 +860,34 @@ const getGrievances = async (req, res) => {
             'detected_location.city': 1,
             'detected_location.district': 1,
             'detected_location.constituency': 1,
-            linked_persons: 1,
             is_active: 1
         };
 
-        const [grievancesRaw, total] = await Promise.all([
+        // Sentiment pill counts are computed WITHOUT the sentiment filter, so
+        // selecting one sentiment still shows the true totals for the other two
+        // (otherwise the unselected pills read 0). All other active filters
+        // (search, date, platform, location…) are kept.
+        const sentimentCountMatch = { ...query };
+        delete sentimentCountMatch['analysis.sentiment'];
+
+        const [grievancesRaw, total, sentimentRows] = await Promise.all([
             Grievance.find(findQuery)
                 .select(listProjection)
                 .sort(cursor ? { post_date: -1, id: -1 } : sort)
                 .skip(cursor ? 0 : skip)
                 .limit(limitNum + 1)
                 .lean(),
-            // Run count in parallel (skip for cursor-based loads — frontend already has total —
-            // and whenever the caller explicitly opts out via count=false)
-            (cursor || skipCount) ? Promise.resolve(undefined) : Grievance.countDocuments(query)
+            // Run count in parallel (skip for cursor-based loads — frontend already has total)
+            cursor ? Promise.resolve(undefined) : Grievance.countDocuments(query),
+            // Sentiment breakdown across the current filters minus the sentiment
+            // filter, so the pill counts reflect the real per-sentiment totals.
+            // Skip on cursor loads since the frontend caches first-page counts.
+            cursor
+                ? Promise.resolve(undefined)
+                : Grievance.aggregate([
+                    { $match: sentimentCountMatch },
+                    { $group: { _id: '$analysis.sentiment', count: { $sum: 1 } } }
+                ])
         ]);
 
         const hasMore = grievancesRaw.length > limitNum;
@@ -876,7 +898,19 @@ const getGrievances = async (req, res) => {
 
         const grievances = pageRows.map(normalizeGrievanceForList);
 
-        res.status(200).json({
+        // Bucket sentiment counts. Anything that isn't explicitly positive
+        // or negative falls into "neutral" (covers null, "neutral", and
+        // any analysis row that hasn't been categorised yet).
+        let sentimentCounts;
+        if (sentimentRows) {
+            sentimentCounts = { positive: 0, negative: 0, neutral: 0 };
+            for (const r of sentimentRows) {
+                const k = r._id === 'positive' || r._id === 'negative' ? r._id : 'neutral';
+                sentimentCounts[k] += r.count || 0;
+            }
+        }
+
+        const payload = {
             grievances,
             pagination: {
                 page: pageNum,
@@ -884,9 +918,15 @@ const getGrievances = async (req, res) => {
                 total,
                 pages: typeof total === 'number' ? Math.ceil(total / limitNum) : undefined,
                 hasMore,
-                nextCursor
+                nextCursor,
+                ...(sentimentCounts ? { sentiment_counts: sentimentCounts } : {})
             }
-        });
+        };
+        if (cacheKey) {
+            await cacheService.set(cacheKey, payload, 20);
+            res.set('Cache-Control', 'private, max-age=10');
+        }
+        res.status(200).json(payload);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -911,66 +951,6 @@ const getGrievance = async (req, res) => {
         payload.can_convert_to_fir = canConvertToFir(payload);
         payload.complainant = normalizeComplainant(payload);
         res.status(200).json(payload);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-/**
- * @desc    Directly edit a grievance's sentiment classification
- * @route   PUT /api/grievances/:id/sentiment
- * @access  Private (restricted to special account)
- */
-const updateGrievanceSentiment = async (req, res) => {
-    if (!isSpecialUser(req.user)) {
-        return res.status(403).json({ message: 'Not authorized' });
-    }
-    try {
-        const { id } = req.params;
-        const { sentiment } = req.body;
-
-        if (!['positive', 'negative', 'neutral'].includes(sentiment)) {
-            return res.status(400).json({ message: 'Invalid sentiment value' });
-        }
-
-        const grievance = await Grievance.findOne({ id });
-        if (!grievance) {
-            return res.status(404).json({ message: 'Grievance not found' });
-        }
-
-        grievance.analysis = grievance.analysis || {};
-        grievance.analysis.sentiment = sentiment;
-        await grievance.save();
-        await invalidateGrievanceCaches();
-        await logAudit(req, 'EDIT_SENTIMENT', 'GRIEVANCE', id, sentiment);
-
-        res.status(200).json({ id: grievance.id, sentiment });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-/**
- * @desc    Permanently delete a grievance
- * @route   DELETE /api/grievances/:id
- * @access  Private (restricted to special account)
- */
-const deleteGrievance = async (req, res) => {
-    if (!isSpecialUser(req.user)) {
-        return res.status(403).json({ message: 'Not authorized' });
-    }
-    try {
-        const { id } = req.params;
-        const deleted = await Grievance.findOneAndDelete({ id });
-
-        if (!deleted) {
-            return res.status(404).json({ message: 'Grievance not found' });
-        }
-
-        await invalidateGrievanceCaches();
-        await logAudit(req, 'DELETE', 'GRIEVANCE', id, 'Hard deleted');
-
-        res.status(200).json({ id, deleted: true });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -1532,12 +1512,19 @@ const getStats = async (req, res) => {
 
 const getDashboardStats = async (req, res) => {
     try {
-        const cacheKey = 'grievances:dashboard:v1';
+        const bskOnly = String(req.query.target_only ?? 'true').toLowerCase() !== 'false';
+        const { constituencyFilter, mergeFilter } = require('../middleware/scopeMiddleware');
+        const scopeMatch = req.scope?.canSeeAll ? {} : constituencyFilter(req.scope, { extraFields: ['routing_targets.constituencies'] });
+        const scopeKey = req.scope?.canSeeAll
+            ? 'all'
+            : [...(req.scope?.constituencyKeys || [])].sort().join(',');
+        const cacheKey = `grievances:dashboard:v1:bsk=${bskOnly}:scope=${scopeKey}`;
         const cached = await cacheService.get(cacheKey);
         if (cached) return res.status(200).json(cached);
 
+        const bskMatch = buildBskRelevanceMatch(req.query);
         const rows = await Grievance.aggregate([
-            { $match: { is_active: true } },
+            { $match: mergeFilter({ is_active: true }, mergeFilter({ ...bskMatch }, scopeMatch)) },
             {
                 $group: {
                     _id: '$platform',
@@ -1732,13 +1719,22 @@ const analyzeAllGrievances = async (req, res) => {
  */
 const getSentimentAnalytics = async (req, res) => {
     try {
-        const cacheKey = 'grievances:sentiment-analytics:v1';
+        const bskOnly = String(req.query.target_only ?? 'true').toLowerCase() !== 'false';
+        // RBAC: per-user cache key so scoped MLAs don't see the cached statewide payload.
+        const scopeKey = req.scope?.canSeeAll
+            ? 'all'
+            : [...(req.scope?.constituencyKeys || [])].sort().join(',');
+        const cacheKey = `grievances:sentiment-analytics:v1:bsk=${bskOnly}:scope=${scopeKey}`;
         const cached = await cacheService.get(cacheKey);
         if (cached) return res.status(200).json(cached);
 
+        const bskMatch = buildBskRelevanceMatch(req.query);
+        const { constituencyFilter, mergeFilter } = require('../middleware/scopeMiddleware');
+        const scopeMatch = req.scope?.canSeeAll ? {} : constituencyFilter(req.scope, { extraFields: ['routing_targets.constituencies'] });
+
         // 1) Sentiment distribution
         const sentimentRows = await Grievance.aggregate([
-            { $match: { is_active: true, 'analysis.analyzed_at': { $exists: true } } },
+            { $match: mergeFilter({ is_active: true, 'analysis.sentiment': { $exists: true, $ne: null } }, mergeFilter({ ...bskMatch }, scopeMatch)) },
             { $group: { _id: '$analysis.sentiment', count: { $sum: 1 } } }
         ]);
         const distribution = { positive: 0, neutral: 0, negative: 0 };
@@ -1748,7 +1744,7 @@ const getSentimentAnalytics = async (req, res) => {
 
         // 2) Top 5 profiles posting negative content
         const topNegative = await Grievance.aggregate([
-            { $match: { is_active: true, 'analysis.sentiment': 'negative' } },
+            { $match: mergeFilter({ is_active: true, 'analysis.sentiment': 'negative' }, mergeFilter({ ...bskMatch }, scopeMatch)) },
             {
                 $group: {
                     _id: '$posted_by.handle',
@@ -1778,6 +1774,106 @@ const getSentimentAnalytics = async (req, res) => {
     }
 };
 
+/**
+ * @desc    Get top profiles by grievance sentiment across all platforms
+ * @route   GET /api/grievances/sentiment-leaders
+ * @access  Private
+ */
+const getSentimentLeaders = async (req, res) => {
+    try {
+        const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 100));
+        const cacheKey = `grievances:sentiment-leaders:v1:${limit}`;
+        const cached = await cacheService.get(cacheKey);
+        if (cached) return res.status(200).json(cached);
+
+        const buildLeaderboard = async (sentimentValue) => {
+            const rows = await Grievance.aggregate([
+                {
+                    $match: {
+                        is_active: true,
+                        'analysis.sentiment': sentimentValue,
+                        'posted_by.handle': { $exists: true, $ne: null, $ne: '' }
+                    }
+                },
+                {
+                    $addFields: {
+                        handle_normalized: {
+                            $toLower: {
+                                $trim: {
+                                    input: {
+                                        $replaceAll: {
+                                            input: { $ifNull: ['$posted_by.handle', ''] },
+                                            find: '@',
+                                            replacement: ''
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    $match: {
+                        handle_normalized: { $nin: ['', 'unknown'] }
+                    }
+                },
+                {
+                    $group: {
+                        _id: {
+                            platform: '$platform',
+                            handle: '$handle_normalized'
+                        },
+                        handle: { $first: '$posted_by.handle' },
+                        display_name: { $first: '$posted_by.display_name' },
+                        profile_image_url: { $first: '$posted_by.profile_image_url' },
+                        platform: { $first: '$platform' },
+                        post_count: { $sum: 1 },
+                        latest_post_date: { $max: '$post_date' }
+                    }
+                },
+                { $sort: { post_count: -1, latest_post_date: -1 } },
+                { $limit: limit },
+                {
+                    $project: {
+                        _id: 0,
+                        handle: 1,
+                        display_name: 1,
+                        profile_image_url: 1,
+                        platform: 1,
+                        post_count: 1,
+                        latest_post_date: 1
+                    }
+                }
+            ]);
+
+            return rows.map((row, index) => ({
+                ...row,
+                rank: index + 1,
+                sentiment: sentimentValue
+            }));
+        };
+
+        const [positive, negative, neutral] = await Promise.all([
+            buildLeaderboard('positive'),
+            buildLeaderboard('negative'),
+            buildLeaderboard('neutral')
+        ]);
+
+        const payload = {
+            leaders: {
+                positive,
+                negative,
+                moderate: neutral
+            }
+        };
+
+        await cacheService.set(cacheKey, payload, 60);
+        return res.status(200).json(payload);
+    } catch (error) {
+        return res.status(500).json({ message: error.message });
+    }
+};
+
 const getDistinctTopics = async (req, res) => {
     try {
         const topics = await Grievance.distinct('analysis.grievance_type', {
@@ -1791,20 +1887,41 @@ const getDistinctTopics = async (req, res) => {
     }
 };
 
+const getDistinctCategories = async (req, res) => {
+    try {
+        const categories = await Grievance.distinct('analysis.category', {
+            is_active: true,
+            'analysis.category': { $exists: true, $ne: null, $ne: '' }
+        });
+        categories.sort();
+        res.status(200).json({ categories });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 const getCategoryAnalytics = async (req, res) => {
     try {
-        const cacheKey = 'grievances:category-analytics:v2';
+        const bskOnly = String(req.query.target_only ?? 'true').toLowerCase() !== 'false';
+        const { constituencyFilter, mergeFilter } = require('../middleware/scopeMiddleware');
+        const scopeMatch = req.scope?.canSeeAll ? {} : constituencyFilter(req.scope, { extraFields: ['routing_targets.constituencies'] });
+        const scopeKey = req.scope?.canSeeAll
+            ? 'all'
+            : [...(req.scope?.constituencyKeys || [])].sort().join(',');
+        const cacheKey = `grievances:category-analytics:v2:bsk=${bskOnly}:scope=${scopeKey}`;
         const cached = await cacheService.get(cacheKey);
         if (cached) return res.status(200).json(cached);
 
+        const bskMatch = buildBskRelevanceMatch(req.query);
+
         const [categoryRows, topicRows] = await Promise.all([
             Grievance.aggregate([
-                { $match: { is_active: true, 'analysis.analyzed_at': { $exists: true }, 'analysis.category': { $exists: true, $ne: null, $ne: '' } } },
+                { $match: mergeFilter({ is_active: true, 'analysis.analyzed_at': { $exists: true }, 'analysis.category': { $exists: true, $ne: null, $ne: '' } }, mergeFilter({ ...bskMatch }, scopeMatch)) },
                 { $group: { _id: '$analysis.category', count: { $sum: 1 } } },
                 { $sort: { count: -1 } }
             ]),
             Grievance.aggregate([
-                { $match: { is_active: true, 'analysis.analyzed_at': { $exists: true } } },
+                { $match: mergeFilter({ is_active: true, 'analysis.analyzed_at': { $exists: true } }, mergeFilter({ ...bskMatch }, scopeMatch)) },
                 {
                     $project: {
                         topic: {
@@ -1848,167 +1965,109 @@ const getCategoryAnalytics = async (req, res) => {
 };
 
 /**
- * @desc    Public Opinion highlights for the Overview dashboard:
- *          Emerging Issues, Fake News (keyword heuristic), Department-wise
- *          Sentiment (grievance_type proxy), Constituency-wise Analysis.
- * @route   GET /api/grievances/public-opinion
- */
-const getPublicOpinionHighlights = async (req, res) => {
-    try {
-        const cacheKey = 'grievances:public-opinion:v1';
-        const cached = await cacheService.get(cacheKey);
-        if (cached) return res.status(200).json(cached);
-
-        const now = new Date();
-        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-        const excludedTypes = [null, '', 'Normal', 'Not a Grievance'];
-
-        const [recentTypeRows, previousTypeRows, fakeNewsCount, departmentRows, constituencyRows] = await Promise.all([
-            Grievance.aggregate([
-                { $match: { is_active: true, post_date: { $gte: sevenDaysAgo }, 'analysis.grievance_type': { $nin: excludedTypes } } },
-                { $group: { _id: '$analysis.grievance_type', count: { $sum: 1 } } }
-            ]),
-            Grievance.aggregate([
-                { $match: { is_active: true, post_date: { $gte: fourteenDaysAgo, $lt: sevenDaysAgo }, 'analysis.grievance_type': { $nin: excludedTypes } } },
-                { $group: { _id: '$analysis.grievance_type', count: { $sum: 1 } } }
-            ]),
-            Grievance.countDocuments({
-                is_active: true,
-                $or: FAKE_NEWS_KEYWORDS.map((term) => ({ 'content.full_text': normalizeSearchRegex(term) }))
-            }),
-            Grievance.aggregate([
-                { $match: { is_active: true, 'analysis.grievance_type': { $nin: excludedTypes }, 'analysis.sentiment': { $exists: true, $ne: null } } },
-                { $group: { _id: { type: '$analysis.grievance_type', sentiment: '$analysis.sentiment' }, count: { $sum: 1 } } }
-            ]),
-            Grievance.aggregate([
-                { $match: { is_active: true, 'detected_location.constituency': { $nin: [null, ''] } } },
-                { $group: { _id: { constituency: '$detected_location.constituency', sentiment: '$analysis.sentiment' }, count: { $sum: 1 } } }
-            ])
-        ]);
-
-        // Emerging issues: recent-window count per topic, with growth vs the prior window
-        const previousByType = {};
-        previousTypeRows.forEach((r) => { previousByType[r._id] = r.count; });
-        const emergingIssues = recentTypeRows
-            .map((r) => {
-                const prev = previousByType[r._id] || 0;
-                const growthPct = prev > 0 ? Math.round(((r.count - prev) / prev) * 100) : (r.count > 0 ? 100 : 0);
-                return { type: r._id, count: r.count, previousCount: prev, growthPct };
-            })
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 6);
-
-        // Department-wise sentiment — grievance_type remapped to department proxy
-        const deptMap = {};
-        departmentRows.forEach(({ _id, count }) => {
-            const dept = mapGrievanceTypeToDepartment(_id.type);
-            if (!dept) return;
-            if (!deptMap[dept]) deptMap[dept] = { department: dept, total: 0, positive: 0, neutral: 0, negative: 0 };
-            deptMap[dept].total += count;
-            if (Object.prototype.hasOwnProperty.call(deptMap[dept], _id.sentiment)) deptMap[dept][_id.sentiment] += count;
-        });
-        const departmentSentiment = Object.values(deptMap).sort((a, b) => b.total - a.total);
-
-        // Constituency-wise sentiment
-        const constMap = {};
-        constituencyRows.forEach(({ _id, count }) => {
-            const c = _id.constituency;
-            if (!constMap[c]) constMap[c] = { constituency: c, total: 0, positive: 0, neutral: 0, negative: 0 };
-            constMap[c].total += count;
-            if (_id.sentiment && Object.prototype.hasOwnProperty.call(constMap[c], _id.sentiment)) constMap[c][_id.sentiment] += count;
-        });
-        const constituencySentiment = Object.values(constMap).sort((a, b) => b.total - a.total);
-
-        const payload = {
-            emergingIssues,
-            fakeNews: { count: fakeNewsCount },
-            departmentSentiment,
-            constituencySentiment,
-            // UI hints — both are proxy/heuristic signals, not direct classifications
-            meta: {
-                fakeNewsIsHeuristic: true,
-                departmentIsProxy: true,
-                constituencyCoverageNote: 'Constituency detection is currently reliable for Mahabubnagar-district posts only.'
-            }
-        };
-
-        await cacheService.set(cacheKey, payload, 30);
-        res.status(200).json(payload);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-/**
  * Get aggregated map stats (counts, sentiment, categories) per location keyword.
  * Searches both detected_location fields AND full text for location keywords.
  * Returns accurate counts matching what the search-based grievance page shows.
  */
 const getMapGrievances = async (req, res) => {
     try {
-        const { days = 30, scope = 'all' } = req.query;
+        const { days = 365, scope = 'all' } = req.query;
         const since = new Date();
         since.setDate(since.getDate() - parseInt(days));
-        const mahbubnagarScope = String(scope || '').toLowerCase() === 'mahabubnagar';
+        const karimnagarScope = ['sangrur', 'karimnagar'].includes(String(scope || '').toLowerCase());
 
-        const mahbubnagarAcKeywords = ['mahabubnagar', 'mahbubnagar', 'kodangal', 'narayanpet', 'jadcherla', 'devarkadra', 'makthal', 'shadnagar'];
+        // Karimnagar Lok Sabha PC assembly segments
+        const karimnagarAcKeywords = ['karimnagar', 'choppadandi', 'vemulawada', 'sircilla', 'manakondur', 'husnabad', 'huzurabad'];
         const acAliasMap = {
-            'kodangal': 'kodangal',
-            'narayanpet': 'narayanpet',
-            'mahbubnagar': 'mahbubnagar',
-            'mahabubnagar': 'mahbubnagar',
-            'jadcherla': 'jadcherla',
-            'devarkadra': 'devarkadra',
-            'makthal': 'makthal',
-            'shadnagar': 'shadnagar'
+            'karimnagar': 'karimnagar',
+            'karimnagar city': 'karimnagar',
+            'karimnagar urban': 'karimnagar',
+            'karimnagar rural': 'karimnagar',
+            'choppadandi': 'choppadandi',
+            'choppadandi (sc)': 'choppadandi',
+            'vemulawada': 'vemulawada',
+            'sircilla': 'sircilla',
+            'rajanna sircilla': 'sircilla',
+            'manakondur': 'manakondur',
+            'manakondur (sc)': 'manakondur',
+            'thimmapur': 'manakondur',
+            'husnabad': 'husnabad',
+            'huzurabad': 'huzurabad',
+            'jammikunta': 'huzurabad'
         };
 
-        // All location keywords to search for (same as frontend CITY_TO_AC + CITY_TO_DISTRICT keys)
+        // All Telangana location keywords (mirror of frontend CITY_TO_AC + CITY_TO_DISTRICT keys)
         const allLocationKeywords = [
-            'kodangal', 'narayanpet', 'mahbubnagar', 'mahabubnagar', 'jadcherla', 'devarkadra', 'makthal', 'shadnagar',
-            'kosgi', 'bomraspet', 'doultabad', 'maddur', 'kalwakurthy',
-            'hyderabad', 'secunderabad', 'warangal', 'karimnagar', 'nizamabad', 'khammam',
-            'nalgonda', 'adilabad', 'rangareddy', 'medak', 'sangareddy', 'siddipet',
-            'vikarabad', 'suryapet', 'kamareddy', 'jagtial', 'peddapalli', 'mancherial',
-            'nirmal', 'wanaparthy', 'nagarkurnool', 'jangaon', 'mahabubabad', 'medchal',
-            'sircilla', 'telangana', 'kaleshwaram', 'telangana state'
+            'karimnagar', 'choppadandi', 'vemulawada', 'sircilla', 'rajanna sircilla',
+            'manakondur', 'husnabad', 'huzurabad', 'jammikunta', 'thimmapur',
+            'hyderabad', 'secunderabad', 'rangareddy', 'medchal', 'malkajgiri',
+            'warangal', 'hanamkonda', 'khammam', 'kothagudem', 'bhadrachalam',
+            'nizamabad', 'kamareddy', 'mahbubnagar', 'nalgonda', 'suryapet',
+            'siddipet', 'sangareddy', 'medak', 'adilabad', 'nirmal',
+            'mancherial', 'asifabad', 'mahabubabad', 'jangaon', 'bhupalpally',
+            'wanaparthy', 'nagarkurnool', 'gadwal', 'vikarabad', 'narayanpet',
+            'mulugu', 'yadadri', 'bhuvanagiri', 'jagtial', 'peddapalli'
         ];
-        const locationKeywords = mahbubnagarScope ? mahbubnagarAcKeywords : allLocationKeywords;
+        let locationKeywords = karimnagarScope ? karimnagarAcKeywords : allLocationKeywords;
+
+        // RBAC row-level scope: a scoped MLA/MP user only sees their own seat
+        // on the map. We collapse the keyword list to their assigned
+        // constituency name(s); the downstream aggregator already keys results
+        // by keyword, so this naturally restricts the response.
+        if (req.scope && !req.scope.canSeeAll) {
+            const allowed = (req.scope.constituencies || []).map((c) => String(c).toLowerCase());
+            if (allowed.length === 0) {
+                return res.status(200).json({ locations: {} });
+            }
+            locationKeywords = allowed;
+        }
 
         // Use only detected/tagged location fields (no text/keyword fallback).
         const results = {};
 
-        // For Mahabubnagar scope: match any grievance that has a Mahabubnagar AC constituency
-        // (Hyderabad/Telangana grievances now get constituency assigned at ingestion via round-robin)
-        const baseMatch = mahbubnagarScope
+        const baseMatch = karimnagarScope
             ? {
                 is_active: true,
                 post_date: { $gte: since },
-                'detected_location.constituency': { $exists: true, $nin: [null, ''] }
+                $or: [
+                    { 'detected_location.city': /karimnagar|choppadandi|vemulawada|sircilla|manakondur|husnabad|huzurabad/i },
+                    { 'detected_location.district': /karimnagar|rajanna sircilla|siddipet|jagtial|peddapalli/i },
+                    { 'detected_location.constituency': /karimnagar|choppadandi|vemulawada|sircilla|manakondur|husnabad|huzurabad/i }
+                ]
             }
             : {
                 is_active: true,
                 post_date: { $gte: since }
             };
 
-        // Mahabubnagar AC-level aggregation — group by constituency
-        if (mahbubnagarScope) {
+        // Strict Karimnagar-only tagged aggregation (no keyword scanning).
+        if (karimnagarScope) {
             const rows = await Grievance.aggregate([
                 { $match: baseMatch },
                 {
                     $addFields: {
                         _constituency: {
-                            $toLower: {
-                                $trim: { input: { $ifNull: ['$detected_location.constituency', ''] } }
+                            $let: {
+                                vars: {
+                                    const: { $toLower: { $trim: { input: { $ifNull: ['$detected_location.constituency', ''] } } } },
+                                    city: { $toLower: { $trim: { input: { $ifNull: ['$detected_location.city', ''] } } } },
+                                    dist: { $toLower: { $trim: { input: { $ifNull: ['$detected_location.district', ''] } } } }
+                                },
+                                in: {
+                                    $cond: [
+                                        { $gt: [{ $strLenCP: '$$const' }, 0] },
+                                        '$$const',
+                                        {
+                                            $cond: [
+                                                { $gt: [{ $strLenCP: '$$city' }, 0] },
+                                                '$$city',
+                                                '$$dist'
+                                            ]
+                                        }
+                                    ]
+                                }
                             }
                         }
-                    }
-                },
-                // Only include rows whose constituency maps to one of our ACs
-                {
-                    $match: {
-                        _constituency: { $in: Object.keys(acAliasMap) }
                     }
                 },
                 {
@@ -2017,7 +2076,7 @@ const getMapGrievances = async (req, res) => {
                         count: { $sum: 1 },
                         positive: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'positive'] }, 1, 0] } },
                         negative: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'negative'] }, 1, 0] } },
-                        neutral: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'neutral'] }, 1, 0] } },
+                        neutral: { $sum: { $cond: [{ $in: ['$analysis.sentiment', ['neutral', 'moderate']] }, 1, 0] } },
                         categories: {
                             $push: {
                                 $cond: [
@@ -2052,18 +2111,18 @@ const getMapGrievances = async (req, res) => {
             ]);
 
             const results = {};
-            const mahbubnagarTotal = { count: 0, positive: 0, negative: 0, neutral: 0, categories: [] };
+            const karimnagarTotal = { count: 0, positive: 0, negative: 0, neutral: 0, categories: [] };
 
             for (const row of rows) {
                 const catMap = {};
                 (row.categories || []).forEach((c) => { if (c) catMap[c] = (catMap[c] || 0) + 1; });
                 const rowCategories = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
 
-                mahbubnagarTotal.count += row.count || 0;
-                mahbubnagarTotal.positive += row.positive || 0;
-                mahbubnagarTotal.negative += row.negative || 0;
-                mahbubnagarTotal.neutral += row.neutral || 0;
-                mahbubnagarTotal.categories = mahbubnagarTotal.categories.concat(rowCategories);
+                karimnagarTotal.count += row.count || 0;
+                karimnagarTotal.positive += row.positive || 0;
+                karimnagarTotal.negative += row.negative || 0;
+                karimnagarTotal.neutral += row.neutral || 0;
+                karimnagarTotal.categories = karimnagarTotal.categories.concat(rowCategories);
 
                 const canonical = acAliasMap[row._id] || null;
                 if (!canonical) continue;
@@ -2085,15 +2144,16 @@ const getMapGrievances = async (req, res) => {
             });
 
             const totalCatMap = {};
-            (mahbubnagarTotal.categories || []).forEach(([cat, cnt]) => { totalCatMap[cat] = (totalCatMap[cat] || 0) + cnt; });
-            results.mahabubnagar = {
-                count: mahbubnagarTotal.count,
-                total: mahbubnagarTotal.count,
-                positive: mahbubnagarTotal.positive,
-                negative: mahbubnagarTotal.negative,
-                neutral: mahbubnagarTotal.neutral,
+            (karimnagarTotal.categories || []).forEach(([cat, cnt]) => { totalCatMap[cat] = (totalCatMap[cat] || 0) + cnt; });
+            const karimnagarAggregate = {
+                count: karimnagarTotal.count,
+                total: karimnagarTotal.count,
+                positive: karimnagarTotal.positive,
+                negative: karimnagarTotal.negative,
+                neutral: karimnagarTotal.neutral,
                 categories: Object.entries(totalCatMap).sort((a, b) => b[1] - a[1])
             };
+            results.karimnagar = karimnagarAggregate;
 
             return res.status(200).json({ locations: results });
         }
@@ -2114,8 +2174,7 @@ const getMapGrievances = async (req, res) => {
                             $or: [
                                 { $regexMatch: { input: { $ifNull: ['$detected_location.city', ''] }, regex: boundaryPattern, options: 'i' } },
                                 { $regexMatch: { input: { $ifNull: ['$detected_location.district', ''] }, regex: boundaryPattern, options: 'i' } },
-                                { $regexMatch: { input: { $ifNull: ['$detected_location.constituency', ''] }, regex: boundaryPattern, options: 'i' } },
-                                { $regexMatch: { input: { $ifNull: ['$detected_location.keyword_matched', ''] }, regex: boundaryPattern, options: 'i' } }
+                                { $regexMatch: { input: { $ifNull: ['$detected_location.constituency', ''] }, regex: boundaryPattern, options: 'i' } }
                             ]
                         },
                         _mapHasDetectedLocation: {
@@ -2140,7 +2199,7 @@ const getMapGrievances = async (req, res) => {
                         count: { $sum: 1 },
                         positive: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'positive'] }, 1, 0] } },
                         negative: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'negative'] }, 1, 0] } },
-                        neutral: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'neutral'] }, 1, 0] } },
+                        neutral: { $sum: { $cond: [{ $in: ['$analysis.sentiment', ['neutral', 'moderate']] }, 1, 0] } },
                         categories: {
                             $push: {
                                 $cond: [
@@ -2174,14 +2233,14 @@ const getMapGrievances = async (req, res) => {
                 }
             ]);
 
-            if (agg.length > 0 && agg[0].count > 0) {
+            if (agg.length > 0 && agg[0].negative > 0) {
                 const row = agg[0];
                 const catMap = {};
                 (row.categories || []).forEach(c => { if (c) catMap[c] = (catMap[c] || 0) + 1; });
                 const topCats = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
 
                 results[keyword] = {
-                    count: row.count,
+                    count: row.negative,
                     total: row.count,
                     positive: row.positive,
                     negative: row.negative,
@@ -2196,16 +2255,23 @@ const getMapGrievances = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
-// Telangana location database — imported from dedicated module
-const { isTelanganaLocation } = require('../config/telanganaLocations');
+// State location database — imported from dedicated module
+const { isStateLocation } = require('../config/stateLocations');
 
 /**
  * Get unique detected locations with grievance counts.
  * Used by the frontend location filter dropdown.
- * Returns ONLY Telangana-related cities, districts and constituencies.
+ * Returns ONLY state-related cities, districts and constituencies.
  */
 const getLocationStats = async (req, res) => {
     try {
+        const cacheKey = 'grievances:location-stats:v1';
+        const cached = await cacheService.get(cacheKey);
+        if (cached) {
+            res.set('Cache-Control', 'private, max-age=30');
+            return res.status(200).json(cached);
+        }
+
         const baseMatch = { is_active: true };
 
         const [cityAgg, districtAgg, constituencyAgg] = await Promise.all([
@@ -2265,16 +2331,19 @@ const getLocationStats = async (req, res) => {
             ])
         ]);
 
-        // Filter to Telangana-only locations
-        const telanganaCities = cityAgg.filter(c => isTelanganaLocation(c.city) || isTelanganaLocation(c.district));
-        const telanganaDistricts = districtAgg.filter(d => isTelanganaLocation(d.district));
-        const telanganaConstituencies = constituencyAgg.filter(c => isTelanganaLocation(c.constituency) || isTelanganaLocation(c.district));
+        // Filter to state-only locations
+        const apCities = cityAgg.filter(c => isStateLocation(c.city) || isStateLocation(c.district));
+        const apDistricts = districtAgg.filter(d => isStateLocation(d.district));
+        const apConstituencies = constituencyAgg.filter(c => isStateLocation(c.constituency) || isStateLocation(c.district));
 
-        res.status(200).json({
-            cities: telanganaCities.map(c => ({ city: c.city, count: c.count, district: c.district, constituency: c.constituency })),
-            districts: telanganaDistricts.map(d => ({ district: d.district, count: d.count })),
-            constituencies: telanganaConstituencies.map(c => ({ constituency: c.constituency, count: c.count, district: c.district }))
-        });
+        const payload = {
+            cities: apCities.map(c => ({ city: c.city, count: c.count, district: c.district, constituency: c.constituency })),
+            districts: apDistricts.map(d => ({ district: d.district, count: d.count })),
+            constituencies: apConstituencies.map(c => ({ constituency: c.constituency, count: c.count, district: c.district }))
+        };
+        await cacheService.set(cacheKey, payload, 120);
+        res.set('Cache-Control', 'private, max-age=30');
+        res.status(200).json(payload);
     } catch (error) {
         console.error('[getLocationStats] Error:', error.message);
         res.status(500).json({ message: error.message });
@@ -2288,30 +2357,12 @@ const getLocationStats = async (req, res) => {
  */
 const getLocationSummary = async (req, res) => {
     try {
-        const locationValue = String(req.query.location_city || req.query.location || 'mahabubnagar').trim();
-
-        // For Mahabubnagar scope, match any grievance with a constituency in the 7 ACs
-        // (Hyderabad/Telangana grievances already have ACs assigned via round-robin)
-        const isMahbubnagarScope = /^mahabubnagar$/i.test(locationValue);
-        let query;
-        if (isMahbubnagarScope) {
-            const acPattern = /^(kodangal|narayanpet|mahbubnagar|jadcherla|devarkadra|makthal|shadnagar)$/i;
-            query = {
-                is_active: true,
-                'detected_location.constituency': { $regex: acPattern }
-            };
-        } else {
-            // Every caller of this branch passes a specific constituency (leader
-            // cards, map constituency drill-down) — match detected_location.constituency
-            // directly rather than through buildListQuery's location_city path, whose
-            // "exclude city=Telangana" rule wrongly drops most Mahabubnagar
-            // round-robin-assigned records (their city stays a generic "Telangana"
-            // fallback even though constituency is correctly set).
-            query = {
-                is_active: true,
-                'detected_location.constituency': { $regex: new RegExp(`(^|[^a-z0-9])${escapeRegex(locationValue)}([^a-z0-9]|$)`, 'i') }
-            };
-        }
+        const locationValue = String(req.query.location_city || req.query.location || 'karimnagar').trim();
+        const params = {
+            ...req.query,
+            location_city: locationValue
+        };
+        const query = buildListQuery(params, { includeTab: true });
 
         const [total, sentimentRows, categoryRows] = await Promise.all([
             Grievance.countDocuments(query),
@@ -2377,7 +2428,257 @@ const getLocationSummary = async (req, res) => {
     }
 };
 
+/**
+ * @desc    Translate grievance content
+ * @route   POST /api/grievances/translate
+ * @access  Private
+ */
+const translateGrievanceContent = async (req, res) => {
+    try {
+        const { text, target = 'en' } = req.body;
+
+        if (!text) {
+            return res.status(400).json({ message: 'Text to translate is required' });
+        }
+
+        const translatedText = await translationService.translate(text, target);
+
+        res.status(200).json({
+            translatedText,
+            originalText: text
+        });
+    } catch (error) {
+        console.error('[GrievanceController] Translation Error:', error.message);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * @desc    Delete grievance (soft delete)
+ * @route   DELETE /api/grievances/:id
+ * @access  Private
+ */
+const deleteGrievance = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const grievance = await Grievance.findOne({ id });
+        if (!grievance) {
+            return res.status(404).json({ message: 'Grievance not found' });
+        }
+
+        grievance.is_active = false;
+        await grievance.save();
+
+        await logAudit(req, 'DELETE', 'GRIEVANCE', id, 'Deleted grievance');
+        await invalidateGrievanceCaches();
+
+        res.status(200).json({ message: 'Grievance deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+/**
+ * @desc    Manually override risk level and/or sentiment of a grievance's analysis.
+ *          Risk score is auto-derived from the chosen level using the same
+ *          bands the LLM prompt uses (low: 20, medium: 50, high: 75, critical: 92).
+ *          Sentiment overrides are respected verbatim — no auto-negative when the
+ *          caller explicitly provides a sentiment.
+ * @route   PUT /api/grievances/:id/risk-level
+ * @access  Private
+ */
+const RISK_LEVEL_SCORE_MAP = {
+    low: 20,
+    medium: 50,
+    high: 75,
+    critical: 92
+};
+// 'neutral' accepted as legacy alias; 'moderate' is the canonical label.
+const ALLOWED_GRIEVANCE_SENTIMENTS = ['positive', 'negative', 'moderate', 'neutral'];
+
+const updateGrievanceRiskLevel = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const hasLevel = req.body?.risk_level !== undefined && req.body?.risk_level !== null && String(req.body.risk_level).trim() !== '';
+        const hasSentiment = req.body?.sentiment !== undefined && req.body?.sentiment !== null && String(req.body.sentiment).trim() !== '';
+        const rawLevel = hasLevel ? String(req.body.risk_level).trim().toLowerCase() : null;
+        const rawSentiment = hasSentiment ? String(req.body.sentiment).trim().toLowerCase() : null;
+
+        if (!hasLevel && !hasSentiment) {
+            return res.status(400).json({ message: 'Provide risk_level and/or sentiment to update.' });
+        }
+        if (rawLevel && !RISK_LEVEL_SCORE_MAP.hasOwnProperty(rawLevel)) {
+            return res.status(400).json({
+                message: `Invalid risk_level. Must be one of: ${Object.keys(RISK_LEVEL_SCORE_MAP).join(', ')}`
+            });
+        }
+        if (rawSentiment && !ALLOWED_GRIEVANCE_SENTIMENTS.includes(rawSentiment)) {
+            return res.status(400).json({
+                message: `Invalid sentiment. Must be one of: ${ALLOWED_GRIEVANCE_SENTIMENTS.join(', ')}`
+            });
+        }
+
+        const grievance = await Grievance.findOne({ id });
+        if (!grievance) {
+            return res.status(404).json({ message: 'Grievance not found' });
+        }
+
+        const previousLevel = grievance.analysis?.risk_level || null;
+        const previousScore = grievance.analysis?.risk_score ?? null;
+        const previousSentiment = grievance.analysis?.sentiment || null;
+
+        const updateDoc = {
+            'analysis.analyzed_at': grievance.analysis?.analyzed_at || new Date()
+        };
+
+        if (rawLevel) {
+            const newScore = RISK_LEVEL_SCORE_MAP[rawLevel];
+            updateDoc['analysis.risk_level'] = rawLevel;
+            updateDoc['analysis.risk_score'] = newScore;
+            if (grievance.analysis?.llm_analysis) {
+                updateDoc['analysis.llm_analysis.score'] = newScore;
+            }
+        }
+
+        if (rawSentiment) {
+            // Normalize legacy 'neutral' input to canonical 'moderate' before saving.
+            const sentimentToSave = rawSentiment === 'neutral' ? 'moderate' : rawSentiment;
+            updateDoc['analysis.sentiment'] = sentimentToSave;
+            if (grievance.analysis?.llm_analysis) {
+                updateDoc['analysis.llm_analysis.sentiment'] = sentimentToSave;
+            }
+        }
+
+        const updated = await Grievance.findOneAndUpdate(
+            { id },
+            { $set: updateDoc },
+            { new: true }
+        );
+
+        await invalidateGrievanceCaches();
+
+        await logAudit(
+            req,
+            'update_analysis',
+            'grievance',
+            id,
+            {
+                from: { risk_level: previousLevel, risk_score: previousScore, sentiment: previousSentiment },
+                to: {
+                    risk_level: rawLevel || previousLevel,
+                    risk_score: rawLevel ? RISK_LEVEL_SCORE_MAP[rawLevel] : previousScore,
+                    sentiment: rawSentiment || previousSentiment
+                }
+            }
+        );
+
+        return res.status(200).json({
+            message: 'Analysis updated',
+            analysis: updated.analysis
+        });
+    } catch (error) {
+        console.error('[updateGrievanceRiskLevel]', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Import a single tweet by URL or numeric id and run the full
+//          BSK analysis pipeline (RapidAPI ChatGPT-42 sentiment, topic classification).
+// @route   POST /api/grievances/import-tweet
+// @access  Private
+const importTweetByUrl = async (req, res) => {
+    try {
+        const { url_or_id } = req.body || {};
+        if (!url_or_id || !String(url_or_id).trim()) {
+            return res.status(400).json({ message: 'url_or_id is required' });
+        }
+        const raw = String(url_or_id).trim();
+
+        // Accept full X / Twitter URLs OR plain numeric ids.
+        const idMatch = raw.match(/status\/(\d{6,25})/) || raw.match(/^(\d{6,25})$/);
+        if (!idMatch) {
+            return res.status(400).json({ message: 'Could not parse a tweet id from the input.' });
+        }
+        const tweetId = idMatch[1];
+
+        const rapidApiX = require('../services/rapidApiXService');
+        const tweet = await rapidApiX.fetchTweetDetail(tweetId);
+        if (!tweet || !tweet.id) {
+            return res.status(404).json({ message: 'Tweet not found or RapidAPI returned no detail.' });
+        }
+
+        const canonicalId = `x:manual:${tweet.id}`;
+        const Grievance = require('../models/Grievance');
+        const existing = await Grievance.findOne({ tweet_id: canonicalId }).select({ _id: 1 });
+        if (existing) {
+            return res.status(200).json({ imported: false, message: 'Tweet already in feed.', tweet_id: canonicalId });
+        }
+
+        const post = {
+            tweet_id: canonicalId,
+            text: tweet.text || '',
+            url: tweet.url || `https://x.com/${tweet.author_handle || 'i'}/status/${tweet.id}`,
+            created_at: tweet.created_at,
+            author: {
+                handle: tweet.author_handle || 'x_user',
+                display_name: tweet.author || tweet.author_handle || 'X User',
+                profile_image_url: tweet.author_avatar || '',
+                is_verified: !!tweet.verified,
+                follower_count: 0,
+            },
+            media: tweet.media || [],
+            engagement: {
+                likes:    parseInt(tweet.metrics?.like)    || 0,
+                retweets: parseInt(tweet.metrics?.retweet) || 0,
+                replies:  parseInt(tweet.metrics?.reply)   || 0,
+                views:    parseInt(tweet.metrics?.views)   || 0,
+                quotes:   parseInt(tweet.metrics?.quote)   || 0,
+            },
+        };
+
+        const { createGrievanceFromPost } = require('../services/grievanceService');
+        const created = await createGrievanceFromPost(post, 'x', 'manual_import');
+        if (!created) {
+            return res.status(500).json({ message: 'Failed to create grievance.' });
+        }
+        return res.status(201).json({ imported: true, tweet_id: canonicalId, grievance_id: created.id || created._id });
+    } catch (err) {
+        console.error('[importTweetByUrl] error:', err);
+        return res.status(500).json({ message: err.message || 'Import failed' });
+    }
+};
+
+/**
+ * Trigger the Alerts → Mentions LLM-gated (RapidAPI ChatGPT-42) promotion
+ * pipeline. Reads the next N unprocessed alerts, runs each through the BSK
+ * relevance gate, and promotes the relevant ones into the Mentions /
+ * Grievance collection.
+ *
+ * Body (all optional):
+ *   { limit?, since?, status?, platform?, dryRun?, fast? }
+ */
+const intakeFromAlerts = async (req, res) => {
+    try {
+        const { runBatch } = require('../services/alertsToMentionsService');
+        const stats = await runBatch({
+            limit:       Math.min(parseInt(req.body?.limit, 10) || 50, 500),
+            since:       req.body?.since || null,
+            status:      req.body?.status || null,
+            platform:    req.body?.platform || null,
+            dryRun:      !!req.body?.dryRun,
+            allowLLM:    !req.body?.fast
+        });
+        return res.json({ ok: true, stats });
+    } catch (err) {
+        console.error('[intakeFromAlerts] failed:', err.message);
+        return res.status(500).json({ ok: false, error: err.message || 'failed' });
+    }
+};
+
 module.exports = {
+    importTweetByUrl,
+    intakeFromAlerts,
     getSources,
     addSource,
     updateSource,
@@ -2387,7 +2688,7 @@ module.exports = {
     fetchKeywordGrievances,
     getGrievances,
     getGrievance,
-    updateGrievanceSentiment,
+    translateGrievanceContent,
     deleteGrievance,
     acknowledgeGrievance,
     markAsComplaint,
@@ -2405,10 +2706,12 @@ module.exports = {
     revertGrievance,
     analyzeGrievance,
     analyzeAllGrievances,
+    updateGrievanceRiskLevel,
     getSentimentAnalytics,
+    getSentimentLeaders,
     getDistinctTopics,
+    getDistinctCategories,
     getCategoryAnalytics,
-    getPublicOpinionHighlights,
     getMapGrievances,
     getLocationStats,
     getLocationSummary

@@ -1,5 +1,5 @@
 """
-Political Saga RSS Scraper — adapted from Blura Engine for the Telangana political use case.
+Political Saga RSS Scraper — adapted from Blura Engine for Telangana political use case.
 Fetches RSS feeds → filters for political/Telangana relevance → detects language + category
 → optionally generates English title/summary via Cohere → writes to MongoDB.
 """
@@ -23,11 +23,12 @@ from political_config import (
     POLITICAL_RELEVANCE_KEYWORDS,
     CATEGORY_KEYWORDS,
     LOCATION_KEYWORDS,
-    ANDHRA_LAT,
-    ANDHRA_LNG,
+    TELANGANA_LAT,
+    TELANGANA_LNG,
 )
 from DB.mongo_connect import get_db
 from DB.mongo_insert import upsert_article
+from DB.mongo_similarity import check_duplicate
 
 # ── Load user-managed keywords from MongoDB ───────────────────────────────────
 
@@ -115,6 +116,14 @@ def get_relevance_score(text: str) -> Tuple[int, List[str]]:
 
 # ── Category detection ────────────────────────────────────────────────────────
 
+# Tie-break priority when two categories score equally — e.g. "BRS minister
+# arrested in corruption case" hits 'crime' (arrested, corruption) and
+# 'politics' (brs, minister) equally. This is a political-monitoring platform,
+# so politics should win that tie, not whichever key happens to be declared
+# first in CATEGORY_KEYWORDS (previously 'crime', by dict order — silently).
+_CATEGORY_TIE_PRIORITY = ['politics', 'development', 'law_order', 'communal', 'crime']
+
+
 def detect_category(text: str) -> str:
     lower = text.lower()
     scores = {}
@@ -122,24 +131,44 @@ def detect_category(text: str) -> str:
         score = sum(1 for kw in keywords if kw.lower() in lower)
         if score:
             scores[cat] = score
-    return max(scores, key=scores.get) if scores else 'general'
+    if not scores:
+        return 'general'
+    top_score = max(scores.values())
+    tied = [cat for cat, s in scores.items() if s == top_score]
+    if len(tied) == 1:
+        return tied[0]
+    for cat in _CATEGORY_TIE_PRIORITY:
+        if cat in tied:
+            return cat
+    return tied[0]
 
 
 # ── District detection ────────────────────────────────────────────────────────
 
 def detect_district(text: str) -> dict:
+    """Tag the district whose alias appears EARLIEST in the article text — a
+    multi-district article (e.g. an event in Vijayawada, opposition reaction
+    quoted from Guntur) should map to whichever district the story is
+    actually about, not whichever district happens to be declared first in
+    LOCATION_KEYWORDS."""
     lower = text.lower()
+    best_district = None
+    best_pos = None
     for district, aliases in LOCATION_KEYWORDS.items():
         for alias in aliases:
-            if alias.lower() in lower:
-                return {
-                    'location_found': True,
-                    'district': district,
-                    'city': district,
-                    'state': 'Telangana',
-                    'lat': ANDHRA_LAT,
-                    'lng': ANDHRA_LNG,
-                }
+            pos = lower.find(alias.lower())
+            if pos != -1 and (best_pos is None or pos < best_pos):
+                best_pos = pos
+                best_district = district
+    if best_district:
+        return {
+            'location_found': True,
+            'district': best_district,
+            'city': best_district,
+            'state': 'Telangana',
+            'lat': TELANGANA_LAT,
+            'lng': TELANGANA_LNG,
+        }
     return {'location_found': False, 'district': '', 'city': '', 'state': 'India', 'lat': None, 'lng': None}
 
 
@@ -377,33 +406,120 @@ def _heuristic_sentiment(text: str) -> str:
     return 'moderate'
 
 
-def detect_sentiment(title: str, summary: str) -> str:
-    """Return 'positive' | 'negative' | 'moderate' for a news article."""
+_ALLOWED_SENTIMENTS = ('positive', 'negative', 'moderate')
+# Empirically tuned via Blura-Engine/test_sentiment_timing.py against 50 real
+# articles: at a 20000-char cap, qwen2.5:7b (self-hosted Ollama) returned
+# unparseable/hallucinated output for 38% of longer articles (it doesn't just
+# truncate — it goes off-schema entirely, e.g. inventing unrelated content in
+# a different language). At 2500 chars the failure rate dropped to 6% and it
+# ran faster. Full result sets: Blura-Engine/timing_results/sentiment_timing_
+# 20260804_{190018_cap20000,192054_cap2500}_n50.json.
+#
+# NOTE: this was tuned against Ollama specifically. detect_sentiment() below
+# uses Cohere's command-r-plus when COHERE_API_KEY is configured — a larger,
+# more capable model that was never tested against this failure mode and may
+# tolerate much longer input fine. Worth re-testing (raising this cap) once
+# Cohere is active rather than assuming this number transfers.
+_CONTENT_SAFETY_CAP_CHARS = 2500
+
+# Entity-aware, party-relative prompt: the model must decide WHO benefits
+# politically, not just whether the wording sounds positive or negative.
+# Mirrors backend/src/services/politicalSentimentService.js (the social-media
+# pipeline's proven pattern) — same ally/opposition map, same "generic bad
+# news with no political target stays moderate" guardrail, same JSON output
+# instead of a bare word so parsing can't misread a hedged answer.
+_SENTIMENT_PROMPT_TEMPLATE = """You are a political-intelligence analyst for the office of A. Revanth Reddy (CM) / INC leadership in Telangana. The state cabinet and close leadership circle (notably Mallu Bhatti Vikramarka) are treated as part of the same camp.
+
+Political map:
+  ALLY camp:       Revanth Reddy, Bhatti Vikramarka, INC/Congress Telangana, state cabinet
+  OPPOSITION camp: BRS (KCR, KTR, Harish Rao and allies -- "TRS" is the pre-2022 name for the same party), BJP Telangana, AIMIM, other rival blocs
+  NEUTRAL:         Police, courts, ECI, civic bodies -- not a political actor
+
+Read the ENTIRE article below, not just the headline.
+
+Step 1 -- Identify every political actor the article actually covers.
+Step 2 -- For each actor, is the article PRAISING, CRITICIZING, REPORTING A FACT ABOUT, or QUOTING them? Quotes, denials, and allegations attributed to a speaker are NOT the same as the journalist's own claim -- judge them separately.
+Step 3 -- Determine who politically BENEFITS from this article overall. If several parties are mentioned, decide the DOMINANT beneficiary -- don't let one actor's tone leak onto another's.
+Step 4 -- Distinguish "government" from "party": praise/criticism of the Telangana state government under INC counts for INC; Union (national) government coverage counts for the BJP opposition map, not automatically for INC, unless the article ties it to INC/Revanth directly.
+Step 5 -- Classify:
+    positive -- benefits our party/leaders/government, OR credibly damages the opposition (corruption, failures, defections to us, poor survey/election results for them)
+    negative -- benefits the opposition, OR damages our party/leaders/government (criticism, corruption allegations against us, protests against our government, defections from us, poor results for us)
+    moderate -- ambiguous, balanced, only mildly favorable, routine administrative reporting, or no clear political beneficiary (e.g. a plain crime/accident story with no party angle)
+
+Guardrail: generic bad news (crime, accidents, natural disasters) with NO political actor clearly responsible must be "moderate", never "negative" -- do not let emotional language alone decide the label.
+
+Output strict JSON only, no prose around it:
+{{"dominant_actor": "<party/leader most central to the article, or 'none'>", "actor_alignment": "ally | opposition | neutral | none", "reasoning": "<1-2 sentences: what happens in the article and why that helps or hurts which side>", "sentiment": "positive | negative | moderate"}}
+
+Headline: {title}
+Summary: {summary}
+Full article: {content}"""
+
+
+def _extract_json(text: str) -> Optional[dict]:
+    """Tolerant JSON extraction — the model is asked for strict JSON but may still wrap it in prose."""
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    m = re.search(r'\{[\s\S]*\}', text)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            return None
+    return None
+
+
+def detect_sentiment(title: str, summary: str, content: str = '') -> dict:
+    """Return {'sentiment', 'dominant_actor', 'actor_alignment', 'reasoning'}
+    for a news article, judged relative to INC/Revanth Reddy (ally) vs BRS (opposition)
+    — not generic tone. Uses the article body (up to _CONTENT_SAFETY_CAP_CHARS)
+    when available, not just the headline/summary — see that constant's
+    comment for why it's capped rather than sending the truly full article.
+    The extra fields were already being computed by the model (and paid for
+    in output tokens) — we now keep them instead of discarding everything but
+    the sentiment word."""
     text = f"{title}. {summary}".strip()
+    empty = {'sentiment': 'moderate', 'dominant_actor': '', 'actor_alignment': '', 'reasoning': ''}
     if not text:
-        return 'moderate'
+        return empty
+
     if _cohere_client:
-        prompt = (
-            "Classify the overall sentiment of this Telangana political news as "
-            "exactly one word: positive, negative, or moderate.\n\n"
-            f"Headline: {title}\nSummary: {summary}\n\n"
-            "Answer with only one word."
+        prompt = _SENTIMENT_PROMPT_TEMPLATE.format(
+            title=title or '(no headline)',
+            summary=summary or '(no summary)',
+            content=(content or '(no article body available)')[:_CONTENT_SAFETY_CAP_CHARS],
         )
         try:
             resp = _cohere_client.chat(
                 messages=[{'role': 'user', 'content': prompt}],
                 model='command-r-plus-08-2024',
+                temperature=0.1,   # low temperature: repeatable classification, not creative writing
+                max_tokens=350,    # bounds output latency; our JSON schema fits comfortably under this
             )
             if resp and resp.finish_reason == 'COMPLETE':
-                ans = resp.message.content[0].text.strip().lower()
-                for s in ('positive', 'negative', 'moderate'):
-                    if s in ans:
-                        return s
-                if 'neutral' in ans:
-                    return 'moderate'
+                raw = resp.message.content[0].text.strip()
+                parsed = _extract_json(raw) or {}
+                sentiment = str(parsed.get('sentiment', '')).strip().lower()
+                if sentiment == 'neutral':
+                    sentiment = 'moderate'
+                if sentiment in _ALLOWED_SENTIMENTS:
+                    return {
+                        'sentiment': sentiment,
+                        'dominant_actor': str(parsed.get('dominant_actor') or ''),
+                        'actor_alignment': str(parsed.get('actor_alignment') or ''),
+                        'reasoning': str(parsed.get('reasoning') or ''),
+                    }
+                print(f"[WARN] Cohere sentiment: unparseable response, using heuristic fallback: {raw[:120]}")
         except Exception as e:
             print(f"[WARN] Cohere sentiment error: {e}")
-    return _heuristic_sentiment(text)
+
+    return {
+        **empty,
+        'sentiment': _heuristic_sentiment(text),
+        'reasoning': 'heuristic fallback (LLM unavailable or response unusable)',
+    }
 
 
 # ── Google News URL resolver ──────────────────────────────────────────────────
@@ -628,16 +744,27 @@ def process_feed(feed_cfg: dict) -> int:
             is_translated   = False
 
             if lang in ('te', 'hi'):
-                title_english, summary_english = generate_english(title, summary, lang)
-                is_translated = True
+                new_title, new_summary = generate_english(title, summary, lang)
+                # generate_english() is a silent no-op when Cohere isn't
+                # configured (returns the inputs unchanged) — only flag
+                # is_translated when the text actually changed, so the field
+                # reflects what really happened instead of always claiming
+                # success.
+                if new_title != title or new_summary != summary:
+                    title_english, summary_english = new_title, new_summary
+                    is_translated = True
 
             check_title = title_english if is_translated else title
             if check_title.lower().startswith(('here is a', 'sure,', 'error generating', 'no title')):
                 print(f"[SKIP] Invalid AI title: {check_title[:60]}")
                 continue
 
-            # Sentiment on the English text (positive / negative / moderate).
-            sentiment = detect_sentiment(title_english, summary_english)
+            # Sentiment on the English text, judged relative to our party using
+            # the article body (capped — see _CONTENT_SAFETY_CAP_CHARS) — returns
+            # sentiment plus who it's about, so that context isn't thrown away
+            # after the model already paid to compute it.
+            sentiment_result = detect_sentiment(title_english, summary_english, full_content)
+            sentiment = sentiment_result['sentiment']
 
             doc = {
                 'title':           title,
@@ -654,6 +781,9 @@ def process_feed(feed_cfg: dict) -> int:
                 'language':        lang,
                 'category':        category,
                 'sentiment':       sentiment,
+                'sentiment_target':           sentiment_result['dominant_actor'],
+                'sentiment_target_alignment': sentiment_result['actor_alignment'],
+                'sentiment_reasoning':        sentiment_result['reasoning'],
                 'source_type':     'rss',
                 'relevance_score': relevance_score,
                 'keywords_matched': keywords_matched[:20],

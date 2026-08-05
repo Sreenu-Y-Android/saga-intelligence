@@ -41,11 +41,11 @@ const extractFacebookEntityToken = (value) => {
 
             // /pages/<name>/<id>
             const pagesMatch = pathname.match(/^\/pages\/(?:[^\/]+)\/([^\/]+)/i);
-            if (pagesMatch?.[1]) return decodeURIComponent(pagesMatch[1]);
+            if (pagesMatch?.[1]) return pagesMatch[1];
 
             // /<slug>
             const first = pathname.split('/').filter(Boolean)[0];
-            if (first) return decodeURIComponent(first);
+            if (first) return first;
         } catch {
             // Fall through
         }
@@ -277,10 +277,7 @@ const fetchPagePosts = async (pageIdOrUrl, limit = 10, pageName = null, options 
         // - If input is numeric: use directly.
         // - Else: resolve via /search/pages -> facebook_id.
         const resolvedId = isNumericId(input) ? input : await resolveUsablePageId(input);
-        if (!resolvedId) {
-            console.warn(`[Facebook] fetchPagePosts: could not resolve numeric page_id for input="${input}" — returning []`);
-            return [];
-        }
+        if (!resolvedId) return [];
 
         const rawPosts = await fetchRaw({ page_id: resolvedId });
 
@@ -396,7 +393,8 @@ const searchPages = async (query, options = {}) => {
 };
 
 // Search for Facebook posts
-const searchPosts = async (query, limit = 40, options = {}) => {
+const FB_DEFAULT_LIMIT = Math.max(1, Math.min(100, parseInt(process.env.FB_SEARCH_PAGE_SIZE || '50', 10)));
+const searchPosts = async (query, limit = FB_DEFAULT_LIMIT, options = {}) => {
     try {
         const response = await rapidGet('/search/posts', { query, limit });
 

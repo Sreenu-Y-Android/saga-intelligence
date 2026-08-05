@@ -5,7 +5,7 @@ import { TG_MLAS } from '../../data/tgMLAs';
 import api from '../../lib/api';
 import { partyColor, initialOf, titleCase } from './compareUtils';
 
-const PARTY_TABS = ['ALL', 'INC', 'BRS', 'BJP', 'AIMIM', 'CPI'];
+const PARTY_TABS = ['ALL', 'INC', 'BRS', 'BJP', 'AIMIM'];
 
 const SentimentPreview = ({ idx }) => {
   if (idx == null) return <span className="text-[10px] text-slate-300">—</span>;

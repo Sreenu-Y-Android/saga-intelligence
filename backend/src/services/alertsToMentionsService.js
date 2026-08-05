@@ -1,9 +1,9 @@
 /**
  * alertsToMentionsService
  * ───────────────────────────────────────────────────────────────────────
- * Alerts → Mentions promotion pipeline.
+ * Target Watch · Alerts → Mentions promotion pipeline.
  *
- *   Alerts (DB)  ──►  target relevance gate  ──►  Mentions (Grievances)
+ *   Alerts (DB)  ──►  RapidAPI relevance gate  ──►  Mentions (Grievances)
  *
  * For every Alert that has not yet been evaluated by the relevance gate, this
  * service:
@@ -18,7 +18,7 @@
  *      the shared `createGrievanceFromPost` helper — so the promoted record
  *      flows through the same downstream analysis as anything else in
  *      Mentions (location extraction, complaint code, workflow init, …).
- *   4. The alert is stamped with `relevance_pipeline.processed=true` plus the
+ *   4. The alert is stamped with `target_pipeline.processed=true` plus the
  *      gate verdict (decision, target, stance, topic, confidence, reason).
  *      This stamp is the only idempotency marker — the service is safe to
  *      run repeatedly.
@@ -37,8 +37,8 @@ const Grievance = require('../models/Grievance');
 const { checkRelevance } = require('./targetRelevanceFilterService');
 const { createGrievanceFromPost } = require('./grievanceService');
 
-const MIN_CONFIDENCE = Number(process.env.ALERT_PROMOTE_MIN_CONF || 0.25);
-const DEFAULT_BATCH  = Number(process.env.ALERT_PROMOTE_BATCH    || 200);
+const MIN_CONFIDENCE = Number(process.env.BSK_ALERT_PROMOTE_MIN_CONF || 0.25);
+const DEFAULT_BATCH  = Number(process.env.BSK_ALERT_PROMOTE_BATCH    || 200);
 
 /* ─── helpers ─────────────────────────────────────────────────────── */
 
@@ -110,7 +110,7 @@ const buildPostFromAlert = (alert, content, source, relevance) => {
             views:    content?.engagement?.views    || 0,
             quotes:   content?.engagement?.quotes   || 0
         },
-        relevance_pipeline: {
+        target_pipeline: {
             source: 'alerts_to_mentions',
             alert_id: alert.id,
             intake_tag: `alert:${alert.id}`,
@@ -128,7 +128,7 @@ const stampAlert = async (alertId, patch) => {
         { id: alertId },
         {
             $set: {
-                relevance_pipeline: {
+                target_pipeline: {
                     processed: true,
                     processed_at: new Date(),
                     ...patch
@@ -149,7 +149,7 @@ const stampAlert = async (alertId, patch) => {
  */
 const processAlert = async (alert, { dryRun = false, allowLLM = true } = {}) => {
     if (!alert) return { decision: 'skipped', reason: 'no alert' };
-    if (alert.relevance_pipeline?.processed) {
+    if (alert.target_pipeline?.processed) {
         return { decision: 'skipped', reason: 'already processed' };
     }
 
@@ -259,7 +259,7 @@ const processAlert = async (alert, { dryRun = false, allowLLM = true } = {}) => 
  *     dryRun      — don't write anything; just return verdicts
  *     allowLLM    — pass false to use heuristic-only mode (no RapidAPI call)
  *
- * Returns a `stats` envelope identical in shape to relevance_pipeline.
+ * Returns a `stats` envelope identical in shape to target_pipeline.
  */
 const runBatch = async (opts = {}) => {
     const {
@@ -271,7 +271,7 @@ const runBatch = async (opts = {}) => {
         allowLLM = true
     } = opts;
 
-    const query = { 'relevance_pipeline.processed': { $ne: true } };
+    const query = { 'target_pipeline.processed': { $ne: true } };
     if (status)   query.status = status;
     if (platform) query.platform = platform;
     if (since)    query.created_at = { $gte: new Date(since) };

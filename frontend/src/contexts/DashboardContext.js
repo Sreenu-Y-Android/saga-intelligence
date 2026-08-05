@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import api from '../lib/api';
 import { toast } from 'sonner';
 
@@ -7,30 +7,10 @@ const DashboardContext = createContext(null);
 const CACHE_DURATION = 30 * 1000; // 30 seconds
 const CACHE_KEY = 'dashboardCache_v3';
 
-// How long a leader's cached sentiment summary stays fresh before a
-// revisit to the Overview tab will refetch it.
-const MEMBER_SUMMARY_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
-
 export const DashboardProvider = ({ children }) => {
   const [dashboardData, setDashboardData] = useState(null);
   const [lastFetchTime, setLastFetchTime] = useState(null);
   const [loading, setLoading] = useState(false);
-
-  // Per-leader sentiment summary cache (MinistersPanel on the Overview tab).
-  // Lives here — above the router — so navigating to Grievances and back
-  // doesn't wipe it and force every leader card to refetch from scratch.
-  const memberSummaryCacheRef = useRef({});
-
-  const getMemberSentimentSummary = useCallback((memberId) => {
-    const entry = memberSummaryCacheRef.current[memberId];
-    if (!entry) return undefined;
-    if (Date.now() - entry.ts > MEMBER_SUMMARY_CACHE_DURATION) return undefined;
-    return entry.summary;
-  }, []);
-
-  const setMemberSentimentSummary = useCallback((memberId, summary) => {
-    memberSummaryCacheRef.current[memberId] = { summary, ts: Date.now() };
-  }, []);
 
   // Restore from localStorage on mount
   useEffect(() => {
@@ -63,13 +43,12 @@ export const DashboardProvider = ({ children }) => {
     if (isColdStart) setLoading(true);
 
     try {
-      const [dashStatsRes, reportsStatsRes, grievancesStatsRes, sentimentRes, categoryAnalyticsRes, publicOpinionRes] = await Promise.all([
+      const [dashStatsRes, reportsStatsRes, grievancesStatsRes, sentimentRes, categoryAnalyticsRes] = await Promise.all([
         api.get('/alerts/dashboard-stats'),
         api.get('/reports/stats'),
         api.get('/grievances/dashboard-stats'),
         api.get('/grievances/sentiment-analytics').catch(() => ({ data: null })),
-        api.get('/grievances/category-analytics').catch(() => ({ data: null })),
-        api.get('/grievances/public-opinion').catch(() => ({ data: null }))
+        api.get('/grievances/category-analytics').catch(() => ({ data: null }))
       ]);
 
       const { byPlatform, pendingByPlatform, viralByPlatform } = dashStatsRes.data;
@@ -96,14 +75,16 @@ export const DashboardProvider = ({ children }) => {
       // Grievances from lightweight backend stats
       const grievanceData = grievancesStatsRes.data?.byPlatform || {};
 
+      const sentimentAnalytics = sentimentRes?.data || null;
+
       const newData = {
         alertData,
         alertPendingReportData,
         reportData,
         grievanceData,
-        sentimentAnalytics: sentimentRes.data || null,
-        categoryAnalytics: categoryAnalyticsRes.data || null,
-        publicOpinion: publicOpinionRes.data || null
+        karimnagarSummary: null,
+        sentimentAnalytics,
+        categoryAnalytics: categoryAnalyticsRes.data || null
       };
 
       setDashboardData(newData);
@@ -133,9 +114,7 @@ export const DashboardProvider = ({ children }) => {
       loading,
       fetchDashboardData,
       refreshDashboard,
-      hasCachedData: !!dashboardData,
-      getMemberSentimentSummary,
-      setMemberSentimentSummary
+      hasCachedData: !!dashboardData
     }}>
       {children}
     </DashboardContext.Provider>

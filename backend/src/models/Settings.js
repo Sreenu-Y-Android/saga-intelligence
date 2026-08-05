@@ -54,11 +54,12 @@ const settingsSchema = new mongoose.Schema({
   rapidapi_instagram_host: { type: String },
   telegram_session: { type: String },
 
-  // API Configuration (per-module, per-platform intervals in minutes)
+  // ─── API Configuration (per-module, per-platform intervals in minutes) ───
   api_config: {
     monitoring: {
       enabled: { type: Boolean, default: true },
-      // Category x Platform frequency matrix (values in minutes)
+      // Category × Platform frequency matrix (values in minutes)
+      // Each platform key holds an object with category keys → interval in minutes
       frequencies: {
         x: {
           political: { type: Number, default: 60 },
@@ -116,7 +117,6 @@ const settingsSchema = new mongoose.Schema({
     }
   },
 
-
   // Custom Threat Keywords for AI Model
   threat_keywords: [{
     category: { type: String, required: true },
@@ -136,3 +136,4 @@ const settingsSchema = new mongoose.Schema({
 });
 
 module.exports = mongoose.model('Settings', settingsSchema);
+

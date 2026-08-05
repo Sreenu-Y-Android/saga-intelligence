@@ -69,10 +69,27 @@ const reportSchema = new mongoose.Schema({
 });
 
 
+// ─── Lookup and join indexes ───
 reportSchema.index({ alert_id: 1 });
+reportSchema.index({ alert_id: 1, generated_at: -1 });
+
+// ─── Primary sort indexes (all queries sort by generated_at) ───
 reportSchema.index({ generated_at: -1, id: -1 });
+
+// ─── Single filter + sort ───
 reportSchema.index({ platform: 1, generated_at: -1, id: -1 });
 reportSchema.index({ status: 1, generated_at: -1, id: -1 });
+
+// ─── Common filter combinations + sort ───
 reportSchema.index({ platform: 1, status: 1, generated_at: -1, id: -1 });
+reportSchema.index({ status: 1, platform: 1, generated_at: -1 });
+
+// ─── Date range filtering (for startDate/endDate) ───
+reportSchema.index({ generated_at: 1 });
+
+// ─── Search indexes ───
+reportSchema.index({ 'target_user_details.handle': 1 });
+reportSchema.index({ 'target_user_details.name': 1 });
+reportSchema.index({ serial_number: 1 });
 
 module.exports = mongoose.model('Report', reportSchema);

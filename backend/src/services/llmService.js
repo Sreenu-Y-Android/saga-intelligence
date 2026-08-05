@@ -225,7 +225,38 @@ EX10 "Congress govt has done nothing in Telangana, total failure"
      Political Criticism, score 45
 
 ════════════════════════
-9. STRICT JSON OUTPUT (no markdown, no prose)
+9. SEVERITY (citizen-impact, independent of client-perspective sentiment)
+════════════════════════
+How urgent is this for the citizen / region (NOT for the client)?
+- 'low'      : informational / praise / minor inconvenience
+- 'medium'   : ongoing service complaint (power outage, road damage, water shortage)
+- 'high'     : public safety risk, multiple-people-affected, serious infra failure
+- 'critical' : life-threatening, riot/violence risk, mass agitation, hospital/water emergency
+
+════════════════════════
+10. CONCERNED DEPARTMENT
+════════════════════════
+Pick EXACTLY ONE government department best suited to act on this post.
+ALLOWED DEPARTMENTS (use the exact label):
+- Roads & Buildings
+- Municipal & Sanitation
+- Water Supply
+- Electricity
+- Health & Medical
+- Education
+- Police & Law Order
+- Revenue
+- Agriculture
+- Welfare & Pensions
+- Employment & Skill Development
+- Transport & RTA
+- Forest & Environment
+- General Administration
+
+If the post is not a grievance (greeting, praise, joke) → "General Administration".
+
+════════════════════════
+11. STRICT JSON OUTPUT (no markdown, no prose)
 ════════════════════════
 {
   "category": "<category_id>",
@@ -236,7 +267,9 @@ EX10 "Congress govt has done nothing in Telangana, total failure"
   "grievance_reasoning": "<one line>",
   "sentiment": "positive | negative | neutral",
   "risk_score": <integer 0-100>,
-  "risk_level": "low | medium | high"
+  "risk_level": "low | medium | high",
+  "severity": "low | medium | high | critical",
+  "concerned_department": "<one of the allowed departments>"
 }
 
 ────────────────────────
@@ -260,6 +293,13 @@ const ALLOWED_SENTIMENTS = ['positive', 'negative', 'neutral'];
 const ALLOWED_RISK_LEVELS = ['low', 'medium', 'high'];
 const ALLOWED_TARGETS = ['OUR_GROUP', 'OPPOSITION', 'NEUTRAL'];
 const ALLOWED_STANCES = ['Support', 'Criticism', 'Neutral'];
+const ALLOWED_SEVERITIES = ['low', 'medium', 'high', 'critical'];
+const ALLOWED_DEPARTMENTS = [
+  'Roads & Buildings', 'Municipal & Sanitation', 'Water Supply', 'Electricity',
+  'Health & Medical', 'Education', 'Police & Law Order', 'Revenue', 'Agriculture',
+  'Welfare & Pensions', 'Employment & Skill Development', 'Transport & RTA',
+  'Forest & Environment', 'General Administration'
+];
 
 /**
  * Deterministic sentiment derivation from (target_party, stance).
@@ -338,6 +378,15 @@ const validateResult = (raw) => {
     else riskLevel = 'low';
   }
 
+  let severity = String(raw.severity || riskLevel).toLowerCase();
+  if (!ALLOWED_SEVERITIES.includes(severity)) severity = riskLevel === 'high' ? 'high' : riskLevel;
+
+  let concernedDepartment = raw.concerned_department || 'General Administration';
+  if (!ALLOWED_DEPARTMENTS.includes(concernedDepartment)) {
+    const lc = String(concernedDepartment).trim().toLowerCase();
+    concernedDepartment = ALLOWED_DEPARTMENTS.find((d) => d.toLowerCase() === lc) || 'General Administration';
+  }
+
   return {
     category,
     target_party: target,
@@ -347,7 +396,9 @@ const validateResult = (raw) => {
     grievance_reasoning: raw.grievance_reasoning || '',
     sentiment,
     risk_score: riskScore,
-    risk_level: riskLevel
+    risk_level: riskLevel,
+    severity,
+    concerned_department: concernedDepartment
   };
 };
 

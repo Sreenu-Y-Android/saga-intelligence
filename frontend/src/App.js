@@ -39,34 +39,41 @@ const IntelligenceDashboard = lazy(() => import('./pages/IntelligenceDashboard')
 const PolicyManager = lazy(() => import('./components/PolicyManager'));
 const PersonOfInterest = lazy(() => import('./pages/POI/PersonOfInterest'));
 const POIDetail = lazy(() => import('./pages/POI/POIDetail'));
+//const DeepfakeAnalysis = lazy(() => import('./pages/Deepfake/DeepfakeAnalysis'));
 const AccessManagement = lazy(() => import('./pages/AccessManagement'));
+const ConstituencyLogins = lazy(() => import('./pages/ConstituencyLogins'));
 const DeepfakeAnalysis = lazy(() => import('./pages/Deepfake/DeepfakeAnalysis'));
 const Telegram = lazy(() => import('./pages/Telegram'));
-const AnalysisTools = lazy(() => import('./pages/AnalysisTools'));
-const DarkWebSearch = lazy(() => import('./pages/DarkWebSearch'));
-const PublicWebArticles = lazy(() => import('./pages/PublicWebArticles'));
+const AndhraPradeshMap = lazy(() => import('./pages/AndhraPradeshMap'));
+const MlaProfile = lazy(() => import('./pages/MlaProfile'));
+const UnrestPredictor = lazy(() => import('./pages/UnrestPredictor'));
 const EventsReport = lazy(() => import('./pages/EventsReport'));
-const TelanganaMap = lazy(() => import('./pages/TelanganaMap'));
-
-// ── Geographic & constituency intelligence ────────────────────────
+const SearchAnalytics = lazy(() => import('./pages/SearchAnalytics'));
+const PublicWebArticles = lazy(() => import('./pages/PublicWebArticles'));
 const GeographicIntelligence = lazy(() => import('./pages/GeographicIntelligence'));
 const GeographicIntelligenceDistrict = lazy(() => import('./pages/GeographicIntelligenceDistrict'));
-const CommandCentre = lazy(() => import('./pages/AndhraPradeshMap'));
-const MlaProfile = lazy(() => import('./pages/MlaProfile'));
-const ConstituencyLogins = lazy(() => import('./pages/ConstituencyLogins'));
-const SearchAnalytics = lazy(() => import('./pages/SearchAnalytics'));
-const UnrestPredictor = lazy(() => import('./pages/UnrestPredictor'));
+
 // Loading fallback
 const PageLoader = () => (
-  <div className="flex items-center justify-center min-h-[400px]">
-    <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent"></div>
+  <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
+    <div className="relative">
+      <img
+        src="/BCSS_logo.png"
+        alt="Logo"
+        className="h-16 w-16 rounded-full object-cover border-2 border-orange-500 shadow-lg"
+      />
+      <div className="absolute inset-0 rounded-full border-2 border-t-orange-500 border-r-transparent border-b-transparent border-l-transparent animate-spin" />
+    </div>
+    <div className="flex flex-col items-center gap-1">
+      <span className="text-sm font-bold text-slate-700 tracking-wider uppercase">BLURA SAGA · INC</span>
+      <span className="text-[11px] text-slate-400 tracking-widest uppercase">Social Media Intelligence for Telangana</span>
+    </div>
   </div>
 );
 
 import { NotificationProvider } from './context/NotificationContext';
 import { InstagramCacheProvider } from './contexts/InstagramCacheContext';
 import { RbacProvider } from './contexts/RbacContext';
-import { PoliticianNavigationProvider } from './contexts/PoliticianNavigationContext';
 import './App.css';
 
 function App() {
@@ -82,29 +89,15 @@ function App() {
                 <Routes>
                   <Route path="/login" element={<Login />} />
                   <Route
-                    path="/"
+                    path=""
                     element={
                       <ProtectedRoute>
-                        <PoliticianNavigationProvider>
-                          <Layout />
-                        </PoliticianNavigationProvider>
+                        <Layout />
                       </ProtectedRoute>
                     }
                   >
-                    <Route index element={<Navigate to="/dashboard" replace />} />
+                    <Route index element={<Navigate to="/andhra-pradesh-map" replace />} />
                     <Route path="dashboard" element={<Dashboard />} />
-                    <Route path="telangana-map" element={<TelanganaMap />} />
-                    {/* Executive command centre — the ported AP.Blura.Saga map dashboard */}
-                    <Route path="command-centre" element={<CommandCentre />} />
-                    <Route path="geographic-intelligence" element={<GeographicIntelligence />} />
-                    <Route path="geographic-intelligence/:districtKey" element={<GeographicIntelligenceDistrict />} />
-                    <Route path="mla/:constituency" element={<MlaProfile />} />
-                    <Route path="constituency-logins" element={<ConstituencyLogins />} />
-                    <Route path="search-analytics" element={<SearchAnalytics />} />
-                    <Route path="unrest-predictor" element={<UnrestPredictor />} />
-                    {/* AP-era paths kept so old bookmarks/links do not 404 */}
-                    <Route path="andhra-pradesh-map" element={<Navigate to="/command-centre" replace />} />
-                    <Route path="war-room" element={<Navigate to="/command-centre" replace />} />
                     <Route path="sources" element={<Sources />} />
                     <Route path="content" element={<ContentFeed />} />
                     <Route path="youtube-monitor" element={<YouTubeMonitor />} />
@@ -132,15 +125,22 @@ function App() {
                     <Route path="dial-100-incident-reporting" element={<Dial100IncidentReporting />} />
                     <Route path="audit-logs" element={<AuditLogs />} />
                     <Route path="access-management" element={<AccessManagement />} />
+                    <Route path="constituency-logins" element={<ConstituencyLogins />} />
                     <Route path="person-of-interest" element={<PersonOfInterest />} />
                     <Route path="person-of-interest/:id" element={<POIDetail />} />
                     <Route path="deepfake-analysis" element={<DeepfakeAnalysis />} />
                     <Route path="telegram" element={<Telegram />} />
-                    <Route path="analysis-tools" element={<AnalysisTools />} />
-                    <Route path="dark-web-search" element={<DarkWebSearch />} />
+                    <Route path="andhra-pradesh-map" element={<AndhraPradeshMap />} />
+                    <Route path="geographic-intelligence" element={<GeographicIntelligence />} />
+                    <Route path="geographic-intelligence/:districtKey" element={<GeographicIntelligenceDistrict />} />
                     <Route path="public-web-articles" element={<PublicWebArticles />} />
-                    <Route path="deepfake/forensics" element={<DeepfakeAnalysis />} />
+                    <Route path="war-room" element={<Navigate to="/andhra-pradesh-map" replace />} />
+                    <Route path="mla/:constituency" element={<MlaProfile />} />
+                    <Route path="telangana-map" element={<Navigate to="/andhra-pradesh-map" replace />} />
+                    <Route path="unrest-predictor" element={<UnrestPredictor />} />
                     <Route path="events-report" element={<EventsReport />} />
+                    <Route path="search-analytics" element={<SearchAnalytics />} />
+                    <Route path="deepfake/forensics" element={<DeepfakeAnalysis />} />
                     <Route path="help" element={<HelpGuide />} />
                   </Route>
                 </Routes>

@@ -4,7 +4,7 @@ const {
     getAlerts,
     getAlertById,
     updateAlert,
-    updateAlertSentiment,
+    updateAlertAnalysisOverride,
     deleteAlert,
     getAlertStats,
     getAlertSummary,
@@ -13,7 +13,8 @@ const {
     markAllAsRead,
     investigateLink,
     translateAlertContent,
-    getSimilarEscalatedAlerts
+    getSimilarEscalatedAlerts,
+    getTopicClassificationCounts
 } = require('../controllers/alertController');
 const { protect } = require('../middleware/authMiddleware');
 const { requireAnyPageAccess, requireFeatureAccess } = require('../middleware/rbacMiddleware');
@@ -26,9 +27,17 @@ const normalizeAlertStatus = (value) => {
     return normalized;
 };
 
-const resolveAlertStatusFromQuery = (req) => (
-    normalizeAlertStatus(req.query.status || req.query.status_filter || req.query.tab) || 'active'
-);
+const ALERT_FEATURE_VALUES = new Set(['active', 'false_positive', 'acknowledged', 'escalated', 'reports']);
+
+const resolveAlertStatusFromQuery = (req) => {
+    const requestedStatus = normalizeAlertStatus(req.query.status || req.query.status_filter || req.query.tab);
+    if (requestedStatus && requestedStatus !== 'all') return requestedStatus;
+
+    const assignedFeatures = req.rbac?.permissions?.['/alerts']?.features || [];
+    return assignedFeatures.find((feature) => ALERT_FEATURE_VALUES.has(feature) && feature !== 'reports')
+        || assignedFeatures.find((feature) => ALERT_FEATURE_VALUES.has(feature))
+        || 'active';
+};
 
 const resolveAlertStatusFromBody = (req) => (
     normalizeAlertStatus(req.body.status || req.body.next_status)
@@ -39,6 +48,7 @@ router.use(protect, requireAnyPageAccess(['/alerts']));
 router.get('/', requireFeatureAccess('/alerts', resolveAlertStatusFromQuery), getAlerts);
 router.get('/stats', getAlertStats);
 router.get('/summary', getAlertSummary);
+router.get('/topic-counts', getTopicClassificationCounts);
 router.get('/dashboard-stats', getDashboardStats);
 router.get('/unread', requireFeatureAccess('/alerts', () => 'active'), getUnreadCount);
 router.post('/investigate', requireFeatureAccess('/alerts', () => 'active'), (req, res, next) => {
@@ -57,8 +67,8 @@ router.put('/:id', protect, updateAlert);
 router.post('/similar', protect, getSimilarEscalatedAlerts);
 router.get('/:id', getAlertById);
 router.put('/read', requireFeatureAccess('/alerts', () => 'active'), markAllAsRead);
-router.put('/:id/sentiment', updateAlertSentiment);
-router.delete('/:id', deleteAlert);
 router.put('/:id', requireFeatureAccess('/alerts', resolveAlertStatusFromBody, { allowWhenMissing: true }), updateAlert);
+router.put('/:id/analysis-override', protect, updateAlertAnalysisOverride);
+router.delete('/:id', protect, deleteAlert);
 
 module.exports = router;

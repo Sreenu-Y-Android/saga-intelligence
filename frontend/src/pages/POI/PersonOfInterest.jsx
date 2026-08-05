@@ -5,12 +5,13 @@ import {
     X, User, Loader2, AlertTriangle, Archive,
     PlusCircle, MinusCircle, Shield, LayoutGrid, Phone, Mail, MapPin,
     Globe, FileText, Smartphone, Cpu, MessageCircle, Facebook, Instagram,
-    Youtube, XCircle, Camera, Pencil
+    Youtube, XCircle, Camera, Pencil, Monitor
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import api from '../../lib/api';
 import AddSourceModal from '../../components/AddSourceModal';
+import UnifiedMonitors from '../UnifiedMonitors';
 
 const AvatarPlaceholder = ({ name, size = 'lg' }) => {
     const initials = (name || '?')
@@ -149,6 +150,7 @@ const PersonOfInterest = () => {
     const [searchInput, setSearchInput] = useState(''); // Immediate input state
     const [debouncedSearch, setDebouncedSearch] = useState(''); // Delayed search state
     const [isTyping, setIsTyping] = useState(false);
+    const [activeSection, setActiveSection] = useState('profiles');
     const observer = useRef();
     const limit = 50;
 
@@ -874,92 +876,137 @@ const PersonOfInterest = () => {
                         </div>
                     </div>
                 </div>
-                <button
-                    onClick={() => { setAddSourceModalOpen(true); }}
-                    data-testid="add-poi-btn"
-                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-primary to-primary/90 text-white font-semibold text-sm shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all duration-200"
-                >
-                    <Plus className="h-4 w-4" /> Add New Profile
-                </button>
+                {activeSection === 'profiles' && (
+                    <button
+                        onClick={() => { setAddSourceModalOpen(true); }}
+                        data-testid="add-poi-btn"
+                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-primary to-primary/90 text-white font-semibold text-sm shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98] transition-all duration-200"
+                    >
+                        <Plus className="h-4 w-4" /> Add New Profile
+                    </button>
+                )}
             </div>
 
-            {/* Search Bar */}
-            <div className="flex items-center gap-3">
-                <div className="relative flex-1">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <input
-                        type="text"
-                        value={searchInput}
-                        onChange={e => setSearchInput(e.target.value)}
-                        placeholder="Search profiles by name, number, address, handle..."
-                        data-testid="poi-search-input"
-                        className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:ring-2 focus:ring-ring focus:border-transparent transition-all outline-none"
-                    />
+            <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+                <div className="flex flex-wrap gap-2">
+                    {[
+                        { id: 'profiles', label: 'Profiles', icon: UserSearch },
+                        { id: 'handles', label: 'Profiles Live Monitor', icon: Monitor }
+                    ].map((section) => {
+                        const Icon = section.icon;
+                        const isActive = activeSection === section.id;
+                        return (
+                            <button
+                                key={section.id}
+                                type="button"
+                                onClick={() => setActiveSection(section.id)}
+                                className={`flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition-all ${isActive
+                                    ? 'bg-slate-900 text-white shadow-md'
+                                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                                    }`}
+                            >
+                                <Icon className="h-4 w-4" />
+                                <span>{section.label}</span>
+                            </button>
+                        );
+                    })}
                 </div>
             </div>
 
-            {/* Content Area */}
-            <div className={`relative transition-all duration-300 ${loading && pois.length > 0 ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-                {loading && pois.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-20 gap-3">
-                        <div className="relative">
-                            <div className="absolute inset-0 rounded-full border-4 border-primary/20 animate-pulse" />
-                            <Loader2 className="h-10 w-10 animate-spin text-primary" />
+            {activeSection === 'profiles' ? (
+                <>
+                    {/* Search Bar */}
+                    <div className="flex items-center gap-3">
+                        <div className="relative flex-1">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                            <input
+                                type="text"
+                                value={searchInput}
+                                onChange={e => setSearchInput(e.target.value)}
+                                placeholder="Search profiles by name, number, address, handle..."
+                                data-testid="poi-search-input"
+                                className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-input bg-background text-foreground text-sm placeholder:text-muted-foreground focus:ring-2 focus:ring-ring focus:border-transparent transition-all outline-none"
+                            />
                         </div>
-                        <p className="text-sm font-medium text-muted-foreground animate-pulse">Scanning database...</p>
                     </div>
-                ) : pois.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-20 gap-4 text-center">
-                        <div className="p-4 rounded-full bg-muted/50">
-                            <UserSearch className="h-12 w-12 text-muted-foreground" />
+
+                    {/* Content Area */}
+                    <div className={`relative transition-all duration-300 ${loading && pois.length > 0 ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
+                        {loading && pois.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-20 gap-3">
+                                <div className="relative">
+                                    <div className="absolute inset-0 rounded-full border-4 border-primary/20 animate-pulse" />
+                                    <Loader2 className="h-10 w-10 animate-spin text-primary" />
+                                </div>
+                                <p className="text-sm font-medium text-muted-foreground animate-pulse">Scanning database...</p>
+                            </div>
+                        ) : pois.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-20 gap-4 text-center">
+                                <div className="p-4 rounded-full bg-muted/50">
+                                    <UserSearch className="h-12 w-12 text-muted-foreground" />
+                                </div>
+                                <div>
+                                    <h3 className="text-lg font-semibold text-foreground">No persons of interest found</h3>
+                                    <p className="text-sm text-muted-foreground mt-1">
+                                        {debouncedSearch
+                                            ? 'Try adjusting your search criteria.'
+                                            : 'Click "Add Profile" to create the first entry.'}
+                                    </p>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-8">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 lg:gap-5">
+                                    {pois.map((poi) => (
+                                        <POICard
+                                            key={poi._id}
+                                            poi={poi}
+                                            onView={openView}
+                                            onEdit={openEdit}
+                                            onDelete={openDelete}
+                                        />
+                                    ))}
+                                </div>
+
+                                {/* Infinite Scroll Sentinel & Loader */}
+                                <div ref={lastPoiElementRef} className="py-12 flex flex-col items-center justify-center">
+                                    {hasMore ? (
+                                        <div className="flex flex-col items-center gap-4 py-4 px-8 rounded-2xl bg-muted/30 border border-border/50 backdrop-blur-sm">
+                                            <div className="flex items-center gap-3">
+                                                <div className="relative h-6 w-6">
+                                                    <div className="absolute inset-0 rounded-full border-2 border-primary/20 animate-ping" />
+                                                    <Loader2 className={`h-6 w-6 animate-spin text-primary ${loadingMore ? 'opacity-100' : 'opacity-40'}`} />
+                                                </div>
+                                                <span className={`text-sm font-semibold tracking-wide transition-opacity duration-300 ${loadingMore ? 'text-primary' : 'text-muted-foreground opacity-60'}`}>
+                                                    {loadingMore ? 'Syncing next batch...' : 'Scroll to see more'}
+                                                </span>
+                                            </div>
+                                            <div className="w-48 h-1 bg-muted rounded-full overflow-hidden">
+                                                <div className={`h-full bg-primary transition-all duration-1000 ${loadingMore ? 'w-full' : 'w-0'}`} />
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        total > 0 && null
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </>
+            ) : (
+                <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+                    <div className="mb-5 flex items-center gap-3">
+                        <div className="rounded-xl bg-police-navy/10 p-3 text-police-navy">
+                            <Monitor className="h-5 w-5" />
                         </div>
                         <div>
-                            <h3 className="text-lg font-semibold text-foreground">No persons of interest found</h3>
-                            <p className="text-sm text-muted-foreground mt-1">
-                                {debouncedSearch
-                                    ? 'Try adjusting your search criteria.'
-                                    : 'Click "Add Profile" to create the first entry.'}
-                            </p>
+                            <h2 className="text-xl font-bold text-foreground">Profiles Live Monitor</h2>
+                            <p className="text-sm text-muted-foreground">Manage and monitor social media handles from the Profile area.</p>
                         </div>
                     </div>
-                ) : (
-                    <div className="space-y-8">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 lg:gap-5">
-                            {pois.map((poi) => (
-                                <POICard
-                                    key={poi._id}
-                                    poi={poi}
-                                    onView={openView}
-                                    onEdit={openEdit}
-                                    onDelete={openDelete}
-                                />
-                            ))}
-                        </div>
-
-                        {/* Infinite Scroll Sentinel & Loader */}
-                        <div ref={lastPoiElementRef} className="py-12 flex flex-col items-center justify-center">
-                            {hasMore ? (
-                                <div className="flex flex-col items-center gap-4 py-4 px-8 rounded-2xl bg-muted/30 border border-border/50 backdrop-blur-sm">
-                                    <div className="flex items-center gap-3">
-                                        <div className="relative h-6 w-6">
-                                            <div className="absolute inset-0 rounded-full border-2 border-primary/20 animate-ping" />
-                                            <Loader2 className={`h-6 w-6 animate-spin text-primary ${loadingMore ? 'opacity-100' : 'opacity-40'}`} />
-                                        </div>
-                                        <span className={`text-sm font-semibold tracking-wide transition-opacity duration-300 ${loadingMore ? 'text-primary' : 'text-muted-foreground opacity-60'}`}>
-                                            {loadingMore ? 'Syncing next batch...' : 'Scroll to see more'}
-                                        </span>
-                                    </div>
-                                    <div className="w-48 h-1 bg-muted rounded-full overflow-hidden">
-                                        <div className={`h-full bg-primary transition-all duration-1000 ${loadingMore ? 'w-full' : 'w-0'}`} />
-                                    </div>
-                                </div>
-                            ) : (
-                                total > 0 && null
-                            )}
-                        </div>
-                    </div>
-                )}
-            </div>
+                    <UnifiedMonitors embedded />
+                </div>
+            )}
 
             <AddSourceModal
                 open={addSourceModalOpen}

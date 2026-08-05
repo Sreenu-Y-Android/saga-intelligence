@@ -41,7 +41,7 @@ const splitKeywords = (value) => {
 const openPrintableReport = ({ event, stats, content, alerts }) => {
   const safe = (v) => (v === null || v === undefined ? '' : String(v));
   const companyLogoUrl = `${window.location.origin}/Logo.png`;
-  const policeLogoUrl = `${window.location.origin}/policelogo.jpg`;
+  const policeLogoUrl = `${window.location.origin}/BCSS_logo.png`;
 
   const html = `<!doctype html>
 <html>
@@ -184,7 +184,7 @@ const buildReportRows = ({ calendarEvents, events }) => {
 const openPrintableEventsList = ({ events, calendarEvents }) => {
   const rows = buildReportRows({ calendarEvents, events });
   const companyLogoUrl = `${window.location.origin}/Logo.png`;
-  const policeLogoUrl = `${window.location.origin}/policelogo.jpg`;
+  const policeLogoUrl = `${window.location.origin}/BCSS_logo.png`;
   const generatedAt = new Date().toLocaleString('en-IN', { dateStyle: 'long', timeStyle: 'short' });
   const html = `<!doctype html>
 <html>
@@ -292,18 +292,11 @@ const STATUS_CONFIG = {
   planned:  { color: 'bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-800',            dot: 'bg-sky-500',     label: 'Planned' }
 };
 
-const XIconSmall = () => (
-  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
-    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-  </svg>
-);
-
 const PLATFORM_CONFIG = {
   all:       { label: 'All Platforms', icon: Globe,     color: 'text-gray-500 dark:text-gray-400' },
-  x:         { label: 'X / Twitter',  icon: null,      color: 'text-gray-800 dark:text-gray-200', customIcon: XIconSmall },
+  x:         { label: 'X / Twitter',  icon: Globe,     color: 'text-gray-800 dark:text-gray-200' },
   youtube:   { label: 'YouTube',       icon: Youtube,   color: 'text-red-600 dark:text-red-400' },
-  facebook:  { label: 'Facebook',      icon: Facebook,  color: 'text-blue-600 dark:text-blue-400' },
-  instagram: { label: 'Instagram',     icon: Instagram, color: 'text-pink-600 dark:text-pink-400' }
+  facebook:  { label: 'Facebook',      icon: Facebook,  color: 'text-blue-600 dark:text-blue-400' }
 };
 
 const EVENT_POLL_INTERVALS = [
@@ -327,6 +320,8 @@ const Events = () => {
   // ── Core state ──
   const [events, setEvents] = useState([]);
   const [loadingEvents, setLoadingEvents] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(380);
+  const [isResizing, setIsResizing] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [dashboard, setDashboard] = useState(null);
   const [loadingDashboard, setLoadingDashboard] = useState(false);
@@ -341,7 +336,24 @@ const Events = () => {
   const [selectedMonth, setSelectedMonth] = useState(null); // null = all months
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
 
-
+  // ── Sidebar resize handlers ──
+  const handleMouseDown = useCallback((e) => {
+    e.preventDefault();
+    setIsResizing(true);
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    const onMouseMove = (e) => {
+      const newWidth = Math.min(500, Math.max(200, startWidth + (e.clientX - startX)));
+      setSidebarWidth(newWidth);
+    };
+    const onMouseUp = () => {
+      setIsResizing(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [sidebarWidth]);
 
   // ── Dialog state ──
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -450,7 +462,7 @@ const Events = () => {
       nrForm.keywords_en.split(/[,\n]/).filter(Boolean).forEach(k => kw.push({ keyword: k.trim(), language: 'en' }));
       const payload = {
         name: nrForm.name, location: nrForm.location,
-        keywords: kw, platforms: ['youtube', 'x', 'facebook', 'instagram'],
+        keywords: kw, platforms: ['youtube', 'x', 'facebook'],
         ...(nrForm.start_date ? { start_date: nrForm.start_date } : {}),
         ...(nrForm.end_date ? { end_date: nrForm.end_date } : {}),
         ...(nrForm.polling_interval_minutes && nrForm.polling_interval_minutes !== 'default' ? { polling_interval_minutes: Number(nrForm.polling_interval_minutes) } : {})
@@ -727,7 +739,7 @@ const Events = () => {
     splitKeywords(keywordsTe).forEach((k) => kw.push({ keyword: k, language: 'te' }));
     splitKeywords(keywordsHi).forEach((k) => kw.push({ keyword: k, language: 'hi' }));
     splitKeywords(keywordsEn).forEach((k) => kw.push({ keyword: k, language: 'en' }));
-    const payload = { name, location, keywords: kw, platforms: ['youtube', 'x', 'facebook', 'instagram'] };
+    const payload = { name, location, keywords: kw, platforms: ['youtube', 'x', 'facebook'] };
     if (startDate) payload.start_date = startDate;
     if (endDate) payload.end_date = endDate;
     if (eventPollInterval && eventPollInterval !== 'default') payload.polling_interval_minutes = Number(eventPollInterval);
@@ -1093,20 +1105,20 @@ const Events = () => {
   //  RENDER
   // ══════════════════════════════════════════════════════
   return (
-    <div className="flex flex-col h-[calc(100vh-64px)] bg-gray-50 dark:bg-slate-950" data-testid="events-page">
+    <div className="flex flex-col h-[calc(100vh-64px)] bg-amber-50/30 dark:bg-slate-950" data-testid="events-page">
 
       {/* ── Top Header Bar ── */}
       <div className="shrink-0 bg-white dark:bg-slate-900 border-b border-gray-200 dark:border-slate-700 shadow-sm">
         <div className="px-4 sm:px-6 py-3">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div className="flex items-center gap-3">
-              <div className="h-9 w-9 rounded-lg bg-slate-900 dark:bg-white flex items-center justify-center shadow-sm">
-                <Shield className="h-4 w-4 text-white dark:text-slate-900" />
+              <div className="h-9 w-9 rounded-lg bg-amber-400 flex items-center justify-center shadow-md">
+                <Shield className="h-4.5 w-4.5 text-black" />
               </div>
               <div>
                 <h1 className="text-[15px] font-bold text-gray-900 dark:text-white tracking-tight">Events</h1>
                 <div className="flex items-center gap-3 mt-0.5">
-                  <span onClick={() => setStatusFilter(statusFilter === 'active' ? 'all' : 'active')} className={`text-[11px] flex items-center gap-1.5 font-medium cursor-pointer hover:underline ${statusFilter === 'active' ? 'text-emerald-700 dark:text-emerald-400 underline' : 'text-emerald-600 dark:text-emerald-500'}`}>
+                  <span onClick={() => setStatusFilter(statusFilter === 'active' ? 'all' : 'active')} className={`text-[11px] flex items-center gap-1.5 font-medium cursor-pointer hover:underline ${statusFilter === 'active' ? 'text-emerald-700 underline' : 'text-emerald-600'}`}>
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                     {eventCounts.active} live
                   </span>
@@ -1116,89 +1128,18 @@ const Events = () => {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {/* Event Selection Dropdown */}
-              <div className="relative">
-                <Select value={selectedId ? String(selectedId) : ''} onValueChange={(v) => handleSelectEvent(v)}>
-                  <SelectTrigger className="h-8 min-w-[200px] text-xs bg-gray-50 dark:bg-slate-800 border-gray-200 dark:border-slate-700 text-gray-900 dark:text-gray-100">
-                    <SelectValue placeholder="Select event..." />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-[400px]">
-                    <div className="p-2 border-b border-gray-100 dark:border-slate-800 space-y-2">
-                      <div className="relative">
-                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
-                        <Input 
-                          value={searchQuery} 
-                          onChange={(e) => setSearchQuery(e.target.value)} 
-                          placeholder="Search events..." 
-                          className="pl-8 h-8 text-xs bg-gray-50 dark:bg-slate-800 border-gray-200 dark:border-slate-700"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      </div>
-                      <div className="flex gap-1">
-                        {[
-                          { key: 'all', label: 'All', count: originCounts.all },
-                          { key: 'recurring', label: 'Rec.', count: originCounts.recurring },
-                          { key: 'manual', label: 'Man.', count: originCounts.manual },
-                        ].map((f) => (
-                          <button
-                            key={f.key}
-                            onClick={(e) => { e.stopPropagation(); setOriginFilter(f.key); }}
-                            className={`flex-1 flex items-center justify-between gap-1 px-2 py-1 rounded-md text-[10px] font-semibold border transition-all
-                              ${originFilter === f.key
-                                ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900 border-gray-900 dark:border-white shadow-sm'
-                                : 'bg-gray-50 dark:bg-slate-800 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700'
-                              }`}
-                          >
-                            {f.label}
-                            <span className="text-[9px] font-bold tabular-nums opacity-60">{f.count}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {loadingEvents ? (
-                      <div className="py-8 flex items-center justify-center"><Loader2 className="h-4 w-4 animate-spin text-gray-400" /></div>
-                    ) : filteredEvents.length === 0 ? (
-                      <div className="py-8 text-center text-xs text-gray-400">No matching events</div>
-                    ) : (
-                      filteredEvents.map((e) => (
-                        <SelectItem key={e.id} value={String(e.id)} className="text-xs">
-                          <div className="flex items-center gap-2">
-                            <span className="truncate max-w-[150px]">{e.name}</span>
-                            <span className={`h-1.5 w-1.5 rounded-full ${STATUS_CONFIG[e.status || 'paused'].dot}`} />
-                          </div>
-                        </SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* More menu — HCP + Settings collapsed */}
-              <div className="relative">
-                <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs text-gray-600 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-800"
-                  onClick={() => setExportMenuOpen(prev => prev === 'header' ? false : 'header')}>
-                  <Settings className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">More</span>
-                  <ChevronDown className={cn('h-3 w-3 transition-transform', exportMenuOpen === 'header' && 'rotate-180')} />
-                </Button>
-                {exportMenuOpen === 'header' && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setExportMenuOpen(false)} />
-                    <div className="absolute right-0 top-full mt-1.5 z-50 w-52 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1 shadow-xl">
-                      <button onClick={() => { setExportMenuOpen(false); openHcpCalendar(); }} className="flex items-center gap-2.5 w-full rounded-lg px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">
-                        <CalendarDays className="h-4 w-4 text-indigo-500" /> HCP Recurring
-                      </button>
-                      <button onClick={() => { setExportMenuOpen(false); openHcpNonRecurring(); }} className="flex items-center gap-2.5 w-full rounded-lg px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">
-                        <CalendarDays className="h-4 w-4 text-amber-500" /> HCP Non-Recurring
-                      </button>
-                      <div className="my-1 border-t border-gray-100 dark:border-slate-800" />
-                      <button onClick={() => { setExportMenuOpen(false); openSettingsDialog(); }} className="flex items-center gap-2.5 w-full rounded-lg px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">
-                        <Settings className="h-4 w-4 text-gray-500" /> API Settings
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
+              <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs text-gray-600 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:bg-indigo-50 dark:hover:bg-slate-800 hover:border-indigo-300" onClick={openHcpCalendar}>
+                <CalendarDays className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">HCP Recurring</span>
+              </Button>
+              <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs text-gray-600 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:bg-amber-50 dark:hover:bg-slate-800 hover:border-amber-300" onClick={openHcpNonRecurring}>
+                <CalendarDays className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">HCP Non-Recurring</span>
+              </Button>
+              <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs text-gray-600 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:bg-amber-50 dark:hover:bg-slate-800 hover:border-amber-300" onClick={openSettingsDialog}>
+                <Settings className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">API Settings</span>
+              </Button>
               <Button size="sm" className="gap-1.5 h-8 text-xs bg-gray-900 hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200 text-white shadow-md" onClick={openCreateDialog}>
                 <Plus className="h-3.5 w-3.5" />
                 New Event
@@ -1221,10 +1162,137 @@ const Events = () => {
           totalCount={eventsForYear.length}
         />
 
+        {/* Left — Events List */}
+        <div className="hidden md:flex shrink-0 border-r border-gray-200 dark:border-slate-700 flex-col bg-white dark:bg-slate-900 relative" style={{ width: sidebarWidth }}>
+          <div className="p-3 border-b border-gray-100 dark:border-slate-800">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 dark:text-gray-500" />
+              <Input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search events..." className="pl-8 h-8 text-xs bg-gray-50 dark:bg-slate-800 border-gray-200 dark:border-slate-700 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus-visible:ring-amber-400/40" />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          </div>
 
+          {/* Origin filter buttons */}
+          <div className="px-3 pb-2 flex gap-1">
+            {[
+              { key: 'all',       label: 'All',           count: originCounts.all },
+              { key: 'recurring', label: 'Recurring',      count: originCounts.recurring },
+              { key: 'manual',    label: 'Non-Recurring',  count: originCounts.manual },
+            ].map((f) => (
+              <button
+                key={f.key}
+                onClick={() => setOriginFilter(f.key)}
+                className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-200 border
+                  ${originFilter === f.key
+                    ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900 border-gray-900 dark:border-white shadow-sm'
+                    : 'bg-gray-50 dark:bg-slate-800 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700 hover:text-gray-700 dark:hover:text-gray-200'
+                  }`}
+              >
+                {f.label}
+                <span className={`text-[9px] font-bold tabular-nums rounded-full px-1 min-w-[16px] text-center
+                  ${originFilter === f.key
+                    ? 'bg-white/20 dark:bg-gray-900/20'
+                    : 'bg-gray-200 dark:bg-slate-700 text-gray-500 dark:text-gray-400'
+                  }`}>
+                  {f.count}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <ScrollArea className="flex-1">
+            <div className="p-1.5 space-y-0.5">
+              {loadingEvents ? (
+                <div className="py-16 flex items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-amber-500" /></div>
+              ) : filteredEvents.length === 0 ? (
+                <div className="py-16 text-center text-xs text-gray-400">{searchQuery ? 'No matching events' : 'No events yet'}</div>
+              ) : (
+                filteredEvents.map((e) => {
+                  const isSelected = selectedId === e.id;
+                  // Use stored status directly — no date-based auto-computation
+                  const displayStatus = e.status || 'paused';
+                  const cfg = STATUS_CONFIG[displayStatus] || STATUS_CONFIG.planned;
+                  // Month color for the event card
+                  const eventMonth = e.start_date ? new Date(e.start_date).getMonth() : new Date().getMonth();
+                  const mTheme = selectedMonth !== null ? MONTH_THEMES[selectedMonth] : MONTH_THEMES[eventMonth];
+                  const canTogglePause = displayStatus !== 'archived';
+                  return (
+                    <button key={e.id} type="button" onClick={() => handleSelectEvent(e.id)}
+                      className={`w-full text-left rounded-lg px-3 py-2.5 transition-all duration-200 border
+                        ${isSelected
+                          ? `${mTheme.cardBg} ${mTheme.cardBorder} shadow-sm`
+                          : `hover:${mTheme.cardBg} border-transparent hover:${mTheme.cardBorder}`
+                        }`}>
+                      <div className="flex items-start justify-between gap-2 mb-1.5">
+                        <span className={`font-semibold text-[13px] leading-snug truncate flex-1 ${isSelected ? mTheme.cardAccent : 'text-gray-800 dark:text-gray-200'}`}>{e.name}</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {canTogglePause && (
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              onClick={(ev) => { ev.stopPropagation(); e.status === 'paused' ? handleResume(e.id) : handlePause(e.id); }}
+                              onKeyDown={(ev) => { if (ev.key === 'Enter') { ev.stopPropagation(); e.status === 'paused' ? handleResume(e.id) : handlePause(e.id); } }}
+                              className={`inline-flex items-center justify-center h-5 w-5 rounded transition-colors ${e.status === 'paused' ? 'text-emerald-600 hover:bg-emerald-100 dark:hover:bg-emerald-950' : 'text-amber-600 hover:bg-amber-100 dark:hover:bg-amber-950'}`}
+                              title={e.status === 'paused' ? 'Resume monitoring' : 'Pause monitoring'}
+                            >
+                              {e.status === 'paused' ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                            </span>
+                          )}
+                          <span className={`text-[8px] font-bold uppercase rounded px-1.5 py-0.5 leading-none border ${cfg.color}`}>{cfg.label}</span>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-1 mb-1.5">
+                        {(Array.isArray(e.platforms) ? e.platforms : []).map((p) => (
+                          <span key={p} className="text-[9px] font-bold uppercase text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-slate-800 rounded px-1.5 py-0.5">{p}</span>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] text-gray-400">
+                        {e.location && (<span className="flex items-center gap-0.5 truncate"><MapPin className="h-2.5 w-2.5 shrink-0" />{e.location}</span>)}
+                        {(e.start_date || e.end_date) && (
+                          <span className="flex items-center gap-0.5">
+                            <Clock className="h-2.5 w-2.5 shrink-0" />
+                            {e.start_date ? new Date(e.start_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : 'Open'}
+                            {' – '}
+                            {e.end_date ? new Date(e.end_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' }) : 'Ongoing'}
+                          </span>
+                        )}
+                        {!e.start_date && !e.end_date && (
+                          <span className="flex items-center gap-0.5">
+                            <Clock className="h-2.5 w-2.5 shrink-0" />
+                            Open-ended
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </ScrollArea>
+
+          <div className="shrink-0 px-3 py-2 border-t border-gray-100 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-800/50 text-[10px] text-gray-400 flex items-center justify-between">
+            <span>{events.length} events</span>
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800" onClick={fetchEvents} disabled={loadingEvents}>
+              {loadingEvents ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+            </Button>
+          </div>
+          {/* Resize handle */}
+          <div
+            onMouseDown={handleMouseDown}
+            className={`absolute top-0 right-0 w-1 h-full cursor-col-resize group hover:bg-amber-400 transition-colors z-10 ${isResizing ? 'bg-amber-400' : 'bg-transparent'}`}
+          >
+            <div className="absolute top-1/2 -translate-y-1/2 right-0 w-3 h-8 -mr-1 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="w-0.5 h-4 bg-amber-400 rounded-full" />
+            </div>
+          </div>
+        </div>
 
         {/* Right — Dashboard */}
-        <div className="flex-1 min-w-0 flex flex-col overflow-hidden bg-gray-50 dark:bg-slate-950">
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden bg-amber-50/30 dark:bg-slate-950">
 
           {/* Mobile picker */}
           <div className="md:hidden shrink-0 px-4 py-3 border-b border-gray-200 dark:border-slate-700">
@@ -1236,13 +1304,25 @@ const Events = () => {
 
           {/* Dashboard Header */}
           {selectedEvent && (
-            <div className="shrink-0 px-4 sm:px-6 py-2.5 border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900">
-              <div className="flex items-center justify-between gap-3">
+            <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2.5 mb-0.5">
                       <h2 className="font-bold text-[15px] leading-tight truncate text-gray-900 dark:text-white">{selectedEvent.name}</h2>
                       <StatusBadge status={selectedEvent.status} />
+                      {selectedEvent.keywords?.length > 0 && (
+                        <div className="flex items-center gap-1 flex-wrap ml-1">
+                          {selectedEvent.keywords.slice(0, 6).map((kw, i) => (
+                            <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 whitespace-nowrap">
+                              {kw.keyword}
+                            </span>
+                          ))}
+                          {selectedEvent.keywords.length > 6 && (
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">+{selectedEvent.keywords.length - 6}</span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 text-[11px] text-gray-400">
                       {selectedEvent.location && (<span className="flex items-center gap-1"><MapPin className="h-3 w-3" />{selectedEvent.location}</span>)}
@@ -1263,58 +1343,57 @@ const Events = () => {
                           Last: {new Date(selectedEvent.last_polled_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
                         </span>
                       )}
-                      {selectedEvent.keywords?.length > 0 && (
-                        <span className="text-[10px] text-gray-400 dark:text-gray-500">{selectedEvent.keywords.length} keywords</span>
-                      )}
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button variant="ghost" size="icon" onClick={handleStartEdit} className="h-7 w-7 text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800" title="Edit"><Pencil className="h-3.5 w-3.5" /></Button>
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="icon" onClick={handleStartEdit} className="h-8 w-8 text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800" title="Edit"><Pencil className="h-3.5 w-3.5" /></Button>
                   <Button variant="ghost" size="icon"
                     onClick={() => selectedEvent.status === 'paused' ? handleResume(selectedEvent.id) : handlePause(selectedEvent.id)}
                     disabled={processingAction || selectedEvent.status === 'archived'}
-                    className={`h-7 w-7 ${selectedEvent.status === 'paused' ? 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950' : 'text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950'}`}
+                    className={`h-8 w-8 ${selectedEvent.status === 'paused' ? 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950' : 'text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950'}`}
                     title={selectedEvent.status === 'paused' ? 'Resume' : 'Pause'}>
                     {processingAction ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : selectedEvent.status === 'paused' ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
                   </Button>
-                  <Button variant="ghost" size="icon" onClick={openDeleteDialog} disabled={processingAction} className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950" title="Delete"><Trash2 className="h-3.5 w-3.5" /></Button>
+                  <Button variant="ghost" size="icon" onClick={openDeleteDialog} disabled={processingAction} className="h-8 w-8 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950" title="Delete"><Trash2 className="h-3.5 w-3.5" /></Button>
 
-                  <Separator orientation="vertical" className="h-4 mx-1" />
+                  <Separator orientation="vertical" className="h-5 mx-1" />
 
                   <Button onClick={handleRunScan} disabled={!selectedId || runningScan || selectedEvent?.status === 'archived'}
-                    size="sm" className="h-7 px-2.5 gap-1 text-[11px] font-semibold bg-gray-900 hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200 text-white shadow-sm">
-                    {runningScan ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
-                    <span className="hidden sm:inline">Fetch</span>
+                    size="sm" className="h-8 px-3 gap-1.5 text-xs font-semibold bg-gray-900 hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200 text-white shadow-md">
+                    {runningScan ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+                    <span className="hidden sm:inline">Fetch Now</span>
                   </Button>
 
                   <div className="relative">
                     <Button
                       size="sm"
-                      onClick={() => setExportMenuOpen(prev => prev === 'export' ? false : 'export')}
+                      onClick={() => setExportMenuOpen(!exportMenuOpen)}
                       disabled={!dashboard && (events?.length || 0) === 0}
-                      className="h-7 rounded-lg bg-blue-600 px-2.5 gap-1 text-[11px] font-semibold text-white shadow-sm transition-all hover:bg-blue-700 disabled:bg-blue-300 disabled:text-white"
+                      className="h-10 rounded-xl bg-blue-600 px-4 gap-2 text-sm font-semibold text-white shadow-md transition-all hover:bg-blue-700 disabled:bg-blue-300 disabled:text-white"
                     >
-                      <Download className="h-3 w-3" />
-                      <span className="hidden sm:inline">Export</span>
+                      <Download className="h-4 w-4" />
+                      <span>Export</span>
+                      <ChevronDown className={cn('h-4 w-4 transition-transform', exportMenuOpen && 'rotate-180')} />
                     </Button>
-                    {exportMenuOpen === 'export' && (
+                    {exportMenuOpen && (
                       <>
                         <div className="fixed inset-0 z-40" onClick={() => setExportMenuOpen(false)} />
-                        <div className="absolute right-0 top-full mt-1.5 z-50 w-56 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-1.5 shadow-xl">
-                          <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">Selected Event</div>
-                          <button onClick={handleExportSelectedEventPdf} disabled={!dashboard} className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-40">
+                        <div className="absolute right-0 top-full mt-2 z-50 w-64 rounded-2xl border border-blue-100 bg-white p-2 shadow-xl">
+                          <div className="px-2 pb-1 pt-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">Selected Event</div>
+                          <button onClick={handleExportSelectedEventPdf} disabled={!dashboard} className="flex items-center gap-2.5 w-full rounded-xl px-3 py-2.5 text-sm text-slate-600 hover:bg-blue-50 hover:text-slate-900 transition-colors disabled:opacity-40">
                             <FileText className="h-4 w-4 text-red-500" /> Export PDF
                           </button>
-                          <button onClick={handleExportSelectedEventExcel} disabled={!dashboard} className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-40">
+                          <button onClick={handleExportSelectedEventExcel} disabled={!dashboard} className="flex items-center gap-2.5 w-full rounded-xl px-3 py-2.5 text-sm text-slate-600 hover:bg-blue-50 hover:text-slate-900 transition-colors disabled:opacity-40">
                             <FileSpreadsheet className="h-4 w-4 text-emerald-600" /> Export Excel
                           </button>
-                          <div className="my-1 border-t border-gray-100 dark:border-slate-800" />
-                          <div className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">All Events</div>
-                          <button onClick={handleExportAllEventsPdf} disabled={(events?.length || 0) === 0} className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-40">
+
+                          <div className="my-1.5 border-t border-slate-100" />
+                          <div className="px-2 pb-1 pt-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">All Events (Global)</div>
+                          <button onClick={handleExportAllEventsPdf} disabled={(events?.length || 0) === 0} className="flex items-center gap-2.5 w-full rounded-xl px-3 py-2.5 text-sm text-slate-600 hover:bg-blue-50 hover:text-slate-900 transition-colors disabled:opacity-40">
                             <FileText className="h-4 w-4 text-red-500" /> Export PDF
                           </button>
-                          <button onClick={handleExportAllEventsExcel} disabled={(events?.length || 0) === 0} className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-40">
+                          <button onClick={handleExportAllEventsExcel} disabled={(events?.length || 0) === 0} className="flex items-center gap-2.5 w-full rounded-xl px-3 py-2.5 text-sm text-slate-600 hover:bg-blue-50 hover:text-slate-900 transition-colors disabled:opacity-40">
                             <FileSpreadsheet className="h-4 w-4 text-emerald-600" /> Export Excel
                           </button>
                         </div>
@@ -1326,43 +1405,47 @@ const Events = () => {
             </div>
           )}
 
-          {/* Platform tabs + inline stats */}
+          {/* Platform tabs */}
           {selectedEvent && dashboard && (
-            <div className="shrink-0 px-4 sm:px-6 py-1.5 border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-1 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-                  {Object.entries(PLATFORM_CONFIG).map(([key, cfg]) => {
-                    const Icon = cfg.icon;
-                    const CustomIcon = cfg.customIcon;
-                    const isActive = contentPlatform === key;
-                    return (
-                      <button key={key} onClick={() => setContentPlatform(key)}
-                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium whitespace-nowrap transition-all duration-200 ${isActive ? 'bg-gray-900 text-white shadow-sm dark:bg-white dark:text-gray-900' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-slate-800 dark:hover:text-gray-200'}`}>
-                        {CustomIcon ? <CustomIcon /> : Icon ? <Icon className={`h-3 w-3 ${isActive ? '' : cfg.color}`} /> : null}
-                        {cfg.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <div className="flex items-center gap-1.5 text-[11px]">
-                    <BarChart3 className="h-3 w-3 text-gray-400" />
-                    <span className="font-bold text-gray-700 dark:text-gray-200">{dashboard?.stats?.content_total || 0}</span>
-                    <span className="text-gray-400">content</span>
-                  </div>
-                  {(dashboard?.stats?.alerts_priority || 0) > 0 && (
-                    <div className="flex items-center gap-1.5 text-[11px]">
-                      <AlertTriangle className="h-3 w-3 text-red-500" />
-                      <span className="font-bold text-red-600 dark:text-red-400">{dashboard?.stats?.alerts_priority}</span>
-                      <span className="text-red-400">priority</span>
+            <div className="shrink-0 px-4 sm:px-6 py-2 border-b border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+              <div className="flex items-center gap-1 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+                {Object.entries(PLATFORM_CONFIG).map(([key, cfg]) => {
+                  const Icon = cfg.icon;
+                  const isActive = contentPlatform === key;
+                  return (
+                    <button key={key} onClick={() => setContentPlatform(key)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-200 ${isActive ? 'bg-gray-900 text-white shadow-sm dark:bg-white dark:text-gray-900' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-slate-800 dark:hover:text-gray-200'}`}>
+                      <Icon className={`h-3.5 w-3.5 ${isActive ? '' : cfg.color}`} />
+                      {cfg.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Summary cards */}
+          {selectedEvent && dashboard && (
+            <div className="shrink-0 px-4 sm:px-6 py-3 border-b border-gray-100 dark:border-slate-800">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                {[
+                  { label: 'Total Content', value: dashboard?.stats?.content_total || 0, bg: 'bg-white dark:bg-slate-900', borderColor: 'border-amber-200 dark:border-amber-800', iconBg: 'bg-amber-100 dark:bg-amber-950', iconColor: 'text-amber-600 dark:text-amber-400', valueColor: 'text-gray-900 dark:text-white', icon: BarChart3 },
+                  { label: 'Priority Alerts', value: dashboard?.stats?.alerts_priority || 0, bg: 'bg-white dark:bg-slate-900', borderColor: 'border-red-200 dark:border-red-800', iconBg: 'bg-red-50 dark:bg-red-950', iconColor: 'text-red-500 dark:text-red-400', valueColor: 'text-red-600 dark:text-red-400', icon: AlertTriangle },
+                  { label: 'Recent Alerts', value: filteredRecentAlerts.length, bg: 'bg-white dark:bg-slate-900', borderColor: 'border-amber-200 dark:border-amber-800', iconBg: 'bg-amber-50 dark:bg-amber-950', iconColor: 'text-amber-500 dark:text-amber-400', valueColor: 'text-gray-900 dark:text-white', icon: Activity },
+                  { label: 'Platforms', value: (selectedEvent.platforms || []).length, bg: 'bg-white dark:bg-slate-900', borderColor: 'border-emerald-200 dark:border-emerald-800', iconBg: 'bg-emerald-50 dark:bg-emerald-950', iconColor: 'text-emerald-600 dark:text-emerald-400', valueColor: 'text-gray-900 dark:text-white', icon: Globe }
+                ].map((card) => (
+                  <div key={card.label} className={`rounded-xl border ${card.borderColor} ${card.bg} p-4 shadow-sm`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{card.label}</p>
+                        <p className={`text-2xl font-bold mt-1 ${card.valueColor}`}>{card.value}</p>
+                      </div>
+                      <div className={`h-10 w-10 rounded-xl ${card.iconBg} flex items-center justify-center`}>
+                        <card.icon className={`h-5 w-5 ${card.iconColor}`} />
+                      </div>
                     </div>
-                  )}
-                  <div className="flex items-center gap-1.5 text-[11px]">
-                    <Activity className="h-3 w-3 text-gray-400" />
-                    <span className="font-bold text-gray-700 dark:text-gray-200">{filteredRecentAlerts.length}</span>
-                    <span className="text-gray-400">alerts</span>
                   </div>
-                </div>
+                ))}
               </div>
             </div>
           )}
@@ -1372,45 +1455,44 @@ const Events = () => {
             {loadingDashboard ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
-                  <Loader2 className="h-7 w-7 animate-spin text-gray-400 mx-auto mb-3" />
+                  <Loader2 className="h-8 w-8 animate-spin text-amber-500 mx-auto mb-3" />
                   <p className="text-sm text-gray-400">Loading dashboard...</p>
                 </div>
               </div>
             ) : !dashboard ? (
               <div className="h-full flex flex-col items-center justify-center text-center px-8">
-                <div className="h-14 w-14 rounded-2xl bg-gray-100 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 flex items-center justify-center mb-4">
-                  <CalendarDays className="h-7 w-7 text-gray-400 dark:text-gray-500" />
+                <div className="h-16 w-16 rounded-2xl bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 flex items-center justify-center mb-4">
+                  <CalendarDays className="h-8 w-8 text-amber-400" />
                 </div>
-                <p className="text-sm font-semibold text-gray-600 dark:text-gray-300">Select an event to view</p>
-                <p className="text-xs text-gray-400 mt-1 max-w-sm">Choose an event from the left panel or create a new one to start monitoring.</p>
+                <p className="text-base font-semibold text-gray-600 dark:text-gray-300">Select an event to view</p>
+                <p className="text-sm text-gray-400 mt-1 max-w-sm">Choose an event from the left panel or create a new one to start monitoring.</p>
               </div>
             ) : (
               <ScrollArea className="h-full w-full">
-                <div className="px-4 sm:px-5 pt-3 pb-6 w-full max-w-full overflow-x-hidden">
+                <div className="px-4 sm:px-6 pt-4 pb-8 w-full max-w-full overflow-x-hidden">
 
                   {/* Priority alerts */}
                   {filteredRecentAlerts.filter(a => a.is_priority).length > 0 && (
-                    <div className="mb-5">
-                      <div className="flex items-center gap-2 mb-2.5">
-                        <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
-                        <h3 className="text-[11px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider">Priority Alerts</h3>
-                        <span className="text-[10px] font-bold bg-red-100 dark:bg-red-950 text-red-600 dark:text-red-400 rounded-full px-1.5 py-0.5 border border-red-200 dark:border-red-800">{filteredRecentAlerts.filter(a => a.is_priority).length}</span>
+                    <div className="mb-6">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+                        <h3 className="text-xs font-bold text-red-600 uppercase tracking-wider">Priority Alerts</h3>
+                        <Badge variant="destructive" className="text-[10px] h-5 px-1.5">{filteredRecentAlerts.filter(a => a.is_priority).length}</Badge>
                       </div>
                       <div className="space-y-2">
                         {filteredRecentAlerts.filter(a => a.is_priority).map((a) => (
-                          <div key={a.id} className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50/60 dark:bg-red-950/20 p-3 flex items-start justify-between gap-3 group hover:border-red-300 dark:hover:border-red-800 transition-colors">
+                          <div key={a.id} className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-950/30 p-3.5 flex items-start justify-between gap-3 group hover:border-red-300 dark:hover:border-red-700 transition-all duration-200">
                             <div className="flex-1 min-w-0">
                               <div className="font-semibold text-sm mb-0.5 truncate text-gray-800 dark:text-gray-200">{a.title}</div>
                               <div className="text-[11px] text-gray-400 flex items-center gap-2">
-                                <span className="uppercase font-bold text-[9px] bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-gray-400 rounded px-1.5 py-0.5">{a.platform}</span>
+                                <Badge variant="outline" className="text-[9px] h-4 px-1.5 uppercase font-bold">{a.platform}</Badge>
                                 <span>{new Date(a.created_at).toLocaleString('en-IN')}</span>
                               </div>
-                              {a.priority_reason && (<p className="text-[11px] mt-1 text-red-500/80 italic">"{a.priority_reason}"</p>)}
+                              {a.priority_reason && (<p className="text-[11px] mt-1.5 text-red-500/80 italic">"{a.priority_reason}"</p>)}
                             </div>
-                            <a href={a.content_url} target="_blank" rel="noopener noreferrer"
-                              className="shrink-0 text-[11px] flex items-center gap-1 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 opacity-60 group-hover:opacity-100 transition-opacity">
-                              View <ArrowUpRight className="h-3 w-3" />
-                            </a>
+                            <Button asChild variant="outline" size="sm" className="shrink-0 text-[11px] h-7 gap-1 border-gray-200 dark:border-slate-700 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-800 opacity-60 group-hover:opacity-100 transition-opacity">
+                              <a href={a.content_url} target="_blank" rel="noopener noreferrer">View <ArrowUpRight className="h-3 w-3" /></a>
+                            </Button>
                           </div>
                         ))}
                       </div>
@@ -1419,19 +1501,19 @@ const Events = () => {
 
                   {/* Content feed */}
                   <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-[11px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Detected Content <span className="font-normal">({filteredRecentContent.length})</span></h3>
+                    <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Detected Content ({filteredRecentContent.length})</h3>
                   </div>
 
                   {filteredRecentContent.length === 0 ? (
                     <div className="py-16 text-center">
-                      <div className="h-12 w-12 rounded-xl bg-gray-100 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 flex items-center justify-center mx-auto mb-3">
-                        <ScanLine className="h-6 w-6 text-gray-400 dark:text-gray-500" />
+                      <div className="h-14 w-14 rounded-2xl bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 flex items-center justify-center mx-auto mb-3">
+                        <ScanLine className="h-7 w-7 text-amber-400" />
                       </div>
                       <p className="text-sm font-medium text-gray-500 dark:text-gray-400">No content detected yet</p>
                       <p className="text-xs text-gray-400 mt-1">Click "Fetch Now" to scan for new content.</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    <div className="flex flex-col gap-3 max-w-3xl">
                       {filteredRecentContent.map((c, idx) => (
                         <div key={c.id || idx}><ContentCard item={c} index={idx} onAddSource={handleOpenAddSource} /></div>
                       ))}

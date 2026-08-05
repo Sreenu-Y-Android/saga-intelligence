@@ -21,11 +21,12 @@ import { TG_MLAS, normalizeConstituencyKey } from '../data/tgMLAs';
 import { TG_MPS } from '../data/tgMPs';
 
 const PARTY_STYLES = {
-  INC: 'bg-blue-100 text-blue-700 border-blue-300',
+  // Amber, not blue — INC's real saffron/white/green tricolor doesn't read well as
+  // badge text, and BJP already owns the brighter orange in this legend.
+  INC: 'bg-amber-100 text-amber-800 border-amber-300',
   BRS: 'bg-pink-100 text-pink-700 border-pink-300',
   BJP: 'bg-orange-100 text-orange-700 border-orange-300',
-  AIMIM: 'bg-emerald-100 text-emerald-700 border-emerald-300',
-  CPI: 'bg-red-100 text-red-700 border-red-300',
+  AIMIM: 'bg-green-100 text-green-700 border-green-300',
 };
 
 const titleCase = (v) =>
@@ -40,7 +41,7 @@ const slugify = (v) =>
 
 const generatePassword = () => {
   const word = Math.random().toString(36).slice(-6);
-  return `Tgc@${word}!`;
+  return `Saga@${word}!`;
 };
 
 /* ─── modal ──────────────────────────────────────────────────────── */
@@ -54,8 +55,8 @@ const ProvisionModal = ({ entity, kind, existingUser, onClose, onSaved }) => {
   const isEdit = !!existingUser;
   const defaultEmail =
     kind === 'mp'
-      ? `${slugify(entity.lsId || entity.lsName)}.mp@tgcongress.local`
-      : `${slugify(entity.constituency)}@tgcongress.local`;
+      ? `${slugify(entity.lsId || entity.lsName)}.mp@blurasaga.local`
+      : `${slugify(entity.constituency)}@blurasaga.local`;
   const defaultName =
     kind === 'mp'
       ? `${entity.mp || titleCase(entity.lsName)} (${entity.party})`
@@ -232,7 +233,7 @@ const ConstituencyLogins = () => {
   const mlaUsersByKey = useMemo(() => {
     const m = new Map();
     users.forEach((u) => {
-      if (u.assigned_constituency && (u.role === 'mla' || u.role === 'special_leader' || u.role === 'nara_lokesh' || u.role === 'constituency_manager')) {
+      if (u.assigned_constituency && (u.role === 'mla' || u.role === 'nara_lokesh' || u.role === 'constituency_manager')) {
         m.set(normalizeConstituencyKey(u.assigned_constituency), u);
       }
     });
@@ -302,7 +303,7 @@ const ConstituencyLogins = () => {
       </div>
     );
   }
-  if (!isSuperAdmin) return <Navigate to="/command-centre" replace />;
+  if (!isSuperAdmin) return <Navigate to="/andhra-pradesh-map" replace />;
 
   /* ─── view-model for the active tab ─── */
   const rows = tab === 'mla' ? mlaRows : mpRows;
@@ -388,7 +389,6 @@ const ConstituencyLogins = () => {
             <option value="BRS">BRS</option>
             <option value="BJP">BJP</option>
             <option value="AIMIM">AIMIM</option>
-            <option value="CPI">CPI</option>
           </select>
           <select
             className="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white"

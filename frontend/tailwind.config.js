@@ -53,6 +53,18 @@ module.exports = {
         'police-gold': 'hsl(var(--police-gold))',
         'police-badge': 'hsl(var(--police-badge))',
         'police-silver': 'hsl(var(--police-silver))',
+
+        // TDP brand palette
+        'tdp-saffron': '#FF9933',
+        'tdp-saffron-dark': '#E07A0F',
+        'tdp-orange': '#FF6F00',
+        'tdp-deep-orange': '#C2410C',
+        'tdp-gold': '#FFB300',
+        'tdp-green': '#138808',
+        'tdp-white': '#FFFFFF',
+        'tdp-primary': '#FF6F00',
+        'tdp-accent': '#FFB300',
+        'tdp-dark': '#7C2D12',
       },
       borderRadius: {
         lg: 'var(--radius)',

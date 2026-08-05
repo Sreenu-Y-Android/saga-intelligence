@@ -68,7 +68,7 @@ export const PARTY_MARK = {
 };
 
 /* ─── Local fallback served from /public ──────────────────────────── */
-export const LOCAL_FALLBACK = '/policelogo.jpg';
+export const LOCAL_FALLBACK = '/BCSS_logo.png';
 
 /* ─── Key INC constituencies in Telangana ─────────────────────────── */
 export const KEY_CONSTITUENCIES = [

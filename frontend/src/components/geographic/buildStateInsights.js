@@ -25,8 +25,7 @@ const buildStateInsights = (summary, districts = []) => {
     });
   }
 
-  const mostImproved = [...districts].filter((d) => d.mention_trend?.direction !== 'rising' || d.sentiment_index > 0)
-    .sort((a, b) => b.sentiment_index - a.sentiment_index)[0];
+  const mostImproved = [...districts].sort((a, b) => b.sentiment_index - a.sentiment_index)[0];
   if (mostImproved && mostImproved.sentiment_index > 20) {
     notes.push({
       tone: 'positive',
@@ -37,8 +36,12 @@ const buildStateInsights = (summary, districts = []) => {
   if (summary.trend?.total_mentions_change_pct !== undefined) {
     const chg = summary.trend.total_mentions_change_pct;
     if (Math.abs(chg) >= 10) {
+      // Volume change is inherently neutral information (unlike sentiment
+      // share) — always 'info', matching TrendIndicator's rationale, rather
+      // than tagging a decline "positive" while the KPI strip above colors
+      // the same kind of change amber-neutral too.
       notes.push({
-        tone: chg > 0 ? 'info' : 'positive',
+        tone: 'info',
         text: `Overall conversation volume ${chg > 0 ? 'grew' : 'declined'} ${Math.abs(chg)}% versus the previous period.`,
       });
     }

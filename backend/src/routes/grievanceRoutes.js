@@ -10,7 +10,7 @@ const {
     fetchKeywordGrievances,
     getGrievances,
     getGrievance,
-    updateGrievanceSentiment,
+    translateGrievanceContent,
     deleteGrievance,
     acknowledgeGrievance,
     markAsComplaint,
@@ -28,13 +28,17 @@ const {
     revertGrievance,
     analyzeGrievance,
     analyzeAllGrievances,
+    updateGrievanceRiskLevel,
     getSentimentAnalytics,
+    getSentimentLeaders,
     getDistinctTopics,
+    getDistinctCategories,
     getCategoryAnalytics,
-    getPublicOpinionHighlights,
     getMapGrievances,
     getLocationStats,
-    getLocationSummary
+    getLocationSummary,
+    importTweetByUrl,
+    intakeFromAlerts
 } = require('../controllers/grievanceController');
 const { protect } = require('../middleware/authMiddleware');
 const { GRIEVANCE_FEATURE_ALIASES } = require('../config/rbacConfig');
@@ -65,9 +69,10 @@ router.use(protect, requireAnyPageAccess(['/grievances']));
 router.get('/stats', getStats);
 router.get('/dashboard-stats', getDashboardStats);
 router.get('/sentiment-analytics', getSentimentAnalytics);
+router.get('/sentiment-leaders', getSentimentLeaders);
 router.get('/topics', getDistinctTopics);
+router.get('/categories', getDistinctCategories);
 router.get('/category-analytics', getCategoryAnalytics);
-router.get('/public-opinion', getPublicOpinionHighlights);
 router.get('/map', getMapGrievances);
 router.get('/location-stats', getLocationStats);
 router.get('/location-summary', getLocationSummary);
@@ -93,6 +98,15 @@ router.post('/fetch-all', fetchAllGrievances);
 
 // Fetch grievances by keyword search from Settings
 router.post('/fetch-keywords', fetchKeywordGrievances);
+router.post('/import-tweet', importTweetByUrl);
+
+// BSK Alerts → Mentions promotion pipeline (LLM-gated via RapidAPI ChatGPT-42).
+// Reads unprocessed Alert rows, runs each through the BSK relevance gate,
+// and promotes the relevant ones to Mentions / Grievance.
+router.post('/intake-from-alerts', intakeFromAlerts);
+
+// Translate route (must be before :id routes)
+router.post('/translate', translateGrievanceContent);
 
 // Grievance routes
 router.route('/')
@@ -101,8 +115,6 @@ router.route('/')
 router.route('/:id')
     .get(getGrievance)
     .delete(deleteGrievance);
-
-router.put('/:id/sentiment', updateGrievanceSentiment);
 
 // Classification actions
 router.put('/:id/acknowledge', requireFeatureAccess('/grievances', () => 'pending'), acknowledgeGrievance);
@@ -120,5 +132,6 @@ router.post('/:id/share', requireFeatureAccess('/grievances', () => 'reports'), 
 // Analysis routes
 router.post('/analyze-all', analyzeAllGrievances);
 router.post('/:id/analyze', analyzeGrievance);
+router.put('/:id/risk-level', updateGrievanceRiskLevel);
 
 module.exports = router;

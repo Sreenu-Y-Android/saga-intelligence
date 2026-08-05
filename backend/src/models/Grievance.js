@@ -77,7 +77,8 @@ const grievanceSchema = new mongoose.Schema({
   content: {
     text: { type: String, required: true },
     full_text: { type: String },
-    media: [createGrievanceMediaItemDefinition()]
+    media: [createGrievanceMediaItemDefinition()],
+    archived_video_url: { type: String }
   },
   // Context about the original post when this grievance is a reply/quote.
   // This enables showing both the tagged reply and the original post in the UI.

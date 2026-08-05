@@ -165,7 +165,7 @@ const buildCache = async () => {
     // Longest-first so multi-word tokens win over substrings
     // ('Tirumala Hills' beats 'Tirumala' beats 'Hills').
     aliasIndex.sort((a, b) => b.token_lower.length - a.token_lower.length);
-    // Same for persons: 'Nara Lokesh' must beat 'Lokesh'.
+    // Same for persons: 'Bhatti Vikramarka' must beat 'Bhatti'.
     personIndex.sort((a, b) => b.token_lower.length - a.token_lower.length);
 
     cache = { acIndex, aliasIndex, districtIndex, lsIndex, personIndex, builtAt: Date.now(), rowCount: rows.length };

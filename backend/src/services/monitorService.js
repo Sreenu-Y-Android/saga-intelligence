@@ -13,30 +13,11 @@ const { sendAlertEmail } = require('./emailService');
 const { getActiveEvents, autoArchiveEndedEvents, scanEventOnce, shouldPollEvent } = require('./eventMonitorService');
 const { checkAndCreateVelocityAlerts, createNewPostAlert, updateEngagementHistory, checkVelocity } = require('./velocityAlertService');
 const { queueUrlEnrichment } = require('./urlEnrichmentService');
-const { yieldToInteractive } = require('./apiPriorityGate');
 const rapidApiInstagramService = require('./rapidApiInstagramService');
 const { archiveContentMedia, archiveTwitterMedia } = require('./contentS3Service');
 
 let lastMediaBackfillAt = 0;
 const MEDIA_BACKFILL_INTERVAL_MS = 15 * 60 * 1000;
-
-// Content lookback window: only ingest posts between MIN and MAX days old
-// (skips anything more recent than MIN days, drops anything older than MAX days).
-const getLookbackWindow = () => {
-  const maxDays = Number(process.env.MONITOR_LOOKBACK_MAX_DAYS || 90);
-  const minDays = Number(process.env.MONITOR_LOOKBACK_MIN_DAYS || 30);
-  const safeMaxDays = Number.isFinite(maxDays) && maxDays > 0 ? maxDays : 90;
-  const safeMinDays = Number.isFinite(minDays) && minDays >= 0 ? minDays : 30;
-  const now = Date.now();
-  return {
-    minDays: safeMinDays,
-    maxDays: safeMaxDays,
-    // oldest allowed timestamp
-    lowerCutoff: now - (safeMaxDays * 24 * 60 * 60 * 1000),
-    // newest allowed timestamp (excludes anything more recent than this)
-    upperCutoff: now - (safeMinDays * 24 * 60 * 60 * 1000)
-  };
-};
 
 const normalizeInstagramHandle = (value) => {
   if (!value) return value;
@@ -112,18 +93,6 @@ const hasS3Gaps = (media = []) => {
     const hasSource = Boolean(item?.video_url || item?.url);
     return hasSource && !item?.s3_url;
   });
-};
-
-const REVENTH_TARGET_REGEX = /\b(revanth\s*reddy|revanth|a\.?\s*revanth\s*reddy|cm\s*revanth|chief\s*minister\s*revanth)\b/i;
-
-const isNegativeRevanthTargetPost = (content = {}) => {
-  const sentiment = String(content?.sentiment || '').toLowerCase().trim();
-  if (sentiment !== 'negative') return false;
-
-  const text = String(content?.text || '').trim();
-  if (!text) return false;
-
-  return REVENTH_TARGET_REGEX.test(text);
 };
 
 const hasAnyMedia = (media = []) => Array.isArray(media) && media.length > 0;
@@ -371,27 +340,14 @@ const monitorYoutubeSource = async (source, apiKey) => {
     });
 
     const newContent = [];
-    let items = response.data.items || [];
-    const apiCount = items.length;
+    const items = response.data.items || [];
 
-    // Lookback window (default: 30-90 days old) — parity with X monitor
-    const { minDays, maxDays, lowerCutoff, upperCutoff } = getLookbackWindow();
-    const beforeLookback = items.length;
-    items = items.filter(it => {
-      const created = it.snippet?.publishedAt ? new Date(it.snippet.publishedAt).getTime() : NaN;
-      return Number.isFinite(created) ? (created >= lowerCutoff && created <= upperCutoff) : true;
-    });
-    if (items.length < beforeLookback) {
-      console.log(`[Monitor YT] channel=${source.identifier}: lookback ${minDays}-${maxDays}d dropped ${beforeLookback - items.length}/${beforeLookback}`);
-    }
-
-    let existingCount = 0;
     for (const item of items) {
       const videoId = item.id.videoId;
 
       // Check if exists
       const existing = await Content.findOne({ content_id: videoId });
-      if (existing) { existingCount++; continue; }
+      if (existing) continue;
 
       // Get video details
       const videoResponse = await youtube.videos.list({
@@ -399,10 +355,7 @@ const monitorYoutubeSource = async (source, apiKey) => {
         id: videoId
       });
 
-      if (!videoResponse.data.items || videoResponse.data.items.length === 0) {
-        console.warn(`[Monitor YT] videos.list returned no items for videoId=${videoId}`);
-        continue;
-      }
+      if (!videoResponse.data.items || videoResponse.data.items.length === 0) continue;
 
       const videoData = videoResponse.data.items[0];
       const snippet = videoData.snippet;
@@ -434,15 +387,71 @@ const monitorYoutubeSource = async (source, apiKey) => {
 
       await content.save();
       newContent.push(content);
+      //console.log(`New YouTube video: ${videoId} from ${source.display_name}`);
     }
 
     // Update last checked
     await Source.findOneAndUpdate({ id: source.id }, { last_checked: new Date() });
 
-    console.log(`[Monitor YT] channel=${source.identifier}: api=${apiCount} afterLookback=${items.length} new=${newContent.length} existing=${existingCount}`);
     return newContent;
   } catch (error) {
-    console.error(`[Monitor YT] Error for ${source.display_name}: ${error.message}`);
+    //console.error(`Error monitoring YouTube source ${source.display_name}: ${error.message}`);
+    return [];
+  }
+};
+
+// Match content against configured keywords and return matched keyword objects
+const matchConfiguredKeywords = async (contentText = '') => {
+  try {
+    if (!contentText || typeof contentText !== 'string') return [];
+
+    // Fetch all active keywords from the database
+    const keywords = await Keyword.find({ is_active: true }).lean();
+    if (!keywords || keywords.length === 0) return [];
+
+    const matched = [];
+    const matchedKeywordIds = new Set(); // Track matched keywords to avoid duplicates
+
+    // Check each keyword for a match
+    for (const kw of keywords) {
+      if (matchedKeywordIds.has(kw.id)) continue; // Skip if already matched
+
+      const keyword = String(kw.keyword).trim();
+      // Check for non-Latin scripts: Devanagari (Hindi), Telugu, Tamil, Kannada, Malayalam
+      const isNonLatin = /[ऀ-ॿఀ-౿஀-௿ಀ-೿ഀ-ൿ]/.test(keyword);
+
+      let isMatch = false;
+
+      if (isNonLatin) {
+        // For non-Latin scripts (Telugu, Hindi, etc.), use simple substring matching
+        // as word boundaries don't work reliably
+        isMatch = contentText.includes(keyword);
+      } else {
+        // For Latin scripts, use word-boundary matching
+        const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const patterns = [
+          new RegExp(`\\b${escapedKeyword}\\b`, 'i'),        // Whole word match
+          new RegExp(`#${escapedKeyword}`, 'i'),             // Hashtag
+          new RegExp(`@${escapedKeyword}`, 'i')              // @mention
+        ];
+        isMatch = patterns.some(p => p.test(contentText));
+      }
+
+      if (isMatch) {
+        matched.push({
+          keyword_id: kw.id,
+          keyword: kw.keyword,
+          category: kw.category,
+          language: kw.language,
+          weight: kw.weight
+        });
+        matchedKeywordIds.add(kw.id);
+      }
+    }
+
+    return matched;
+  } catch (error) {
+    console.error('[Monitor] Keyword matching error:', error.message);
     return [];
   }
 };
@@ -452,7 +461,7 @@ const rapidApiXService = require('./rapidApiXService');
 const rapidApiFacebookService = require('./rapidApiFacebookService');
 const { scrapeProfile, getHealthyAccount } = require('./scraperService');
 
-const monitorXSource = async (source) => {
+const monitorXSource = async (source, options = {}) => {
   try {
     let tweets = [];
     const useRapidApi = !!process.env.RAPIDAPI_KEY;
@@ -462,7 +471,7 @@ const monitorXSource = async (source) => {
 
     if (useRapidApi) {
       //console.log(`[Monitor] Using RapidAPI (Twttr) for ${source.display_name}`);
-      const result = await rapidApiXService.fetchUserTweets(source.identifier);
+      const result = await rapidApiXService.fetchUserTweets(source.identifier, options.limit || 40);
 
       // Handle both array/object returns for safety
       if (Array.isArray(result)) {
@@ -512,28 +521,16 @@ const monitorXSource = async (source) => {
     // Update last checked - do this AFTER fetching but BEFORE early returns to confirm poll success
     await Source.findOneAndUpdate({ id: source.id }, { last_checked: new Date() });
 
-    const apiCount = Array.isArray(tweets) ? tweets.length : 0;
-    if (!tweets || tweets.length === 0) {
-      console.log(`[Monitor X] @${source.identifier}: api=0 — no tweets returned by fetcher`);
-      return [];
-    }
+    if (!tweets || tweets.length === 0) return [];
 
-    // Profile monitor lookback window (default: 30-90 days old)
-    const { minDays, maxDays, lowerCutoff, upperCutoff } = getLookbackWindow();
-    const beforeLookback = tweets.length;
+    const lookbackDays = options.days || 1;
+    const cutoff = Date.now() - (lookbackDays * 24 * 60 * 60 * 1000);
     tweets = tweets.filter(t => {
       const created = t.created_at ? new Date(t.created_at).getTime() : NaN;
-      return Number.isFinite(created) ? (created >= lowerCutoff && created <= upperCutoff) : true;
+      return Number.isFinite(created) ? created >= cutoff : true;
     });
-    const afterLookback = tweets.length;
-    if (afterLookback < beforeLookback) {
-      console.log(`[Monitor X] @${source.identifier}: lookback ${minDays}-${maxDays}d dropped ${beforeLookback - afterLookback}/${beforeLookback}`);
-    }
 
-    if (!tweets || tweets.length === 0) {
-      console.log(`[Monitor X] @${source.identifier}: api=${apiCount} afterLookback=0 new=0`);
-      return [];
-    }
+    if (!tweets || tweets.length === 0) return [];
 
     const newContent = [];
 
@@ -587,18 +584,17 @@ const monitorXSource = async (source) => {
             views: parseInt(tweet.metrics?.view || tweet.metrics?.views) || 0
           };
 
-          // Resolve quoted_content with safeguard against 'Unknown' overwriting valid data
-          const safeQuotedContent = (tweet.quoted_content && (tweet.quoted_content.author_name !== 'Unknown' || !existing.quoted_content))
-            ? tweet.quoted_content
-            : (quotedForSave || existing.quoted_content);
-
           const updatedDoc = await Content.findOneAndUpdate(
             { id: existing.id },
             {
               $set: {
                 text: tweet.text || existing.text,
-                quoted_content: safeQuotedContent,
-                media: mediaForSave,
+                quoted_content: quotedForSave || existing.quoted_content,
+                media: incomingMedia.length > 0 ? incomingMedia : existing.media,
+                // Safeguard against 'Unknown' overwriting valid quoted_content
+                quoted_content: (tweet.quoted_content && (tweet.quoted_content.author_name !== 'Unknown' || !existing.quoted_content))
+                  ? tweet.quoted_content : existing.quoted_content,
+
                 url_cards: incomingCards.length > 0 ? incomingCards : existing.url_cards,
                 is_repost: tweet.is_repost ?? existing.is_repost,
 
@@ -609,6 +605,7 @@ const monitorXSource = async (source) => {
                   ? tweet.original_author_name : existing.original_author_name,
 
                 original_author_avatar: tweet.original_author_avatar || existing.original_author_avatar,
+                media: mediaForSave,
                 is_media_archived: mediaForSave.length > 0 ? !hasS3Gaps(mediaForSave) : existing.is_media_archived,
                 scraped_content: mediaForSave.length > 0 ? `Media Count: ${mediaForSave.length}` : existing.scraped_content,
                 engagement: newEngagement,
@@ -690,10 +687,6 @@ const monitorXSource = async (source) => {
       }
       //console.log(`New X post: ${tweet.id} from ${source.display_name}`);
     }
-
-    const createdCount = newContent.filter(c => !c.is_update).length;
-    const updatedCount = newContent.filter(c => c.is_update).length;
-    console.log(`[Monitor X] @${source.identifier}: api=${apiCount} afterLookback=${tweets.length} new=${createdCount} updated=${updatedCount}`);
 
     // Queue background URL card enrichment for new content
     if (newContent.length > 0) {
@@ -1055,37 +1048,22 @@ const monitorInstagramSource = async (source, accessToken) => {
     try {
       const postsRaw = await rapidApiInstagramService.fetchUserPosts(handle);
       posts = extractPosts(postsRaw);
+      //console.log(`[Instagram Monitor] 📦 Extracted ${posts.length} posts for @${handle}`);
     } catch (postsErr) {
       postsFetchFailed = true;
-      console.error(`[Monitor IG] @${handle}: posts fetch failed: ${postsErr.message}`);
+      //console.error(`[Instagram Monitor] ❌ Posts fetch failed for @${handle}: ${postsErr.message}`);
     }
 
     // If both profile and posts failed, something is seriously wrong with this source
     if (profileFetchFailed && postsFetchFailed) {
-      console.error(`[Monitor IG] @${handle}: complete API failure (all keys may be exhausted). Will retry next cycle.`);
+      //console.error(`[Instagram Monitor] 🚨 Complete API failure for @${handle}. All API keys may be exhausted. Will retry next cycle.`);
+      // Still update last_checked so we don't hammer a broken source
       await Source.findOneAndUpdate({ id: source.id }, { last_checked: new Date() });
       return [];
     }
 
-    const apiCount = Array.isArray(posts) ? posts.length : 0;
-
-    // Lookback window (default: 30-90 days old) — parity with X monitor
-    const { minDays, maxDays, lowerCutoff, upperCutoff } = getLookbackWindow();
-    const beforeLookback = apiCount;
-    posts = (posts || []).filter(p => {
-      const raw = pickFirst(p?.taken_at_timestamp, p?.taken_at, p?.created_time, p?.timestamp, p?.created_at);
-      if (!raw) return true;
-      let ms;
-      if (typeof raw === 'number') ms = raw < 1e12 ? raw * 1000 : raw;
-      else ms = new Date(raw).getTime();
-      return Number.isFinite(ms) ? (ms >= lowerCutoff && ms <= upperCutoff) : true;
-    });
-    if (posts.length < beforeLookback) {
-      console.log(`[Monitor IG] @${handle}: lookback ${minDays}-${maxDays}d dropped ${beforeLookback - posts.length}/${beforeLookback}`);
-    }
-
     if (!posts || posts.length === 0) {
-      console.log(`[Monitor IG] @${handle}: api=${apiCount} afterLookback=0 new=0 updated=0`);
+      //console.log(`[Instagram Monitor] ℹ️ No posts found for @${handle} (may be private or empty)`);
       await Source.findOneAndUpdate({ id: source.id }, { last_checked: new Date() });
       return [];
     }
@@ -1368,7 +1346,7 @@ const monitorInstagramSource = async (source, accessToken) => {
     // ─── STEP 5: Update source last_checked ──────────────────────────────
     await Source.findOneAndUpdate({ id: source.id }, { last_checked: new Date() });
 
-    console.log(`[Monitor IG] @${handle}: api=${apiCount} afterLookback=${posts.length} new=${processedCount} updated=${updatedCount} stories=${storiesCount} errors=${errorCount}`);
+    //console.log(`[Instagram Monitor] ✅ Scan complete for @${handle}: ${processedCount} new posts, ${storiesCount} stories, ${updatedCount} updated, ${errorCount} errors`);
     return newContent;
 
   } catch (error) {
@@ -1420,25 +1398,7 @@ const monitorFacebookSource = async (source, accessToken, options = {}) => {
       // fallback: try the URL form (covers cases where pageKey is numeric but API expects URL)
       posts = await rapidApiFacebookService.fetchPagePosts(pageUrl, 10, source.display_name, { throwOnCooldown: !!options.throwOnCooldown });
     }
-    posts = Array.isArray(posts) ? posts : [];
-    const apiCount = posts.length;
-
-    // Lookback window (default: 30-90 days old) — parity with X monitor
-    const { minDays, maxDays, lowerCutoff, upperCutoff } = getLookbackWindow();
-    const beforeLookback = posts.length;
-    posts = posts.filter(p => {
-      if (!p?.created_at) return true;
-      let ms;
-      if (typeof p.created_at === 'number') ms = p.created_at < 1e12 ? p.created_at * 1000 : p.created_at;
-      else ms = new Date(p.created_at).getTime();
-      return Number.isFinite(ms) ? (ms >= lowerCutoff && ms <= upperCutoff) : true;
-    });
-    if (posts.length < beforeLookback) {
-      console.log(`[Monitor FB] page=${source.identifier}: lookback ${minDays}-${maxDays}d dropped ${beforeLookback - posts.length}/${beforeLookback}`);
-    }
-
     const newContent = [];
-    let updatedCount = 0;
 
     for (const post of posts) {
       let content = await Content.findOne({ content_id: post.id });
@@ -1471,7 +1431,6 @@ const monitorFacebookSource = async (source, accessToken, options = {}) => {
           views: post.engagement.views
         });
         await content.save();
-        updatedCount++;
       } else {
         // Create new content
         const mediaItems = Array.isArray(post.media)
@@ -1530,7 +1489,6 @@ const monitorFacebookSource = async (source, accessToken, options = {}) => {
     // Update source last_checked
     await Source.findOneAndUpdate({ id: source.id }, { last_checked: new Date() });
 
-    console.log(`[Monitor FB] page=${source.identifier}: api=${apiCount} afterLookback=${posts.length} new=${newContent.length} updated=${updatedCount}`);
     return newContent;
 
   } catch (error) {
@@ -1538,7 +1496,6 @@ const monitorFacebookSource = async (source, accessToken, options = {}) => {
       throw error;
     }
     //console.error(`Error monitoring Facebook source ${source.display_name}: ${error.message}`);
-    console.error(`[Monitor FB] Error for ${source.display_name}: ${error.message}`);
     return [];
   }
 };
@@ -1569,18 +1526,18 @@ const scanSourceOnce = async (source, options = {}) => {
 
   let newContent = [];
   if (source.platform === 'youtube' && youtubeApiKey) {
-    newContent = await monitorYoutubeSource(source, youtubeApiKey);
+    newContent = await monitorYoutubeSource(source, youtubeApiKey, options);
   } else if (source.platform === 'x') {
-    newContent = await monitorXSource(source);
+    newContent = await monitorXSource(source, options);
   } else if (source.platform === 'instagram') {
     const normalized = normalizeInstagramHandle(source.identifier);
     if (normalized && normalized !== source.identifier) {
       source.identifier = normalized;
       await Source.findOneAndUpdate({ id: source.id }, { identifier: normalized });
     }
-    newContent = await monitorInstagramSource(source, fbAccessToken);
+    newContent = await monitorInstagramSource(source, fbAccessToken, options);
   } else if (source.platform === 'facebook') {
-    newContent = await monitorFacebookSource(source, fbAccessToken, { throwOnCooldown: !!options.throwOnCooldown });
+    newContent = await monitorFacebookSource(source, fbAccessToken, { ...options, throwOnCooldown: !!options.throwOnCooldown });
   }
 
   for (const content of newContent) {
@@ -1606,8 +1563,8 @@ const scanSourceOnce = async (source, options = {}) => {
       viralPriority = velocity.highestPriority.priority;
       titlePrefix = `🔥 VIRAL: `;
 
-      // Logic: Viral High overrides Low/Medium Risk.
-      if (viralPriority === 'HIGH') finalRiskLevel = 'high';
+      // Logic: Viral High overrides Low/Medium Risk. Critical Risk overrides Viral.
+      if (viralPriority === 'HIGH' && finalRiskLevel !== 'critical') finalRiskLevel = 'high';
       if (viralPriority === 'MEDIUM' && finalRiskLevel === 'low') finalRiskLevel = 'medium';
     } else if (analysis?.is_keyword_match) {
       alertType = 'keyword_risk';
@@ -1640,6 +1597,7 @@ const scanSourceOnce = async (source, options = {}) => {
       alert_type: alertType,
       risk_level: finalRiskLevel,
       priority: viralPriority || 'LOW',
+      published_at: content.published_at || null,
       title: title,
       description: description,
       classification_explanation: analysis?.explanation || '',
@@ -1670,7 +1628,8 @@ const scanSourceOnce = async (source, options = {}) => {
       author_handle: content.author_handle,
       content_ref_id: content.id,
       source_category: source?.category || null,
-      matched_keywords_normalized: (analysis?.triggered_keywords || []).map((k) => String(k).trim().toLowerCase()).filter(Boolean)
+      matched_keywords: await matchConfiguredKeywords(description || content.text),
+      matched_keywords_normalized: [] // deprecated, use matched_keywords instead
     };
 
     // Check for existing alert to avoid duplicates
@@ -1682,33 +1641,26 @@ const scanSourceOnce = async (source, options = {}) => {
     if (existingAlert) {
       // Update if upgrading to Viral or Higher Risk
       /* Skipping update logic for simplicity as requested "new post fetched... analyzed... alert" flow usually implies fresh content */
-      console.log(`[Monitor] Alert already exists for content=${content.id}, skipping duplicate.`);
+      //console.log(`[Monitor] Alert already exists for ${content.id}, skipping duplicate creation.`);
+    } else if (content.alert_suppressed) {
+      // An admin deleted the alert for this exact post previously — don't recreate it.
     } else {
-      try {
-        const newAlert = new Alert(alertData);
-        await newAlert.save();
-        console.log(`[Monitor] ✅ Alert created: ${newAlert.id} | ${alertType} | ${finalRiskLevel} | ${content.platform} | @${content.author_handle || content.author}`);
+      const newAlert = new Alert(alertData);
+      await newAlert.save();
+      //console.log(`[Monitor] Unified Alert Created: ${newAlert.id} | ${title}`);
 
-        // Send Email
-        if (settings.enable_email_alerts && settings.alert_emails?.length > 0) {
-          const emailData = {
-            risk_level: finalRiskLevel,
-            platform: content.platform,
-            author: content.author,
-            content_url: content.content_url,
-            description: description,
-            triggered_keywords: analysis?.triggered_keywords || [],
-            created_at: newAlert.created_at
-          };
-          await sendAlertEmail(settings.smtp_config, settings.alert_emails, emailData);
-        }
-      } catch (alertErr) {
-        console.error(`[Monitor] ❌ Alert save failed for content=${content.id}: ${alertErr.message}`);
-        if (alertErr.errors) {
-          for (const [field, e] of Object.entries(alertErr.errors)) {
-            console.error(`  - ${field}: ${e.message}`);
-          }
-        }
+      // Send Email
+      if (settings.enable_email_alerts && settings.alert_emails?.length > 0) {
+        const emailData = {
+          risk_level: finalRiskLevel,
+          platform: content.platform,
+          author: content.author,
+          content_url: content.content_url,
+          description: description,
+          triggered_keywords: analysis?.triggered_keywords || [],
+          created_at: newAlert.created_at
+        };
+        await sendAlertEmail(settings.smtp_config, settings.alert_emails, emailData);
       }
     }
 
@@ -1730,7 +1682,7 @@ const toContentRiskLevel = (analysisRiskLevel) => {
 
 const toAlertRiskLevel = (analysisRiskLevel) => {
   const v = String(analysisRiskLevel || '').toLowerCase();
-  if (v === 'critical' || v === 'high') return 'high';
+  if (v === 'high' || v === 'critical') return 'high';
   if (v === 'medium') return 'medium';
   if (v === 'low') return 'low';
   return null;
@@ -1815,7 +1767,8 @@ const performFullAnalysis = async (content, settings, keywords, options = {}) =>
       }
 
       // 4. Force Risk Level based on new score
-      if (analysisData.risk_score >= high) analysisData.risk_level = 'high';
+      if (analysisData.risk_score >= 85) analysisData.risk_level = 'critical';
+      else if (analysisData.risk_score >= high) analysisData.risk_level = 'high';
       else if (analysisData.risk_score >= medium) analysisData.risk_level = 'medium';
       else if (analysisData.risk_score > 0) analysisData.risk_level = 'low';
     }
@@ -1832,36 +1785,46 @@ const performFullAnalysis = async (content, settings, keywords, options = {}) =>
       analysisData.risk_score = 35;
     }
 
-    if (rLevel === 'high' && (analysisData.risk_score || 0) < 60) {
+    if ((rLevel === 'high' || rLevel === 'critical') && (analysisData.risk_score || 0) < 60) {
       //console.log(`[Monitor] Boosting low High score to 65% for ${content.content_id}`);
       analysisData.risk_score = 65;
     }
 
-    const analysis = new Analysis({
-      id: analysisId,
-      content_id: content.id,
-      risk_score: Math.round(analysisData.risk_score || 0),
-      risk_level: toContentRiskLevel(analysisData.risk_level),
-      intent: analysisData.intent || 'unknown',
-      explanation: analysisData.explanation,
-      sentiment: 'neutral',
+    // Upsert keyed by content_id (NOT a plain insert): monitorXSource/monitorInstagramSource
+    // re-push already-seen content into newContent on every poll, so performFullAnalysis runs
+    // repeatedly for the same content_id. Upserting keeps exactly one Analysis per content_id
+    // and preserves the original `id` (via $setOnInsert) so earlier Alert links stay valid.
+    const analysis = await Analysis.findOneAndUpdate(
+      { content_id: content.id },
+      {
+        $set: {
+          risk_score: Math.round(analysisData.risk_score || 0),
+          risk_level: toContentRiskLevel(analysisData.risk_level),
+          intent: analysisData.intent || 'unknown',
+          explanation: analysisData.explanation,
+          sentiment: 'neutral',
 
-      // REQUIRED FIELDS (Mapped from Risk Score or specific intent)
-      violence_score: (analysisData.intent === 'Violence' ? Math.round((analysisData.risk_score || 0) * 10) : 0) || 0,
-      threat_score: (analysisData.intent === 'Threat' ? Math.round((analysisData.risk_score || 0) * 10) : 0) || 0,
-      hate_score: (analysisData.intent === 'Hate_Speech' ? Math.round((analysisData.risk_score || 0) * 10) : 0) || 0,
+          // REQUIRED FIELDS (Mapped from Risk Score or specific intent)
+          violence_score: (analysisData.intent === 'Violence' ? Math.round((analysisData.risk_score || 0) * 10) : 0) || 0,
+          threat_score: (analysisData.intent === 'Threat' ? Math.round((analysisData.risk_score || 0) * 10) : 0) || 0,
+          hate_score: (analysisData.intent === 'Hate_Speech' ? Math.round((analysisData.risk_score || 0) * 10) : 0) || 0,
 
-      triggered_keywords: analysisData.triggered_keywords || [],
-      legal_sections: analysisData.legal_sections || [],
-      violated_policies: analysisData.violated_policies || [],
-      reasons: analysisData.reasons || [],
-      highlights: analysisData.triggered_keywords || [],
-      confidence: 0,
-      language: 'en',
-      llm_analysis: analysisData.llm_analysis || null, // Save rich LLM data
-      forensic_results: analysisData.forensic_results || null
-    });
-    await analysis.save();
+          triggered_keywords: analysisData.triggered_keywords || [],
+          legal_sections: analysisData.legal_sections || [],
+          violated_policies: analysisData.violated_policies || [],
+          reasons: analysisData.reasons || [],
+          highlights: analysisData.triggered_keywords || [],
+          confidence: 0,
+          language: 'en',
+          llm_analysis: analysisData.llm_analysis || null, // Save rich LLM data
+          forensic_results: analysisData.forensic_results || null
+        },
+        $setOnInsert: {
+          id: analysisId
+        }
+      },
+      { upsert: true, new: true }
+    );
 
     // Persist derived intelligence back onto the content record for dashboard/reporting.
     const normalizeText = (value) => String(value || '')
@@ -1945,21 +1908,14 @@ const performFullAnalysis = async (content, settings, keywords, options = {}) =>
     const hasLegalViolation = (analysisData.legal_sections || []).length > 0;
     const hasTriggeredKeywords = (analysisData.triggered_keywords || []).length > 0;
 
-    // Explicitly allow High Risk AI content even if no specific "keyword" matched
-    const isHighRiskAI = (alertRiskLevel === 'high');
-
-    // FORCE-ALLOW: Create alert for every post regardless of risk score (User Request)
-    // The user explicitly requested: "dont skip or archive any alert if risk score is o also it is low alert"
-    // So we bypass the filter below.
-
-    /* 
-    if (!hasKeywordMatch && !hasAiMatch && !hasPolicyViolation && !hasLegalViolation && !hasTriggeredKeywords && !settings.alert_for_every_post) {
-      // Fallback: If it's High Risk AI, we SHOULD alert
-      if (!isHighRiskAI) {
-        return false;
-      }
+    // FILTER: Only create alert if content matches a configured keyword
+    // OR the LLM detected meaningful risk (policy/legal/AI triggers).
+    // Low-risk posts that DO match a keyword are still alerted.
+    // Irrelevant posts (no keyword, no risk) are skipped.
+    if (!hasKeywordMatch && !hasAiMatch && !hasPolicyViolation && !hasLegalViolation && !hasTriggeredKeywords) {
+      console.log(`[Monitor] Skipping alert for ${content.content_id}: no keyword match and no risk signals`);
+      return false;
     }
-    */
 
     let existingAlert = await Alert.findOne({
       content_id: content.id,
@@ -2052,6 +2008,7 @@ const performFullAnalysis = async (content, settings, keywords, options = {}) =>
         analysis_id: analysis.id,
         alert_type: hasKeywordMatch ? 'keyword_risk' : 'ai_risk',
         risk_level: alertRiskLevel,
+        published_at: content.published_at || null,
         title: `${alertRiskLevel.toUpperCase()} Risk: ${intent !== 'Neutral' && intent !== 'Unknown' && intent !== 'Normal' && intent !== 'Monitor' ? intent + ' - ' : ''}${content.author}`,
         description: detailedDescription,
         threat_details: {
@@ -2132,7 +2089,7 @@ const rescanContent = async () => {
       if (velocity) {
         alertType = 'velocity';
         viralPriority = velocity.highestPriority.priority;
-        if (viralPriority === 'HIGH') finalRiskLevel = 'high';
+        if (viralPriority === 'HIGH' && finalRiskLevel !== 'critical') finalRiskLevel = 'high';
         if (viralPriority === 'MEDIUM' && finalRiskLevel === 'low') finalRiskLevel = 'medium';
       } else if (analysis?.is_keyword_match) {
         alertType = 'keyword_risk';
@@ -2144,6 +2101,7 @@ const rescanContent = async () => {
         alert_type: alertType,
         risk_level: finalRiskLevel,
         priority: viralPriority || 'LOW',
+        published_at: content.published_at || null,
         title: (() => {
           const scanIntent = analysis?.intent || 'Unknown';
           const scanIntentStr = (scanIntent !== 'Neutral' && scanIntent !== 'Unknown' && scanIntent !== 'Normal' && scanIntent !== 'Monitor') ? scanIntent + ' - ' : '';
@@ -2172,11 +2130,14 @@ const rescanContent = async () => {
         author: content.author,
         content_ref_id: content.id,
         source_category: contentSource?.category || null,
-        matched_keywords_normalized: (analysis?.triggered_keywords || []).map((k) => String(k).trim().toLowerCase()).filter(Boolean)
+        matched_keywords: await matchConfiguredKeywords(content.text || content.scraped_content),
+        matched_keywords_normalized: [] // deprecated, use matched_keywords instead
       };
 
       let existingAlert = await Alert.findOne({ content_id: content.id });
-      if (!existingAlert) {
+      // Skip recreation if an admin deleted the alert for this exact post —
+      // otherwise a keyword add/edit -> rescan resurrects it every time.
+      if (!existingAlert && !content.alert_suppressed && (finalRiskLevel !== 'low' || velocity)) {
         await new Alert(alertData).save();
         alertCount++;
       }
@@ -2192,22 +2153,6 @@ const rescanContent = async () => {
 
 const startMonitoring = async () => {
   //console.log("Starting monitoring loop...");
-
-  const normalizeCategoryKey = (rawCategory) => {
-    const normalized = String(rawCategory || 'others').toLowerCase().trim().replace(/[\s-]+/g, '_');
-    const valid = new Set(['political', 'communal', 'trouble_makers', 'defamation', 'narcotics', 'history_sheeters', 'others']);
-    return valid.has(normalized) ? normalized : 'others';
-  };
-
-  const isSourceDueByFrequency = (source, settings) => {
-    if (settings?.api_config?.monitoring?.enabled === false) return false;
-    const platform = String(source?.platform || '').toLowerCase();
-    const category = normalizeCategoryKey(source?.category);
-    const intervalMin = Number(settings?.api_config?.monitoring?.frequencies?.[platform]?.[category] || 60);
-    const intervalMs = Math.max(1, intervalMin) * 60 * 1000;
-    const lastChecked = source?.last_checked ? new Date(source.last_checked).getTime() : 0;
-    return !lastChecked || (Date.now() - lastChecked >= intervalMs);
-  };
 
   const runLoop = async () => {
     const loopStartedAt = Date.now();
@@ -2302,18 +2247,10 @@ const startMonitoring = async () => {
         const batch = sources.slice(i, i + CONCURRENCY_LIMIT);
         // console.log(`[Monitor] Processing batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(sources.length / CONCURRENCY_LIMIT)} (${batch.length} sources)`);
 
-        // Pause between batches while a Frequent Engagers analysis is
-        // actively using the shared RapidAPI key.
-        await yieldToInteractive();
-
         await Promise.all(batch.map(async (source) => {
           // Double check in-memory source against DB to honor "Pause" instantly
           const currentSource = await Source.findOne({ id: source.id });
           if (!currentSource || !currentSource.is_active) {
-            return;
-          }
-
-          if (!isSourceDueByFrequency(currentSource, settings)) {
             return;
           }
 
@@ -2333,21 +2270,10 @@ const startMonitoring = async () => {
       await autoArchiveEndedEvents();
       const activeEvents = await getActiveEvents();
 
-      const eventsEnabled = settings?.api_config?.events?.enabled !== false;
-
-      if (eventsEnabled) {
-        for (const event of activeEvents) {
-          let pollMinutes = event.polling_interval_minutes;
-          if (!pollMinutes) {
-            const evtPlatforms = Array.isArray(event.platforms) && event.platforms.length > 0
-              ? event.platforms.map((p) => String(p).toLowerCase())
-              : ['x'];
-            const intervals = evtPlatforms.map((p) => Number(settings?.api_config?.events?.[p] || 60));
-            pollMinutes = Math.min(...intervals);
-          }
-          if (!shouldPollEvent(event, pollMinutes)) continue;
-          await scanEventOnce({ event, settings });
-        }
+      for (const event of activeEvents) {
+        const pollMinutes = event.polling_interval_minutes || Math.max(3, Math.floor((settings.monitoring_interval_minutes || 5) / 2));
+        if (!shouldPollEvent(event, pollMinutes)) continue;
+        await scanEventOnce({ event, settings });
       }
 
       if (rapidApiKey && Date.now() - lastMediaBackfillAt > MEDIA_BACKFILL_INTERVAL_MS) {

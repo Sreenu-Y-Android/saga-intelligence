@@ -9,7 +9,7 @@ import GeoChoropleth, { normalizeGeoName } from '../GeoChoropleth';
 import RiskGauge from '../RiskGauge';
 import RiskBadge from '../RiskBadge';
 import SentimentTrendChart from '../SentimentTrendChart';
-import RiskMatrixScatter from '../RiskMatrixScatter';
+import RiskDistributionTreemap from '../RiskDistributionTreemap';
 import TopIssuesTiles from '../TopIssuesTiles';
 import EmergingTopicsList from '../EmergingTopicsList';
 import InsightsSummaryPanel from '../InsightsSummaryPanel';
@@ -17,7 +17,7 @@ import RankedDistrictList from '../RankedDistrictList';
 import PlatformDonut from '../PlatformDonut';
 import buildStateInsights from '../buildStateInsights';
 import { MOOD_LEGEND, bucketColorForIndex, DISTRICT_GEOJSON_SOURCES } from '../sentimentScale';
-import { useDistrictLeaderboard } from '../../../hooks/useGeoIntel';
+import { formatPctChange } from '../formatPctChange';
 
 const SectionTitle = ({ title, subtitle, action }) => (
   <div className="flex items-end justify-between gap-3 mb-3">
@@ -36,9 +36,8 @@ const SectionTitle = ({ title, subtitle, action }) => (
  * entirely from /summary + /districts (both already RBAC-scoped and cached
  * server-side) — no new data dependencies beyond what already existed.
  */
-const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
+const StateOverviewTab = ({ filters, summary, summaryLoading, leaderboard, leaderboardLoading, leaderboardError }) => {
   const navigate = useNavigate();
-  const { data: leaderboard, loading: leaderboardLoading } = useDistrictLeaderboard(filters);
   const [selectedKey, setSelectedKey] = useState(null);
 
   const districts = useMemo(() => leaderboard?.districts || [], [leaderboard]);
@@ -59,7 +58,12 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
   const selectedDistrict = districts.find((d) => d.key === selectedKey) || null;
   const goToDistrict = (key) => navigate(`/geographic-intelligence/${key}`);
 
+  // Raw daily counts for volume; for the sentiment-share tiles (headlined as
+  // a %) the sparkline must plot the same unit — a daily % of that day's
+  // total — or its shape can visually contradict what the headline % did
+  // when overall volume swings during the window.
   const sparkline = (field) => (summary?.sentiment_trend || []).map((d) => d[field]);
+  const sparklinePct = (field) => (summary?.sentiment_trend || []).map((d) => (d.total > 0 ? Math.round((d[field] / d.total) * 100) : 0));
 
   const stateRiskIndex = useMemo(() => {
     const totalVol = districts.reduce((s, d) => s + d.total_mentions, 0);
@@ -71,6 +75,11 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
 
   return (
     <div className="space-y-5">
+      {leaderboardError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 text-xs font-semibold rounded-lg px-3 py-2">
+          {leaderboardError} — showing whatever loaded successfully.
+        </div>
+      )}
       {/* Section 1 — Executive KPI Row */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
         <StateKpiTile
@@ -96,7 +105,7 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
           changeIsGood
           changeUnit="pp"
           detail="vs prev. period"
-          sparklineData={sparkline('positive')}
+          sparklineData={sparklinePct('positive')}
           sparklineColor="#10b981"
           tooltip="Share of mentions with positive sentiment. The change shows percentage-point (pp) shift vs the equivalent prior period — not a % of %."
         />
@@ -110,7 +119,7 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
           changePct={summary?.trend?.neutral_pct_change !== undefined ? parseFloat(Math.abs(summary.trend.neutral_pct_change).toFixed(1)) * (summary.trend.neutral_pct_change >= 0 ? 1 : -1) : undefined}
           changeUnit="pp"
           detail="vs prev. period"
-          sparklineData={sparkline('neutral')}
+          sparklineData={sparklinePct('neutral')}
           sparklineColor="#f59e0b"
           tooltip="Share of mentions with neutral sentiment. The change shows percentage-point (pp) shift vs the equivalent prior period."
         />
@@ -125,7 +134,7 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
           changeIsGood={false}
           changeUnit="pp"
           detail="vs prev. period"
-          sparklineData={sparkline('negative')}
+          sparklineData={sparklinePct('negative')}
           sparklineColor="#ef4444"
           tooltip="Share of mentions with negative sentiment. The change shows percentage-point (pp) shift vs the equivalent prior period."
         />
@@ -144,7 +153,6 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
           label="Emerging Topic"
           value={summary?.emerging_topic?.topic || 'None'}
           changePct={summary?.emerging_topic?.trend_change_pct}
-          changeIsGood={false}
           compareLabel="vs last period"
           icon={Hash}
           iconColor="text-purple-600"
@@ -171,11 +179,13 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
             <div>
               <div className="flex items-center gap-1">
                 <div className="text-[10px] font-bold uppercase text-slate-400">State Risk Index</div>
-                <div className="relative group cursor-help">
-                  <Info className="h-3 w-3 text-slate-300 hover:text-slate-500" />
-                  <div className="pointer-events-none absolute left-0 top-5 z-20 w-60 rounded-lg bg-slate-800 text-white text-[10px] leading-snug px-2.5 py-2 opacity-0 group-hover:opacity-100 transition-opacity shadow-lg">
+                <div className="relative group/tip">
+                  <button type="button" className="text-slate-300 hover:text-slate-500 focus-visible:text-slate-500 cursor-help outline-none" aria-label="How State Risk Index is calculated">
+                    <Info className="h-3 w-3" />
+                  </button>
+                  <div className="pointer-events-none absolute left-0 top-5 z-20 w-64 rounded-lg bg-slate-800 text-white text-[10px] leading-snug px-2.5 py-2 opacity-0 group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 transition-opacity shadow-lg">
                     <strong className="block mb-1">How this is calculated</strong>
-                    Volume-weighted average of each district&apos;s AI Risk Score (0–100). Districts with more mentions contribute proportionally more. Score above 50 = high political risk.
+                    Volume-weighted average of each district&apos;s Risk Index — itself a composite of negative-sentiment confidence, AI risk score, week-over-week negative growth, and mention volume (not the AI risk score alone). Districts with more mentions contribute proportionally more. Score above 50 = high political risk.
                   </div>
                 </div>
               </div>
@@ -199,18 +209,17 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
             {summary?.trend?.total_mentions_change_pct !== undefined ? (() => {
               const raw = summary.trend.total_mentions_change_pct;
               const isUp = raw >= 0;
-              const absVal = Math.abs(raw);
-              const display = absVal >= 1000 ? `${parseFloat((absVal / 100).toFixed(1))}x` : `${absVal}%`;
+              // Rising/falling volume isn't inherently good or bad (unlike
+              // sentiment share) — colored neutral amber here, matching
+              // TrendIndicator's rationale, instead of green-up/red-down.
               return (
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full border ${
-                    isUp ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-red-50 text-red-600 border-red-200'
-                  }`}>
+                  <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full border bg-amber-50 text-amber-700 border-amber-200">
                     {isUp
                       ? <svg className="h-3 w-3" viewBox="0 0 12 12" fill="none"><path d="M6 9V3M3 6l3-3 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       : <svg className="h-3 w-3" viewBox="0 0 12 12" fill="none"><path d="M6 3v6M3 6l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     }
-                    {display}
+                    {formatPctChange(raw)}
                   </span>
                   <span className="text-[10px] text-slate-400">vs prev. period</span>
                 </div>
@@ -260,7 +269,10 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
                   <div className="text-base font-extrabold text-slate-800">{selectedDistrict.name}</div>
                   <RiskBadge level={selectedDistrict.risk_level} />
                 </div>
-                <RiskGauge score={selectedDistrict.avg_risk_score} size={72} />
+                <div className="text-center">
+                  <RiskGauge score={selectedDistrict.avg_risk_score} size={72} />
+                  <div className="text-[9px] text-slate-400 uppercase font-bold mt-0.5">AI Risk Score</div>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-slate-50 rounded-lg p-2">
@@ -329,7 +341,11 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
       {/* Top Issues by Volume */}
       <div className="bg-white rounded-xl border border-slate-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04)] p-4">
         <SectionTitle title="Top Issues by Volume" subtitle="State-wide topic breakdown with sentiment split and trend" />
-        <TopIssuesTiles issues={summary?.top_issues_by_volume?.slice(0, 6) || []} loading={summaryLoading} />
+        <TopIssuesTiles
+          issues={summary?.top_issues_by_volume?.slice(0, 6) || []}
+          loading={summaryLoading}
+          onSelect={(issue) => navigate(`/geographic-intelligence?tab=state&topic=${encodeURIComponent(issue.topic)}`)}
+        />
       </div>
 
       {/* Platform Distribution + Emerging Topics */}
@@ -351,7 +367,7 @@ const StateOverviewTab = ({ filters, summary, summaryLoading }) => {
       {/* Trend chart + Risk Matrix */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <SentimentTrendChart data={summary?.sentiment_trend || []} loading={summaryLoading} title="Sentiment Trend Over Time" />
-        <RiskMatrixScatter districts={districts} loading={leaderboardLoading} onSelect={(p) => setSelectedKey(p.key)} />
+        <RiskDistributionTreemap districts={districts} loading={leaderboardLoading} onSelect={(p) => setSelectedKey(p.key)} />
       </div>
 
       {/* Section 9 — Insights Summary */}

@@ -19,11 +19,12 @@ import { toast } from 'sonner';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 const PARTY_STYLES = {
-  INC: 'bg-blue-100 text-blue-700 border-blue-300',
+  // Amber, not blue — INC's real saffron/white/green tricolor doesn't read well as
+  // badge text, and BJP already owns the brighter orange in this legend.
+  INC: 'bg-amber-100 text-amber-800 border-amber-300',
   BRS: 'bg-pink-100 text-pink-700 border-pink-300',
   BJP: 'bg-orange-100 text-orange-700 border-orange-300',
-  AIMIM: 'bg-emerald-100 text-emerald-700 border-emerald-300',
-  CPI: 'bg-red-100 text-red-700 border-red-300',
+  AIMIM: 'bg-green-100 text-green-700 border-green-300',
 };
 
 const titleCase = (value) =>
@@ -103,7 +104,7 @@ const MlaProfile = () => {
   const { user, isScoped, isSuperAdmin, assignedConstituency, canAccessConstituency } = useAuth();
   const canManageSpecialGrievanceUi = canManageRestrictedGrievanceUi(user);
 
-  // RBAC guard: scoped users (MLA / MP / special leader) can't view other seats —
+  // RBAC guard: scoped users (MLA / MP / special_leader) can't view other seats —
   // bounce them back to their own constituency on URL manipulation.
   useEffect(() => {
     if (isScoped && !isSuperAdmin && !canAccessConstituency(decoded)) {

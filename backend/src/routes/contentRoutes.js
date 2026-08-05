@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getContent, getContentFeed, getContentDetail, getContentStats, checkContentAvailability, getUnavailableContent } = require('../controllers/contentController');
+const { getContent, getContentFeed, getContentDetail, getContentStats, checkContentAvailability, getUnavailableContent, getContentEngagers } = require('../controllers/contentController');
 const { protect } = require('../middleware/authMiddleware');
 const { requireAnyPageAccess, requirePlatformFeatureAccess } = require('../middleware/rbacMiddleware');
 
@@ -11,8 +11,13 @@ const CONTENT_ALLOWED_PAGES = [
   '/x-monitor',
   '/facebook-monitor',
   '/instagram-monitor',
-  '/youtube-monitor'
+  '/youtube-monitor',
+  '/alerts',
+  '/grievances'
 ];
+
+// Allow any authenticated user to fetch post engagers (accessible from Alerts, Grievances, Mentions, MLA profiles)
+router.get('/:id/engagers', protect, getContentEngagers);
 
 router.use(protect, requireAnyPageAccess(CONTENT_ALLOWED_PAGES));
 

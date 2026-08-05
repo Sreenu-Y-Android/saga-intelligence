@@ -1015,57 +1015,6 @@ ${(firConverted === 'Yes' || firNumber) ? `
 </html>`;
 };
 
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-/*            DASHBOARD STATS (lightweight, by-platform)           */
-/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-const getDashboardStats = async (_req, res) => {
-  try {
-    const [totalRows, pendingRows, escalatedRows, closedRows] = await Promise.all([
-      GrievanceWorkflowReport.aggregate([
-        { $group: { _id: '$platform', count: { $sum: 1 } } }
-      ]),
-      GrievanceWorkflowReport.aggregate([
-        { $match: { status: { $regex: /^\s*pending\s*$/i } } },
-        { $group: { _id: '$platform', count: { $sum: 1 } } }
-      ]),
-      GrievanceWorkflowReport.aggregate([
-        { $match: { status: { $regex: /^\s*(escalated|escaled)\s*$/i } } },
-        { $group: { _id: '$platform', count: { $sum: 1 } } }
-      ]),
-      GrievanceWorkflowReport.aggregate([
-        { $match: { status: { $regex: /^\s*closed\s*$/i } } },
-        { $group: { _id: '$platform', count: { $sum: 1 } } }
-      ])
-    ]);
-
-    const byPlatform = {
-      all: { total: 0, pending: 0, escalated: 0, closed: 0 },
-      x: { total: 0, pending: 0, escalated: 0, closed: 0 },
-      facebook: { total: 0, pending: 0, escalated: 0, closed: 0 },
-      whatsapp: { total: 0, pending: 0, escalated: 0, closed: 0 }
-    };
-
-    const applyRows = (rows, field) => {
-      rows.forEach((r) => {
-        const p = r._id || 'x';
-        if (!byPlatform[p]) byPlatform[p] = { total: 0, pending: 0, escalated: 0, closed: 0 };
-        byPlatform[p][field] += r.count || 0;
-        byPlatform.all[field] += r.count || 0;
-      });
-    };
-
-    applyRows(totalRows, 'total');
-    applyRows(pendingRows, 'pending');
-    applyRows(escalatedRows, 'escalated');
-    applyRows(closedRows, 'closed');
-
-    res.json({ byPlatform });
-  } catch (error) {
-    console.error('Error fetching grievance workflow dashboard stats:', error);
-    res.status(500).json({ error: 'Failed to fetch stats' });
-  }
-};
-
 module.exports = {
   createReport,
   shareReport,
@@ -1076,6 +1025,5 @@ module.exports = {
   getReport,
   exportReports,
   getContacts,
-  generateReportPdf,
-  getDashboardStats
+  generateReportPdf
 };

@@ -13,289 +13,231 @@ const youtubeService = require('./youtube.service');
 const { archiveTwitterMedia } = require('./contentS3Service');
 const { generateComplaintCode } = require('./complaintCodeService');
 const { syncLegacyFieldsFromWorkflow } = require('./grievanceWorkflowService');
-const { yieldToInteractive } = require('./apiPriorityGate');
 const { analyzeContent } = require('./analysisService');
-const translationService = require('./translationService');
-const { OUR_LEADERS, OPPOSITION_LEADERS } = require('../config/politicalData');
+const { transcribeVideoUrl } = require('./videoTranscriptionService');
+const { classifyApLocation } = require('./locationClassifierService');
+const { resolveRouting, resolvePersonToConstituency, resolveAllPersonsToConstituencies } = require('./constituencyMasterService');
+const ManualReviewQueue = require('../models/ManualReviewQueue');
 
-const LOCATION_SERVICE_URL = process.env.LOCATION_SERVICE_URL || 'http://178.255.44.130:5003';
-const locationExtractionService = require('./locationExtractionService');
-const { ALL_TELANGANA_LOCATIONS } = require('../config/telanganaLocations');
+// Confidence threshold for auto-assigning a classified location. Below
+// this, the grievance is enqueued for human review instead of being
+// stamped. Configurable via env so ops can tune without a redeploy.
+const AUTO_ASSIGN_THRESHOLD = Number(process.env.LOCATION_AUTO_ASSIGN_THRESHOLD || 0.80);
 
-// ── City / Town → District mapping for keyword detection ──
-const KEYWORD_TO_DISTRICT = {
-    // Hyderabad district
-    'hyderabad': 'Hyderabad', 'secunderabad': 'Hyderabad', 'begumpet': 'Hyderabad',
-    'ameerpet': 'Hyderabad', 'banjara hills': 'Hyderabad', 'jubilee hills': 'Hyderabad',
-    'madhapur': 'Hyderabad', 'gachibowli': 'Hyderabad', 'kukatpally': 'Hyderabad',
-    'miyapur': 'Hyderabad', 'dilsukhnagar': 'Hyderabad', 'malakpet': 'Hyderabad',
-    'nampally': 'Hyderabad', 'charminar': 'Hyderabad', 'mehdipatnam': 'Hyderabad',
-    'abids': 'Hyderabad', 'koti': 'Hyderabad', 'shamshabad': 'Hyderabad',
-    'lb nagar': 'Hyderabad', 'uppal': 'Hyderabad',
-    // Rangareddy district
-    'rangareddy': 'Rangareddy', 'ranga reddy': 'Rangareddy', 'ibrahimpatnam': 'Rangareddy',
-    'chevella': 'Rangareddy', 'tandur': 'Rangareddy', 'maheshwaram': 'Rangareddy',
-    'kandukur': 'Rangareddy', 'kothur': 'Rangareddy', 'farooqnagar': 'Rangareddy',
-    'shadnagar': 'Rangareddy',
-    // Medchal-Malkajgiri district
-    'medchal': 'Medchal-Malkajgiri', 'malkajgiri': 'Medchal-Malkajgiri',
-    'kompally': 'Medchal-Malkajgiri', 'alwal': 'Medchal-Malkajgiri',
-    'boduppal': 'Medchal-Malkajgiri', 'ghatkesar': 'Medchal-Malkajgiri',
-    // Mahabubnagar district
-    'mahabubnagar': 'Mahabubnagar', 'mahbubnagar': 'Mahabubnagar',
-    'jadcherla': 'Mahabubnagar', 'devarkadra': 'Mahabubnagar',
-    'koilkonda': 'Mahabubnagar', 'addakal': 'Mahabubnagar',
-    // Narayanpet district
-    'narayanpet': 'Narayanpet', 'makthal': 'Narayanpet', 'utkoor': 'Narayanpet',
-    // Vikarabad district
-    'vikarabad': 'Vikarabad', 'kodangal': 'Vikarabad', 'bomraspet': 'Vikarabad',
-    'doultabad': 'Vikarabad', 'parigi': 'Vikarabad', 'mominpet': 'Vikarabad',
-    // Wanaparthy district
-    'wanaparthy': 'Wanaparthy', 'pebbair': 'Wanaparthy', 'gadwal': 'Wanaparthy',
-    // Nagarkurnool district
-    'nagarkurnool': 'Nagarkurnool', 'kalwakurthy': 'Nagarkurnool',
-    'achampet': 'Nagarkurnool', 'kollapur': 'Nagarkurnool',
-    // Warangal district
-    'warangal': 'Warangal', 'hanamkonda': 'Warangal', 'kazipet': 'Warangal',
-    'narsampet': 'Warangal', 'parkal': 'Warangal', 'wardhannapet': 'Warangal',
-    // Karimnagar district
-    'karimnagar': 'Karimnagar', 'huzurabad': 'Karimnagar', 'choppadandi': 'Karimnagar',
-    'manakondur': 'Karimnagar', 'vemulawada': 'Karimnagar',
-    // Nizamabad district
-    'nizamabad': 'Nizamabad', 'bodhan': 'Nizamabad', 'armoor': 'Nizamabad',
-    // Kamareddy district
-    'kamareddy': 'Kamareddy', 'yellareddy': 'Kamareddy', 'banswada': 'Kamareddy',
-    // Sircilla district
-    'sircilla': 'Rajanna Sircilla',
-    // Khammam district
-    'khammam': 'Khammam', 'kothagudem': 'Khammam', 'bhadrachalam': 'Khammam',
-    'yellandu': 'Khammam', 'sathupalli': 'Khammam', 'madhira': 'Khammam', 'wyra': 'Khammam',
-    // Nalgonda district
-    'nalgonda': 'Nalgonda', 'miryalaguda': 'Nalgonda', 'devarakonda': 'Nalgonda',
-    // Suryapet district
-    'suryapet': 'Suryapet', 'kodad': 'Suryapet', 'huzurnagar': 'Suryapet',
-    // Medak / Sangareddy / Siddipet
-    'medak': 'Medak', 'siddipet': 'Siddipet', 'sangareddy': 'Sangareddy',
-    'zaheerabad': 'Sangareddy', 'narayankhed': 'Sangareddy', 'gajwel': 'Siddipet',
-    // Adilabad district
-    'adilabad': 'Adilabad', 'mancherial': 'Mancherial', 'nirmal': 'Nirmal',
-    'bellampalli': 'Mancherial', 'asifabad': 'Adilabad',
-    // Jagtial district
-    'jagtial': 'Jagtial', 'koratla': 'Jagtial', 'metpally': 'Jagtial',
-    // Peddapalli district
-    'peddapalli': 'Peddapalli', 'ramagundam': 'Peddapalli', 'godavarikhani': 'Peddapalli',
-    // Jangaon district
-    'jangaon': 'Jangaon', 'ghanpur': 'Jangaon',
-    // Mahabubabad district
-    'mahabubabad': 'Mahabubabad', 'dornakal': 'Mahabubabad', 'thorrur': 'Mahabubabad',
-    // Yadadri Bhuvanagiri
-    'bhongir': 'Yadadri Bhuvanagiri', 'yadagirigutta': 'Yadadri Bhuvanagiri',
-    // State reference
-    'telangana': 'Hyderabad',
-};
-
-// Build a sorted array for multi-word matching (longest first for greedy match)
-const KEYWORD_LIST = [...ALL_TELANGANA_LOCATIONS]
-    .filter(kw => kw.length >= 3) // skip tiny tokens
-    .sort((a, b) => b.length - a.length); // longest first
-
-const MAHABUBNAGAR_ACS = [
-    'Kodangal',
-    'Narayanpet',
-    'Mahbubnagar',
-    'Jadcherla',
-    'Devarkadra',
-    'Makthal',
-    'Shadnagar'
-];
-
-const MAHABUBNAGAR_AC_ALIASES = {
-    'Kodangal': ['kodangal', 'kodangallu'],
-    'Narayanpet': ['narayanpet', 'narayanapet'],
-    'Mahbubnagar': ['mahbubnagar', 'mahabubnagar', 'mahboobnagar', 'palamoor'],
-    'Jadcherla': ['jadcherla', 'jadcharla'],
-    'Devarkadra': ['devarkadra', 'devarakadra'],
-    'Makthal': ['makthal', 'maktal'],
-    'Shadnagar': ['shadnagar', 'shadnager', 'shad nagar']
-};
-
-const MAHABUBNAGAR_AC_TO_DISTRICT = {
-    'Kodangal': 'Vikarabad',
-    'Narayanpet': 'Narayanpet',
-    'Mahbubnagar': 'Mahabubnagar',
-    'Jadcherla': 'Mahabubnagar',
-    'Devarkadra': 'Mahabubnagar',
-    'Makthal': 'Narayanpet',
-    'Shadnagar': 'Rangareddy'
-};
-
-const TELUGU_SCRIPT_REGEX = /[\u0C00-\u0C7F]/;
-const TOKEN_BOUNDARY_REGEX = /[^a-z0-9_]/i;
-let lastTeluguTranslationWarningAt = 0;
-const TELUGU_TRANSLATION_WARNING_THROTTLE_MS = Number(process.env.TELUGU_TRANSLATION_WARNING_THROTTLE_MS || 30000);
-
-const escapeRegex = (value = '') => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const normalizeCompact = (value = '') => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
-const appendSourceTagOnce = (source, tag) => {
-    const tokens = String(source || '')
-        .split('+')
-        .map((s) => s.trim())
-        .filter(Boolean);
-    if (!tokens.length) return tag;
-    if (!tokens.includes(tag)) tokens.push(tag);
-    return tokens.join('+');
-};
-
-
-
-
-
-
-
-
-
-/**
- * LOCAL keyword-based location detection from text content.
- * Scans each word/phrase against ALL_TELANGANA_LOCATIONS set.
- * Returns { city, district, keyword_matched, confidence, source } or null.
- */
+// ═══════════════════════════════════════════════════════════════
+//          LOCATION EXTRACTION (backend-side)
+// ═══════════════════════════════════════════════════════════════
 
 
 /**
  * Extract location from a grievance's text / user profile and persist it.
- * Refactored to use locationExtractionService.
+ * STEP -1: Person-mention short-circuit (routes to every named MLA/MP's AC).
+ * STEP 0: AP classifier — confident hits are stamped, low-confidence hits go
+ * to manual review. If neither finds anything, the grievance is left
+ * unlocated rather than guessed at.
+ * Non-blocking: failures are logged but never throw.
  */
-const extractAndSaveLocation = async (grievanceId, text, postedBy = {}) => {
+const extractAndSaveLocation = async (grievanceId, text, postedBy = {}, extraContext = {}) => {
     try {
         if (!text || !text.trim()) return;
 
-        const locationWithConstituency = await locationExtractionService.extractLocation(text, postedBy);
-        if (!locationWithConstituency) return;
+        let finalLocation = null;
+        const userLocation = postedBy.location || '';
+        const userBio = postedBy.bio || postedBy.description || '';
+        const hashtags = (text.match(/#\w+/g) || []).join(' ');
 
-        await Grievance.findOneAndUpdate(
-            { id: grievanceId },
-            {
-                $set: {
-                    'detected_location.city': locationWithConstituency.city,
-                    'detected_location.district': locationWithConstituency.district,
-                    'detected_location.constituency': locationWithConstituency.constituency,
-                    'detected_location.keyword_matched': locationWithConstituency.keyword_matched,
-                    'detected_location.lat': locationWithConstituency.lat,
-                    'detected_location.lng': locationWithConstituency.lng,
-                    'detected_location.confidence': locationWithConstituency.confidence,
-                    'detected_location.source': locationWithConstituency.source,
-                }
-            }
-        );
-        console.log(`[GrievanceLocation] Saved for ${grievanceId}: ${locationWithConstituency.city || 'unknown city'} (${locationWithConstituency.source})`);
-    } catch (err) {
-        console.warn(`[GrievanceLocation] Failed for ${grievanceId}: ${err.message}`);
-    }
-};
-
-const reprocessMahbubnagarMappedGrievances = async ({
-    dryRun = true,
-    limit = null,
-} = {}) => {
-    const acRegexes = MAHABUBNAGAR_ACS.map((ac) => new RegExp(`^\\s*${escapeRegex(ac)}\\s*$`, 'i'));
-    const filter = {
-        is_active: true,
-        $or: [
-            { 'detected_location.city': /mahabubnagar|mahbubnagar/i },
-            { 'detected_location.district': /mahabubnagar|mahbubnagar/i },
-            { 'detected_location.constituency': /mahabubnagar|mahbubnagar/i },
-            { 'detected_location.constituency': { $in: acRegexes } }
-        ]
-    };
-
-    const cursor = Grievance.find(filter)
-        .sort({ _id: 1 })
-        .select({
-            id: 1,
-            'content.text': 1,
-            'content.full_text': 1,
-            detected_location: 1
-        })
-        .lean()
-        .cursor();
-
-    let scanned = 0;
-    let updated = 0;
-    let unchanged = 0;
-    let failed = 0;
-    const rrState = { nextIndex: 0 };
-
-    if (dryRun) {
-        const settings = await GrievanceSettings.findOne({ id: 'grievance_settings' }).select({ mahabubnagar_ac_rr_index: 1 }).lean();
-        const currentIndex = Number(settings?.mahabubnagar_ac_rr_index || 0);
-        rrState.nextIndex = ((currentIndex % MAHABUBNAGAR_ACS.length) + MAHABUBNAGAR_ACS.length) % MAHABUBNAGAR_ACS.length;
-    }
-
-    for await (const grievance of cursor) {
-        if (limit && scanned >= limit) break;
-        scanned += 1;
-
+        // ── STEP -1: Person-mention short-circuit ──
+        // If the text names ANY MLA/MP/monitored handle, route directly to ALL
+        // of their constituencies. A post about Revanth Reddy + Bhatti + KTR
+        // lands on Kuppam, Mangalagiri and Pithapuram dashboards simultaneously.
+        // The first (longest) match becomes the primary `detected_location`;
+        // the full set is stored in `routing_targets.constituencies` and the
+        // MLA/MP login arrays are the merged fan-out across every matched AC.
         try {
-            const text = grievance?.content?.full_text || grievance?.content?.text || '';
-            const before = {
-                city: grievance?.detected_location?.city || null,
-                district: grievance?.detected_location?.district || null,
-                constituency: grievance?.detected_location?.constituency || null,
-                keyword_matched: grievance?.detected_location?.keyword_matched || null,
-                lat: grievance?.detected_location?.lat ?? null,
-                lng: grievance?.detected_location?.lng ?? null,
-                confidence: grievance?.detected_location?.confidence ?? null,
-                source: grievance?.detected_location?.source || null
-            };
-
-            const after = await locationExtractionService.enrichWithMahbubnagarConstituency(before, text, { dryRun, rrState });
-            const changed = (
-                before.city !== after.city ||
-                before.district !== after.district ||
-                before.constituency !== after.constituency ||
-                before.keyword_matched !== after.keyword_matched ||
-                before.lat !== after.lat ||
-                before.lng !== after.lng ||
-                Number(before.confidence || 0) !== Number(after.confidence || 0) ||
-                before.source !== after.source
-            );
-
-            if (!changed) {
-                unchanged += 1;
-                continue;
-            }
-
-            updated += 1;
-            if (!dryRun) {
-                await Grievance.findOneAndUpdate(
-                    { id: grievance.id },
-                    {
-                        $set: {
-                            'detected_location.city': after.city,
-                            'detected_location.district': after.district,
-                            'detected_location.constituency': after.constituency,
-                            'detected_location.keyword_matched': after.keyword_matched,
-                            'detected_location.lat': after.lat,
-                            'detected_location.lng': after.lng,
-                            'detected_location.confidence': after.confidence,
-                            'detected_location.source': after.source,
+            const handle = String(postedBy.handle || '').trim();
+            const personScan = [text, handle].filter(Boolean).join(' ');
+            const personHits = await resolveAllPersonsToConstituencies(personScan);
+            if (personHits.length > 0) {
+                const primary = personHits[0];
+                const routings = await Promise.all(
+                    personHits.map(async (h) => {
+                        try { return { hit: h, routing: await resolveRouting(h.ac_name) }; }
+                        catch (rErr) {
+                            console.warn(`[GrievanceLocation] person-hit routing failed for ${h.ac_name}: ${rErr.message}`);
+                            return { hit: h, routing: null };
                         }
-                    }
+                    })
                 );
-            }
-        } catch (error) {
-            failed += 1;
-            console.warn(`[MahbubnagarReprocess] Failed for grievance ${grievance?.id || 'unknown'}: ${error.message}`);
-        }
-    }
 
-    return {
-        dry_run: dryRun,
-        scanned,
-        updated,
-        unchanged,
-        failed
-    };
+                const primaryRouting = routings[0]?.routing || null;
+                finalLocation = {
+                    city:          primary.ac_name,
+                    district:      primaryRouting?.district  || null,
+                    constituency:  primary.ac_name,
+                    lok_sabha:     primaryRouting?.lok_sabha || null,
+                    confidence:    1.0,
+                    source:        `person_match:${primary.matched_via}`,
+                    reasoning:     personHits.length > 1
+                        ? `Mentions ${personHits.map(h => h.matched_name).join(', ')}`
+                        : `Mentions ${primary.matched_name}`,
+                    matched_token: primary.matched_name,
+                    match_source:  primary.matched_via,
+                    auto_assigned: true,
+                    manual_review_required: false,
+                };
+
+                // Merge MLA / MP login fan-out across every matched constituency.
+                const mlaIds = new Set();
+                const mpIds  = new Set();
+                const acDashboards = [];
+                const allAcNames = [];
+                const allScopeKeys = new Set();
+                for (const { hit, routing } of routings) {
+                    allAcNames.push(hit.ac_name);
+                    if (!routing) continue;
+                    for (const u of routing.mla_users || []) if (u?.id) mlaIds.add(u.id);
+                    for (const u of routing.mp_users  || []) if (u?.id) mpIds.add(u.id);
+                    if (routing.dashboards?.ac) acDashboards.push(routing.dashboards.ac);
+                    for (const k of routing.scope_keys || []) allScopeKeys.add(k);
+                }
+
+                const routingTargets = {
+                    // Primary AC keys preserved for back-compat with any reader
+                    // that still uses the singular field set.
+                    ac_key:        primaryRouting?.ac_key        || null,
+                    district_key:  primaryRouting?.district_key  || null,
+                    lok_sabha_key: primaryRouting?.lok_sabha_key || null,
+                    dashboards:    primaryRouting?.dashboards    || null,
+                    siblings_in_district: primaryRouting?.siblings_in_district || [],
+                    siblings_in_ls:       primaryRouting?.siblings_in_ls       || [],
+
+                    // Multi-routing fields — every consumer that wants the full
+                    // fan-out reads these.
+                    constituencies:   allAcNames,
+                    ac_dashboards:    acDashboards,
+                    mla_user_ids:     [...mlaIds],
+                    mp_user_ids:      [...mpIds],
+                    scope_keys:       [...allScopeKeys],
+                    matched_persons:  personHits.map(h => ({ ac_name: h.ac_name, matched_name: h.matched_name, matched_via: h.matched_via })),
+                };
+
+                await Grievance.findOneAndUpdate(
+                    { id: grievanceId },
+                    { $set: { detected_location: finalLocation, routing_targets: routingTargets } }
+                );
+                console.log(`[GrievanceLocation] ${grievanceId} routed by ${personHits.length} person match(es) → [${allAcNames.join(', ')}]`);
+                return;
+            }
+        } catch (pErr) {
+            console.warn(`[GrievanceLocation] person resolver failed for ${grievanceId}: ${pErr.message}`);
+        }
+
+        // ── STEP 0: AP classifier (highest priority for AP routing) ──
+        // Runs first so AP posts route directly to the right MLA/MP scope
+        // without falling through to the legacy Telangana / Karimnagar code.
+        try {
+            const ap = await classifyApLocation(text, {
+                userLocation,
+                userBio,
+                hashtags,
+                taggedAccount: extraContext.tagged_account || '',
+            });
+            if (ap && ap.constituency) {
+                // Confidence gate: below the threshold we DO NOT stamp the
+                // location. Instead we mark the grievance as awaiting human
+                // review and push a row into ManualReviewQueue.
+                if (ap.confidence < AUTO_ASSIGN_THRESHOLD) {
+                    await Grievance.findOneAndUpdate(
+                        { id: grievanceId },
+                        { $set: {
+                            'detected_location.manual_review_required': true,
+                            'detected_location.auto_assigned': false,
+                            'detected_location.confidence': ap.confidence,
+                            'detected_location.source': `ap_classifier:${ap.provider}:low_conf`,
+                            'detected_location.reasoning': ap.reasoning,
+                        } }
+                    );
+                    try {
+                        await ManualReviewQueue.create({
+                            grievance_id:   grievanceId,
+                            text,
+                            user_location:  userLocation,
+                            user_bio:       userBio,
+                            hashtags,
+                            tagged_account: extraContext.tagged_account || '',
+                            suggested: {
+                                constituency: ap.constituency,
+                                district:     ap.district  || null,
+                                lok_sabha:    ap.lok_sabha || null,
+                                confidence:   ap.confidence,
+                                provider:     ap.provider,
+                                reasoning:    ap.reasoning,
+                                matched_token: ap.matched_token || null,
+                                match_source:  ap.match_source  || null,
+                            },
+                        });
+                    } catch (qErr) {
+                        console.warn(`[GrievanceLocation] ManualReviewQueue insert failed for ${grievanceId}: ${qErr.message}`);
+                    }
+                    console.log(`[GrievanceLocation] ${grievanceId} sent to manual review (conf=${ap.confidence.toFixed(2)} < ${AUTO_ASSIGN_THRESHOLD})`);
+                    return;
+                }
+
+                // High confidence — resolve the multi-level routing fan-out
+                // (district + LS + MLA/MP logins) via ConstituencyMaster.
+                let routing = null;
+                try {
+                    routing = await resolveRouting(ap.constituency);
+                } catch (rErr) {
+                    console.warn(`[GrievanceLocation] resolveRouting failed for ${ap.constituency}: ${rErr.message}`);
+                }
+
+                finalLocation = {
+                    city:          ap.constituency,
+                    district:      routing?.district  || ap.district  || null,
+                    constituency:  ap.constituency,
+                    lok_sabha:     routing?.lok_sabha || ap.lok_sabha || null,
+                    confidence:    ap.confidence,
+                    source:        `ap_classifier:${ap.provider}`,
+                    reasoning:     ap.reasoning,
+                    matched_token: ap.matched_token || null,
+                    match_source:  ap.match_source  || null,
+                    auto_assigned: true,
+                    manual_review_required: false,
+                };
+
+                const routingTargets = routing ? {
+                    ac_key:        routing.ac_key,
+                    district_key:  routing.district_key,
+                    lok_sabha_key: routing.lok_sabha_key,
+                    dashboards:    routing.dashboards,
+                    mla_user_ids:  (routing.mla_users || []).map((u) => u.id),
+                    mp_user_ids:   (routing.mp_users  || []).map((u) => u.id),
+                    mla_name:      routing.mla_name,
+                    mp_name:       routing.mp_name,
+                    scope_keys:    routing.scope_keys,
+                    resolved_at:   new Date(),
+                } : null;
+
+                await Grievance.findOneAndUpdate(
+                    { id: grievanceId },
+                    { $set: { detected_location: finalLocation, routing_targets: routingTargets } }
+                );
+                console.log(`[GrievanceLocation] AP routed ${grievanceId} → ${ap.constituency} ` +
+                            `(district=${finalLocation.district || '?'}, ls=${finalLocation.lok_sabha || '?'}, ` +
+                            `mla_logins=${(routing?.mla_users || []).length}, mp_logins=${(routing?.mp_users || []).length})`);
+                return;
+            }
+        } catch (err) {
+            console.warn(`[GrievanceLocation] AP classifier failed for ${grievanceId}: ${err.message}`);
+        }
+
+        // Neither the person-mention short-circuit nor the AP classifier found
+        // a location — leave the grievance unlocated rather than guessing.
+        console.log(`[GrievanceLocation] No AP location found for ${grievanceId}; left unlocated.`);
+    } catch (error) {
+        console.error(`[GrievanceLocation] Final extraction error for ${grievanceId}:`, error.message);
+    }
 };
 
 /**
@@ -303,29 +245,57 @@ const reprocessMahbubnagarMappedGrievances = async ({
  * Updates the grievance document in-place with analysis results.
  * Runs async (fire-and-forget) so it doesn't block ingestion.
  */
-const analyzeGrievanceContent = async (grievanceId, text, platform, postedBy = {}, metadata = {}) => {
+const analyzeGrievanceContent = async (grievanceId, text, platform) => {
     try {
         if (!text || !text.trim()) return;
-        const analysisData = await analyzeContent(text, {
+
+        let analysisText = text;
+        let videoTranscriptSaved = null;
+        // Pull author + tagged keyword so the target-aware political pipeline
+        // can use them as deterministic signal (alongside the text).
+        let grievanceCtx = null;
+        try {
+            const grievanceDoc = await Grievance.findOne(
+                { id: grievanceId },
+                'content.media posted_by.handle tagged_account'
+            ).lean();
+            grievanceCtx = grievanceDoc;
+            const videoItems = (grievanceDoc?.content?.media || [])
+                .filter(m => m.type === 'video' || m.type === 'animated_gif')
+                .slice(0, 3);
+            if (videoItems.length > 0) {
+                const parts = [];
+                for (const item of videoItems) {
+                    const url = item.s3_url || item.video_url || item.url;
+                    if (!url) continue;
+                    const t = await transcribeVideoUrl(url);
+                    if (t) parts.push(t);
+                }
+                if (parts.length > 0) {
+                    videoTranscriptSaved = parts.join('\n');
+                    analysisText = `${text}\n\n[VIDEO TRANSCRIPT]:\n${videoTranscriptSaved}`;
+                }
+            }
+        } catch (transcribeErr) {
+            console.warn(`[AnalyzeContent] Video transcription skipped: ${transcribeErr.message}`);
+        }
+
+        const analysisData = await analyzeContent(analysisText, {
             platform: platform || 'x',
             skipForensics: true,
-            postedBy: postedBy,
-            mentions: metadata.mentions || [],
-            taggedAccount: metadata.taggedAccount || null
+            taggedKeyword: grievanceCtx?.tagged_account || '',
+            authorHandle: grievanceCtx?.posted_by?.handle || ''
         });
         if (!analysisData) return;
 
-        // Use dynamically generated sentiment from AI analysis, fallback to neutral
-        const sentiment = analysisData.sentiment || 'neutral';
-        const loc = analysisData.detected_location;
+        // Final sentiment is the target-relative one resolved by Stage 5.
+        const sentiment = analysisData.sentiment || analysisData.target_sentiment || 'moderate';
 
-        const updatedGrievance = await Grievance.findOneAndUpdate(
+        await Grievance.findOneAndUpdate(
             { id: grievanceId },
             {
                 $set: {
                     'analysis.sentiment': sentiment,
-                    'analysis.target_party': analysisData.target_party,
-                    'analysis.stance': analysisData.stance,
                     'analysis.risk_level': analysisData.risk_level,
                     'analysis.risk_score': analysisData.risk_score,
                     'analysis.category': analysisData.category,
@@ -340,46 +310,36 @@ const analyzeGrievanceContent = async (grievanceId, text, platform, postedBy = {
                     'analysis.highlights': analysisData.highlights || [],
                     'analysis.llm_analysis': analysisData.llm_analysis || null,
                     'analysis.forensic_results': analysisData.forensic_results || null,
-                    'analysis.analyzed_at': new Date(),
-                    // Also save the location if found during analysis
-                    ...(loc && {
-                        'detected_location.city': loc.city,
-                        'detected_location.district': loc.district,
-                        'detected_location.constituency': loc.constituency,
-                        'detected_location.keyword_matched': loc.keyword_matched,
-                        'detected_location.lat': loc.lat,
-                        'detected_location.lng': loc.lng,
-                        'detected_location.confidence': loc.confidence,
-                        'detected_location.source': loc.source,
-                    }),
-                    // Save linked persons
-                    'linked_persons': analysisData.linked_persons || []
+                    ...(videoTranscriptSaved && { 'analysis.video_transcript': videoTranscriptSaved }),
+                    // ── Target-aware political intelligence ──
+                    'analysis.target_sentiment': analysisData.target_sentiment || sentiment,
+                    'analysis.generic_sentiment': analysisData.generic_sentiment || sentiment,
+                    'analysis.target_entity': analysisData.target_entity || null,
+                    'analysis.target_entity_canonical': analysisData.target_entity_canonical || null,
+                    'analysis.target_relevance': analysisData.target_relevance || 0,
+                    'analysis.relevance_score': analysisData.relevance_score || 0,
+                    'analysis.stance': analysisData.stance || 'unrelated',
+                    'analysis.political_stance': analysisData.political_stance || analysisData.stance || 'unrelated',
+                    'analysis.beneficiary': analysisData.beneficiary || 'none',
+                    'analysis.attack_target': analysisData.attack_target || '',
+                    'analysis.narrative_direction': analysisData.narrative_direction || '',
+                    'analysis.political_alignment': analysisData.political_alignment || '',
+                    'analysis.political_mode': analysisData.political_mode || '',
+                    'analysis.mentioned_entities': analysisData.mentioned_entities || [],
+                    'analysis.toxicity_level': analysisData.toxicity_level || 'none',
+                    'analysis.hate_speech': !!analysisData.hate_speech,
+                    'analysis.propaganda_probability': analysisData.propaganda_probability || 0,
+                    'analysis.sarcasm_detected': !!analysisData.sarcasm_detected,
+                    'analysis.emotional_intensity': analysisData.emotional_intensity || 0,
+                    'analysis.misinformation_probability': analysisData.misinformation_probability || 0,
+                    'analysis.language_detected': analysisData.language_detected || '',
+                    'analysis.political_reasoning': analysisData.political_reasoning || '',
+                    'analysis.political_provider': analysisData.political_provider || '',
+                    'analysis.analyzed_at': new Date()
                 }
-            },
-            { new: true }
-        );
-
-        // --- MEDIA ARCHIVAL (NEW) ---
-        if (updatedGrievance && updatedGrievance.content?.media?.length > 0) {
-            try {
-                console.log(`[GrievanceMedia] Archiving media for ${grievanceId}...`);
-                const archivedMedia = await archiveTwitterMedia(
-                    updatedGrievance.content.media, 
-                    grievanceId, 
-                    { postUrl: updatedGrievance.tweet_url }
-                );
-                if (archivedMedia) {
-                    await Grievance.updateOne(
-                        { id: grievanceId },
-                        { $set: { 'content.media': archivedMedia } }
-                    );
-                    console.log(`[GrievanceMedia] Successfully archived media for ${grievanceId}`);
-                }
-            } catch (mediaErr) {
-                console.warn(`[GrievanceMedia] Archival failed for ${grievanceId}: ${mediaErr.message}`);
             }
-        }
-        console.log(`[GrievanceAnalysis] Completed for ${grievanceId}: ${sentiment} (${analysisData.risk_level || 'low'})`);
+        );
+        console.log(`[GrievanceAnalysis] Completed for ${grievanceId}: sentiment=${sentiment} stance=${analysisData.stance} target=${analysisData.target_entity} (${analysisData.risk_level || 'low'})`);
     } catch (err) {
         console.error(`[GrievanceAnalysis] Failed for ${grievanceId}: ${err.message}`);
     }
@@ -402,6 +362,34 @@ const getRapidApiHeaders = () => {
         'x-rapidapi-key': apiKey,
         'x-rapidapi-host': apiHost
     };
+};
+
+/**
+ * Check if text contains any of the provided keywords (case-insensitive, NFKC normalized).
+ * Fail-closed: empty/missing keyword list returns false (config bug, not "let everything in").
+ * Empty text returns false — media-only posts must use the handle-bypass path.
+ */
+const textMatchesAnyKeyword = (text, keywords) => {
+    if (!Array.isArray(keywords) || keywords.length === 0) return false;
+    if (!text || String(text).trim().length === 0) return false;
+    const normalizedText = String(text).toLowerCase().normalize('NFKC');
+    return keywords.some(k => {
+        const kw = String(k.keyword || k).toLowerCase().normalize('NFKC').trim();
+        if (!kw) return false;
+        return normalizedText.includes(kw);
+    });
+};
+
+let _keywordCache = { ts: 0, data: [] };
+const KEYWORD_CACHE_TTL_MS = 60 * 1000;
+const getActiveKeywordsCached = async () => {
+    const now = Date.now();
+    if (now - _keywordCache.ts < KEYWORD_CACHE_TTL_MS && _keywordCache.data.length > 0) {
+        return _keywordCache.data;
+    }
+    const data = await Keyword.find({ is_active: true }).lean();
+    _keywordCache = { ts: now, data };
+    return data;
 };
 
 const extractMediaFromLegacy = (legacy) => {
@@ -956,10 +944,9 @@ const upsertXGrievancesForSource = async (source, startDate = null, endDate = nu
     const archiveMediaFn = deps.archiveMediaFn || archiveTwitterMedia;
     const complaintCodeFn = deps.complaintCodeFn || generateComplaintCode;
 
+    const keywords = await getActiveKeywordsCached();
     const mentions = await searchMentionsFn(source.handle, 100, startDate, endDate);
-    const relevanceTerms = await getRelevanceTerms();
     let newCount = 0;
-    let skippedIrrelevant = 0;
 
     for (const mention of mentions) {
         const postDate = toSafeDate(mention.created_at);
@@ -968,10 +955,8 @@ const upsertXGrievancesForSource = async (source, startDate = null, endDate = nu
         const existing = await GrievanceModel.findOne({ tweet_id: mention.tweet_id });
         if (existing) continue;
 
-        // Strict: only a real handle mention or a tracked keyword lets a post through —
-        // no language/script leniency for anything else.
-        if (!textMatchesAnyKeyword(mention.text, relevanceTerms)) {
-            skippedIrrelevant += 1;
+        if (!textMatchesAnyKeyword(mention.text, keywords)) {
+            console.log(`[Grievance][X] Skipping tweet ${mention.tweet_id}: no keyword match in "${String(mention.text).substring(0, 80)}..."`);
             continue;
         }
 
@@ -984,7 +969,6 @@ const upsertXGrievancesForSource = async (source, startDate = null, endDate = nu
             complaint_code: await complaintCodeFn(),
             tweet_id: preparedMention.tweet_id,
             tagged_account: source.handle,
-            tagged_account_normalized: String(source.handle || '').replace(/^@/, '').toLowerCase(),
             grievance_source_id: source.id,
             platform: 'x',
             posted_by: {
@@ -1017,25 +1001,18 @@ const upsertXGrievancesForSource = async (source, startDate = null, endDate = nu
         // Sequential analysis: complete before moving to next grievance
         await analyzeGrievanceContent(grievance.id, preparedMention.text, 'x');
         // Extract and persist location from text
-        await extractAndSaveLocation(grievance.id, preparedMention.text, preparedMention.author);
+        await extractAndSaveLocation(grievance.id, preparedMention.text, preparedMention.author, { tagged_account: source.handle });
         // Stagger delay to reduce model load
         if (mentions.length > 1) await new Promise(r => setTimeout(r, 2000));
         newCount += 1;
-    }
-
-    if (skippedIrrelevant > 0) {
-        console.log(`[Grievance][${source.handle}] Skipped ${skippedIrrelevant} irrelevant mention(s) (ASCII-art/off-topic-language noise)`);
     }
 
     return { newCount, totalFetched: mentions.length };
 };
 
 const upsertFacebookGrievancesForSource = async (source, startDate = null, endDate = null) => {
+    const keywords = await getActiveKeywordsCached();
     const posts = await rapidApiFacebookService.fetchPagePosts(source.handle, 40, source.display_name);
-    // The page's own posts are kept unconditionally (this is the tracked
-    // official source itself). Public comments are search-like noise the
-    // same way X mentions are, so they go through the same relevance check.
-    const relevanceTerms = await getRelevanceTerms();
     let newCount = 0;
     let totalFetched = 0;
 
@@ -1056,12 +1033,15 @@ const upsertFacebookGrievancesForSource = async (source, startDate = null, endDa
         const postAuthorName = post.author_name || source.display_name || source.handle;
         const postText = String(post.text || '').trim() || '[Facebook post without text]';
 
+        // Handle-bypass: posts from the tracked source's own page are always kept
+        // (their relevance comes from the source itself, not from keyword match).
+        // Keyword filter still applies to comments below — those are from third parties.
+
         if (!existingPost) {
             const grievance = new Grievance({
                 complaint_code: await generateComplaintCode(),
                 tweet_id: canonicalPostId,
                 tagged_account: source.handle,
-                tagged_account_normalized: String(source.handle || '').replace(/^@/, '').toLowerCase(),
                 grievance_source_id: source.id,
                 platform: 'facebook',
                 posted_by: {
@@ -1098,7 +1078,7 @@ const upsertFacebookGrievancesForSource = async (source, startDate = null, endDa
             // Sequential analysis: complete before moving to next
             await analyzeGrievanceContent(grievance.id, postText, 'facebook');
             // Extract and persist location from text
-            await extractAndSaveLocation(grievance.id, postText, { location: '', bio: '' });
+            await extractAndSaveLocation(grievance.id, postText, { location: '', bio: '' }, { tagged_account: source.handle });
             // Stagger delay to reduce model load
             await new Promise(r => setTimeout(r, 2000));
             newCount += 1;
@@ -1120,8 +1100,8 @@ const upsertFacebookGrievancesForSource = async (source, startDate = null, endDa
             const existingComment = await Grievance.findOne({ tweet_id: canonicalCommentId });
             if (existingComment) continue;
 
-            if (!textMatchesAnyKeyword(commentText, relevanceTerms)) {
-                console.log(`[Grievance][FB] Skipping irrelevant comment ${commentId} — no known keyword/candidate found in text`);
+            if (!textMatchesAnyKeyword(commentText, keywords)) {
+                console.log(`[Grievance][FB] Skipping comment ${commentId}: no keyword match in "${commentText.substring(0, 80)}..."`);
                 continue;
             }
 
@@ -1133,7 +1113,6 @@ const upsertFacebookGrievancesForSource = async (source, startDate = null, endDa
                 complaint_code: await generateComplaintCode(),
                 tweet_id: canonicalCommentId,
                 tagged_account: source.handle,
-                tagged_account_normalized: String(source.handle || '').replace(/^@/, '').toLowerCase(),
                 grievance_source_id: source.id,
                 platform: 'facebook',
                 posted_by: {
@@ -1214,12 +1193,7 @@ const fetchAllGrievances = async (startDate = null, endDate = null) => {
         const sources = await GrievanceSource.find({ is_active: true });
         let totalNew = 0;
 
-        // --- Source-based fetching (mentions via @handle) ---
         for (const source of sources) {
-            // Pause between sources while a Frequent Engagers analysis is
-            // actively using the shared RapidAPI key — this is a background
-            // batch job, that's interactive and user-waited-on.
-            await yieldToInteractive();
             const result = await upsertGrievancesForSource(source, startDate, endDate);
             totalNew += result.newCount;
 
@@ -1232,31 +1206,7 @@ const fetchAllGrievances = async (startDate = null, endDate = null) => {
             );
         }
 
-        // --- Keyword-based X/Twitter fetching ---
-        // Delegates to fetchKeywordGrievances, which enforces textMatchesAnyKeyword()
-        // relevance filtering — X "Top" search routinely returns loosely-related
-        // results that never actually contain the searched term.
-        let keywordNew = 0;
-        try {
-            const xResult = await fetchKeywordGrievances('x');
-            keywordNew = xResult?.newGrievances || 0;
-            console.log(`[FetchAll][X-Keywords] Total new from keywords: ${keywordNew}`);
-        } catch (kwErr) {
-            console.error(`[FetchAll][X-Keywords] Keyword fetch failed: ${kwErr.message}`);
-        }
-
-        // --- Keyword-based Facebook fetching ---
-        let fbKeywordNew = 0;
-        try {
-            const fbResult = await fetchKeywordGrievances('facebook');
-            fbKeywordNew = fbResult?.newGrievances || 0;
-            console.log(`[FetchAll][FB-Keywords] Total new from keywords: ${fbKeywordNew}`);
-        } catch (fbErr) {
-            console.error(`[FetchAll][FB-Keywords] Keyword fetch failed: ${fbErr.message}`);
-        }
-
-        totalNew += keywordNew + fbKeywordNew;
-        return { newGrievances: totalNew, fromSources: totalNew - keywordNew - fbKeywordNew, fromKeywords: keywordNew + fbKeywordNew };
+        return { newGrievances: totalNew };
     } catch (error) {
         throw error;
     }
@@ -1628,18 +1578,55 @@ const searchXByKeyword = async (query, limit = 50) => {
 /**
  * Create a Grievance doc from a generic post object (platform-agnostic).
  */
-const createGrievanceFromPost = async (post, platform, taggedKeyword) => {
+const createGrievanceFromPost = async (post, platform, taggedKeyword, forceLocation = null) => {
     const existing = await Grievance.findOne({ tweet_id: post.tweet_id });
     if (existing) return null;
+
+    const keywords = await getActiveKeywordsCached();
+    if (!textMatchesAnyKeyword(post.text, keywords)) {
+        console.log(`[createGrievanceFromPost] Skipping ${post.tweet_id}: no keyword match in "${String(post.text).substring(0, 80)}..."`);
+        return null;
+    }
 
     const postDate = toSafeDate(post.created_at);
 
     // Sanitize media — ensure all URLs are plain strings (FB sometimes sends {uri, height, width})
+    const VIDEO_EXT_RE = /\.(mp4|m3u8|webm|mov|m4s)(\?|$)/i;
     const sanitizedMedia = (post.media || []).map(m => {
-        const url = typeof m === 'string' ? m : (typeof m.url === 'string' ? m.url : (m.url?.uri || m.uri || m.src || ''));
-        const previewUrl = typeof m.preview_url === 'string' ? m.preview_url : (m.preview_url?.uri || url);
-        const videoUrl = typeof m.video_url === 'string' ? m.video_url : (m.video_url?.uri || undefined);
-        return { type: m.type || 'photo', url: String(url || ''), preview_url: String(previewUrl || ''), ...(videoUrl ? { video_url: String(videoUrl) } : {}) };
+        let url = typeof m === 'string' ? m : (typeof m.url === 'string' ? m.url : (m.url?.uri || m.uri || m.src || ''));
+        // Read either `preview_url` (new shape) or `preview` (X service legacy).
+        // Reject anything that looks like a video stream — those belong in
+        // video_url, not preview_url, and would otherwise blank the UI poster.
+        let previewUrl = typeof m.preview_url === 'string' ? m.preview_url
+            : (m.preview_url?.uri
+                || (typeof m.preview === 'string' ? m.preview : m.preview?.uri)
+                || '');
+        if (VIDEO_EXT_RE.test(previewUrl)) previewUrl = '';
+        let videoUrl = typeof m.video_url === 'string' ? m.video_url : (m.video_url?.uri || undefined);
+
+        const original_url = String(url || '');
+        const original_video_url = videoUrl ? String(videoUrl) : (m.type === 'video' ? original_url : undefined);
+
+        // Proxy media to bypass CORS/Referer issues
+        const mediaAnalyzerService = require('./mediaAnalyzerService');
+        if (url && (url.includes('twimg.com') || url.includes('fbcdn.net') || url.includes('cdninstagram.com'))) {
+            url = mediaAnalyzerService.MEDIA_ANALYZER_URL.includes('127.0.0.1') || mediaAnalyzerService.MEDIA_ANALYZER_URL.includes('localhost')
+                ? `/api/media/stream?url=${encodeURIComponent(url)}`
+                : url;
+        }
+        if (videoUrl && (videoUrl.includes('twimg.com') || videoUrl.includes('fbcdn.net') || videoUrl.includes('cdninstagram.com'))) {
+            videoUrl = mediaAnalyzerService.MEDIA_ANALYZER_URL.includes('127.0.0.1') || mediaAnalyzerService.MEDIA_ANALYZER_URL.includes('localhost')
+                ? `/api/media/stream?url=${encodeURIComponent(videoUrl)}`
+                : videoUrl;
+        }
+
+        return {
+            type: m.type || 'photo',
+            url: String(url || ''),
+            preview_url: String(previewUrl || ''),
+            original_url: original_url,
+            ...(videoUrl ? { video_url: String(videoUrl), original_video_url } : {})
+        };
     }).filter(m => m.url);
 
     const textContent = post.text || '(no text)';
@@ -1648,7 +1635,6 @@ const createGrievanceFromPost = async (post, platform, taggedKeyword) => {
         complaint_code: await generateComplaintCode(),
         tweet_id: post.tweet_id,
         tagged_account: taggedKeyword,
-        tagged_account_normalized: String(taggedKeyword || '').replace(/^@/, '').toLowerCase(),
         platform,
         posted_by: {
             handle: post.author?.handle || post.author?.author_handle || 'unknown',
@@ -1673,10 +1659,47 @@ const createGrievanceFromPost = async (post, platform, taggedKeyword) => {
     });
 
     syncLegacyFieldsFromWorkflow(grievance, 'received');
+    
+    if (forceLocation) {
+        grievance.detected_location = {
+            ...forceLocation,
+            location_found: true,
+            confidence: 1.0
+        };
+    }
+
     await grievance.save();
     await analyzeGrievanceContent(grievance.id, post.text || '', platform);
-    // Extract and persist location
-    await extractAndSaveLocation(grievance.id, post.text || '', post.author || {});
+    
+    // Extract and persist location only if NOT forced
+    if (!forceLocation) {
+        await extractAndSaveLocation(grievance.id, post.text || '', post.author || {}, { tagged_account: grievance.tagged_account });
+    }
+
+    // Trigger background media archival if video exists
+    if (sanitizedMedia.some(m => m.type === 'video')) {
+        const mediaAnalyzerService = require('./mediaAnalyzerService');
+        const firstVideo = sanitizedMedia.find(m => m.type === 'video');
+        const downloadUrl = firstVideo.original_video_url || firstVideo.original_url;
+        if (firstVideo && downloadUrl) {
+            console.log(`[MediaArchival] Triggering archival for grievance ${grievance.id} with URL: ${downloadUrl}`);
+            mediaAnalyzerService.downloadVideo(downloadUrl).then(async (result) => {
+                if (result && result.download_url) {
+                    console.log(`[MediaArchival] Archival SUCCESS for ${grievance.id}. Result URL: ${result.download_url}`);
+                    await Grievance.findOneAndUpdate(
+                        { id: grievance.id },
+                        { $set: { 'content.archived_video_url': result.download_url } }
+                    );
+                    console.log(`[MediaArchival] Updated DB for ${grievance.id}`);
+                } else {
+                    console.warn(`[MediaArchival] Archival returned no download_url for ${grievance.id}`, result);
+                }
+            }).catch(err => {
+                console.error(`[MediaArchival] Archival failed for ${grievance.id}: ${err.message}`);
+            });
+        }
+    }
+
     return grievance;
 };
 
@@ -1685,53 +1708,6 @@ const createGrievanceFromPost = async (post, platform, taggedKeyword) => {
  * matching keywords from the Keyword model.
  * @param {string|null} platformFilter - 'facebook', 'instagram', 'youtube', or null for all
  */
-/**
- * Search APIs (X "Top" search, YouTube, Facebook) routinely return semantically
- * "related" results that never actually contain the searched term — retweets
- * of a reply, recommended videos, near-miss matches, etc. Relevance is checked
- * against the FULL known-keyword universe, not just the single term that was
- * searched — a hit is kept if it contains that term, any other active Settings
- * keyword, or any tracked candidate's name/handle (ours or opposition). This
- * avoids discarding genuinely relevant posts that happen to match a different
- * known term than the one that triggered the search.
- */
-const buildCandidateRelevanceTerms = () => {
-    const terms = new Set();
-    for (const leader of [...OUR_LEADERS, ...OPPOSITION_LEADERS]) {
-        if (leader.name) terms.add(leader.name);
-        if (leader.shortName) terms.add(leader.shortName);
-        (leader.handles_normalized || []).forEach((h) => h && terms.add(h));
-    }
-    return [...terms];
-};
-
-// NFC-normalize before comparing so Telugu text typed/stored in a different
-// Unicode composition (decomposed matras, etc.) than the scraped post text
-// still matches instead of silently failing an `includes()` check.
-const normalizeForMatch = (value) => String(value || '').normalize('NFC').toLowerCase();
-
-const textMatchesAnyKeyword = (text, terms) => {
-    if (!text || !terms?.length) return false;
-    const normalizedText = normalizeForMatch(text);
-    return terms.some((term) => {
-        const t = normalizeForMatch(term).trim();
-        if (!t) return false;
-        return normalizedText.includes(t) ||
-            normalizedText.includes(`@${t}`) ||
-            normalizedText.includes(`#${t}`);
-    });
-};
-
-/** Shared relevance universe: active Settings keywords + every tracked candidate. */
-const getRelevanceTerms = async () => {
-    const keywords = await Keyword.find({ is_active: true }).select('keyword').lean();
-    return [...new Set([
-        ...keywords.map((k) => k.keyword).filter(Boolean),
-        ...buildCandidateRelevanceTerms()
-    ])];
-};
-
-
 const fetchKeywordGrievances = async (platformFilter = null) => {
     try {
         const keywords = await Keyword.find({ is_active: true });
@@ -1747,23 +1723,11 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
         const runX = !platformFilter || platformFilter === 'x' || platformFilter === 'twitter';
         console.log(`[KeywordFetch] Platforms: FB=${runFB} IG=${runIG} YT=${runYT} X=${runX}`);
 
-        // Relevance universe: every active Settings keyword + every tracked
-        // candidate's name/handle (ours + opposition). A search hit is kept if
-        // it matches ANY of these, not just the single term that was searched.
-        const relevanceTerms = [...new Set([
-            ...keywords.map((k) => k.keyword).filter(Boolean),
-            ...buildCandidateRelevanceTerms()
-        ])];
-        console.log(`[KeywordFetch] Relevance universe: ${relevanceTerms.length} terms (${keywords.length} settings keywords + candidates)`);
-
         let totalNew = 0;
         let keywordsSearched = 0;
         const seenTweetIds = new Set();
 
         for (const kw of keywords) {
-            // Pause between keywords while a Frequent Engagers analysis is
-            // actively using the shared RapidAPI key.
-            await yieldToInteractive();
             const rawKeyword = (kw.keyword || '').trim();
             if (!rawKeyword) continue;
             keywordsSearched++;
@@ -1781,7 +1745,7 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                     for (const variant of variants) {
                         try {
                             console.log(`[KeywordFetch][FB] Searching: "${variant}"`);
-                            const fbPosts = await rapidApiFacebookService.searchPosts(variant, 20);
+                            const fbPosts = await rapidApiFacebookService.searchPosts(variant);
                             console.log(`[KeywordFetch][FB] Found ${fbPosts.length} for "${variant}"`);
 
                             for (const fbPost of fbPosts) {
@@ -1791,8 +1755,8 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                                 if (seenTweetIds.has(canonicalId)) continue;
                                 seenTweetIds.add(canonicalId);
 
-                                if (!textMatchesAnyKeyword(fbPost.text, relevanceTerms)) {
-                                    console.log(`[KeywordFetch][FB] Skipping irrelevant post ${postId} — no known keyword/candidate found in text`);
+                                if (!textMatchesAnyKeyword(fbPost.text, [kw])) {
+                                    console.log(`[KeywordFetch][FB] Skipping post ${postId}: returned by API but text does not contain "${rawKeyword}"`);
                                     continue;
                                 }
 
@@ -1841,10 +1805,45 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                                 if (seenTweetIds.has(canonicalId)) continue;
                                 seenTweetIds.add(canonicalId);
 
-                                if (!textMatchesAnyKeyword(tweet.text, relevanceTerms)) {
-                                    console.log(`[KeywordFetch][X] Skipping irrelevant tweet ${tweet.id} — no known keyword/candidate found in text`);
+                                if (!textMatchesAnyKeyword(tweet.text, [kw])) {
+                                    console.log(`[KeywordFetch][X] Skipping tweet ${tweet.id}: returned by API but text does not contain "${rawKeyword}"`);
                                     continue;
                                 }
+
+                                // Build a thread/quote context object so the
+                                // grievance popup can render the parent tweet
+                                // and any quoted snapshot the search response
+                                // already carries. The reply parent is a stub
+                                // here (only id + handle) — the UI may resolve
+                                // its full body lazily; ingestion stays cheap.
+                                const ctx = {};
+                                if (tweet.in_reply_to_id) {
+                                    ctx.in_reply_to = {
+                                        tweet_id: String(tweet.in_reply_to_id),
+                                        tweet_url: tweet.in_reply_to_handle
+                                            ? `https://x.com/${tweet.in_reply_to_handle}/status/${tweet.in_reply_to_id}`
+                                            : `https://x.com/i/web/status/${tweet.in_reply_to_id}`,
+                                        posted_by: { handle: tweet.in_reply_to_handle || undefined },
+                                        content: {},
+                                        post_date: null,
+                                    };
+                                }
+                                if (tweet.quoted_content) {
+                                    const qc = tweet.quoted_content;
+                                    ctx.quoted = {
+                                        tweet_id: qc.tweet_id || null,
+                                        tweet_url: qc.url || (qc.author_handle && qc.tweet_id
+                                            ? `https://x.com/${qc.author_handle}/status/${qc.tweet_id}` : null),
+                                        posted_by: {
+                                            handle: qc.author_handle || null,
+                                            display_name: qc.author_name || null,
+                                            profile_image_url: qc.profile_image_url || null,
+                                        },
+                                        content: { text: qc.text || '', media: qc.media || [] },
+                                        post_date: qc.created_at || null,
+                                    };
+                                }
+                                if (tweet.conversation_id) ctx.conversation_id = String(tweet.conversation_id);
 
                                 const post = {
                                     tweet_id: canonicalId,
@@ -1865,7 +1864,8 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                                         replies: parseInt(tweet.metrics?.reply) || 0,
                                         views: parseInt(tweet.metrics?.views) || 0,
                                         quotes: parseInt(tweet.metrics?.quote) || 0
-                                    }
+                                    },
+                                    context: Object.keys(ctx).length > 0 ? ctx : undefined,
                                 };
                                 const created = await createGrievanceFromPost(post, 'x', rawKeyword);
                                 if (created) count++;
@@ -1890,7 +1890,7 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                     let count = 0;
                     try {
                         console.log(`[KeywordFetch][IG] Fetching posts for user: "${igUsername}"`);
-                        const igPosts = await rapidApiInstagramService.searchPosts(igUsername, 20);
+                        const igPosts = await rapidApiInstagramService.searchPosts(igUsername);
                         console.log(`[KeywordFetch][IG] Found ${igPosts.length} for "${igUsername}"`);
 
                         for (const igPost of igPosts) {
@@ -1900,8 +1900,8 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                             if (seenTweetIds.has(canonicalId)) continue;
                             seenTweetIds.add(canonicalId);
 
-                            if (!textMatchesAnyKeyword(igPost.text, relevanceTerms)) {
-                                console.log(`[KeywordFetch][IG] Skipping irrelevant post ${postId} — no known keyword/candidate found in text`);
+                            if (!textMatchesAnyKeyword(igPost.text, [kw])) {
+                                console.log(`[KeywordFetch][IG] Skipping post ${postId}: text does not contain "${rawKeyword}"`);
                                 continue;
                             }
 
@@ -1945,9 +1945,8 @@ const fetchKeywordGrievances = async (platformFilter = null) => {
                                 seenTweetIds.add(canonicalId);
 
                                 const text = `${video.title || ''} \n\n${video.description || ''} `.trim();
-
-                                if (!textMatchesAnyKeyword(text, relevanceTerms)) {
-                                    console.log(`[KeywordFetch][YT] Skipping irrelevant video ${videoId} — no known keyword/candidate found in title/description`);
+                                if (!textMatchesAnyKeyword(text, [kw])) {
+                                    console.log(`[KeywordFetch][YT] Skipping video ${videoId}: title/description does not contain "${rawKeyword}"`);
                                     continue;
                                 }
 
@@ -1997,10 +1996,10 @@ module.exports = {
     getGrievanceStats,
     analyzeGrievanceContent,
     extractAndSaveLocation,
-    reprocessMahbubnagarMappedGrievances,
     fetchKeywordGrievances,
+    createGrievanceFromPost,
     textMatchesAnyKeyword,
-    getRelevanceTerms,
+    getActiveKeywordsCached,
     __private: {
         archiveMentionMediaForStorage,
         upsertXGrievancesForSource

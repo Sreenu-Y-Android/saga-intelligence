@@ -9,21 +9,39 @@ const keywordSchema = new mongoose.Schema({
   },
   keyword: {
     type: String,
-    required: true,
-    unique: true
+    required: true
+  },
+  // 'keyword' | 'hashtag' | 'handle' — lets the UI render the right glyph and
+  // ingestion know whether to match a username vs free text.
+  kind: {
+    type: String,
+    enum: ['keyword', 'hashtag', 'handle'],
+    default: 'keyword'
   },
   category: {
     type: String,
-    // 'monitoring' — search-only topic/candidate keywords for active content
-    // fetching (fetchKeywordGrievances). Kept distinct from the threat/hate/
-    // violence categories used for alert risk-scoring in monitorService.js.
-    enum: ['violence', 'threat', 'hate', 'other', 'monitoring'],
+    enum: ['violence', 'threat', 'hate', 'other'],
     required: true
   },
   language: {
     type: String,
     enum: ['en', 'hi', 'te', 'all'],
     default: 'en'
+  },
+  // Scope: a keyword can be statewide (party-wide) or tied to a single AC.
+  // Super admin can own party-wide entries; MLAs own their AC entries.
+  constituency: {
+    type: String,
+    default: null,
+    trim: true
+  },
+  is_party_wide: {
+    type: Boolean,
+    default: false
+  },
+  owner_user_id: {
+    type: String,
+    default: null
   },
   is_active: {
     type: Boolean,
@@ -33,17 +51,17 @@ const keywordSchema = new mongoose.Schema({
     type: Number,
     default: 50
   },
-  // Metadata only — does not affect matching/search. Lets the Keyword
-  // management UI filter monitoring terms by which way they cut for the client.
-  direction: {
-    type: String,
-    enum: ['positive', 'negative', 'neutral'],
-    default: 'neutral'
-  },
   created_at: {
     type: Date,
     default: Date.now
   }
 });
+
+// Same keyword text can exist for multiple constituencies (Visakhapatnam +
+// Tirupati can both track "water shortage") — uniqueness is per-scope.
+keywordSchema.index(
+  { keyword: 1, constituency: 1, kind: 1 },
+  { unique: true, name: 'uniq_keyword_per_scope' }
+);
 
 module.exports = mongoose.model('Keyword', keywordSchema);

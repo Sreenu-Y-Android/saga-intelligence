@@ -378,8 +378,6 @@ const PLATFORMS = [
   { value: 'instagram', label: 'Instagram', icon: Instagram, color: 'text-pink-500', gradient: 'from-purple-600 to-pink-500', hoverBg: 'hover:bg-pink-50 hover:text-pink-600 hover:border-pink-200', activeBg: 'bg-gradient-to-r from-purple-600 to-pink-600 text-white border-pink-600' },
   { value: 'facebook', label: 'Facebook', icon: Facebook, color: 'text-blue-600', gradient: 'from-blue-600 to-cyan-500', hoverBg: 'hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200', activeBg: 'bg-blue-600 text-white border-blue-600' },
   { value: 'youtube', label: 'YouTube', icon: Youtube, color: 'text-red-500', gradient: 'from-red-600 to-orange-500', hoverBg: 'hover:bg-red-50 hover:text-red-600 hover:border-red-200', activeBg: 'bg-red-600 text-white border-red-600' },
-  { value: 'dark_web', label: 'Dark Web Search Link', icon: Globe, color: 'text-violet-600', gradient: 'from-violet-700 to-fuchsia-600', hoverBg: 'hover:bg-violet-50 hover:text-violet-700 hover:border-violet-200', activeBg: 'bg-gradient-to-r from-violet-700 to-fuchsia-600 text-white border-violet-700' },
-  { value: 'web_articles', label: 'Web Articles', icon: FileText, color: 'text-emerald-600', gradient: 'from-emerald-600 to-teal-500', hoverBg: 'hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200', activeBg: 'bg-gradient-to-r from-emerald-600 to-teal-500 text-white border-emerald-600' },
 ];
 
 const CATEGORY_OPTIONS = [
@@ -567,10 +565,6 @@ const Sources = () => {
 
   const fetchPlatformStats = async () => {
     if (platformFilter === 'all') return;
-    if (!['x', 'instagram', 'facebook', 'youtube'].includes(platformFilter)) {
-      setContentStats({ total: 0, high: 0, medium: 0, loading: false });
-      return;
-    }
     setContentStats(prev => ({ ...prev, loading: true }));
     try {
       const res = await api.get(`/content/stats?platform=${platformFilter}`);
@@ -636,8 +630,6 @@ const Sources = () => {
       case 'x': return `https://x.com/${source.identifier.replace('@', '')}`;
       case 'instagram': return `https://instagram.com/${source.identifier.replace('@', '')}`;
       case 'facebook': return `https://facebook.com/${source.identifier.replace('@', '')}`;
-      case 'dark_web': return source.identifier;
-      case 'web_articles': return source.identifier;
       default: return '#';
     }
   };
@@ -648,8 +640,6 @@ const Sources = () => {
       case 'x': return <Twitter className={`${size} text-slate-800`} />;
       case 'instagram': return <Instagram className={`${size} text-pink-500`} />;
       case 'facebook': return <Facebook className={`${size} text-blue-600`} />;
-      case 'dark_web': return <Globe className={`${size} text-violet-600`} />;
-      case 'web_articles': return <FileText className={`${size} text-emerald-600`} />;
       default: return <Globe className={`${size}`} />;
     }
   };
@@ -657,11 +647,11 @@ const Sources = () => {
   const getPlatformGradient = (platform) => (PLATFORMS.find(p => p.value === platform)?.gradient || 'from-blue-600 to-cyan-500');
 
   const getContentLabel = (platform) => {
-    switch (platform) { case 'youtube': return 'Videos'; case 'x': return 'Tweets'; case 'instagram': return 'Posts'; case 'facebook': return 'Posts'; case 'dark_web': return 'Links'; case 'web_articles': return 'Articles'; default: return 'Content'; }
+    switch (platform) { case 'youtube': return 'Videos'; case 'x': return 'Tweets'; case 'instagram': return 'Posts'; case 'facebook': return 'Posts'; default: return 'Content'; }
   };
 
   const getPlatformViewLabel = (platform) => {
-    switch (platform) { case 'youtube': return 'View on YouTube'; case 'x': return 'View on X'; case 'instagram': return 'View on Instagram'; case 'facebook': return 'View on Facebook'; case 'dark_web': return 'Open Dark Web Link'; case 'web_articles': return 'Open Article'; default: return 'View Profile'; }
+    switch (platform) { case 'youtube': return 'View on YouTube'; case 'x': return 'View on X'; case 'instagram': return 'View on Instagram'; case 'facebook': return 'View on Facebook'; default: return 'View Profile'; }
   };
 
   const formatIST = (dateStr) => { try { return format(new Date(dateStr), 'd MMM yyyy, h:mm a'); } catch { return 'N/A'; } };
@@ -1463,6 +1453,11 @@ const Sources = () => {
                               {source.profile_image_url ? <img src={source.profile_image_url} alt="" className="h-9 w-9 rounded-full object-cover" /> : <span className="text-sm font-semibold text-slate-500">{(source.display_name || '?')[0].toUpperCase()}</span>}
                             </div>
                             <span className="text-sm font-medium text-slate-700 truncate max-w-[200px]" title={source.display_name}>{source.display_name}</span>
+                            {source.is_party_wide ? (
+                              <Badge variant="secondary" className="text-[10px] px-1 py-0">Party-wide</Badge>
+                            ) : source.constituency ? (
+                              <Badge variant="outline" className="text-[10px] px-1 py-0 border-blue-300 text-blue-700">{source.constituency}</Badge>
+                            ) : null}
                           </div>
                         </TableCell>
                         <TableCell><span className="text-sm text-slate-500">{source.last_checked ? format(new Date(source.last_checked), 'd MMM yyyy, h:mm a') : 'Never'}</span></TableCell>

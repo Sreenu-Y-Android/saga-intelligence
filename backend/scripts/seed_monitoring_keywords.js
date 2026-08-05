@@ -16,7 +16,8 @@
  * as a medium-risk alert. weight=1 keeps these search-only / non-risk.
  *
  * Run:  node scripts/seed_monitoring_keywords.js
- *       node scripts/seed_monitoring_keywords.js --force   (overwrite existing)
+ *       node scripts/seed_monitoring_keywords.js --force     (overwrite existing)
+ *       node scripts/seed_monitoring_keywords.js --dry-run   (preview only, no writes)
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
@@ -146,11 +147,13 @@ const buildCandidateEntries = () => {
 };
 
 async function seed() {
-  const force = process.argv.slice(2).includes('--force');
+  const args = process.argv.slice(2);
+  const force = args.includes('--force');
+  const dryRun = args.includes('--dry-run');
 
   try {
     await mongoose.connect(process.env.MONGODB_URI, { dbName: process.env.DB_NAME });
-    console.log(`Connected to MongoDB (db: ${process.env.DB_NAME})`);
+    console.log(`Connected to MongoDB (db: ${process.env.DB_NAME})${dryRun ? ' [DRY RUN — no writes]' : ''}`);
 
     const entries = [...buildTopicEntries(), ...buildCandidateEntries()];
     console.log(`Prepared ${entries.length} monitoring keyword entries (topic + candidate, deduped).`);
@@ -161,6 +164,7 @@ async function seed() {
       // but we don't want "TRS" and "trs" as separate docs.
       const existing = await Keyword.findOne({ keyword: { $regex: `^${entry.keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
       if (existing) {
+        if (dryRun) { skipped++; continue; }
         if (force) {
           existing.set(entry);
           await existing.save();
@@ -170,11 +174,12 @@ async function seed() {
         }
         continue;
       }
+      if (dryRun) { inserted++; continue; }
       await Keyword.create(entry);
       inserted++;
     }
 
-    console.log(`\nDone — inserted: ${inserted}, updated: ${updated}, skipped: ${skipped}, total considered: ${entries.length}`);
+    console.log(`\n${dryRun ? 'Would insert' : 'Done — inserted'}: ${inserted}, ${dryRun ? 'would update' : 'updated'}: ${updated}, skipped: ${skipped}, total considered: ${entries.length}`);
     process.exit(0);
   } catch (err) {
     console.error('Seed failed:', err.message);

@@ -311,10 +311,17 @@ const AccessManagement = () => {
                     <div className="p-2 bg-indigo-50 rounded-lg">
                         <ShieldCheck className="text-indigo-600" size={24} />
                     </div>
-                    <div>
+                    <div className="flex-1">
                         <h1 className="text-2xl font-bold text-gray-900">Access Management</h1>
                         <p className="text-sm text-gray-500">Assign page and feature-level permissions to officers</p>
                     </div>
+                    <a
+                        href="/constituency-logins"
+                        className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-indigo-600 text-white text-sm px-3 py-1.5 hover:bg-indigo-700"
+                    >
+                        <ShieldCheck size={14} />
+                        Constituency Logins
+                    </a>
                 </div>
             </div>
 

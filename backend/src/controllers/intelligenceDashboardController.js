@@ -9,6 +9,11 @@ const GrievanceWorkflowReport = require('../models/GrievanceWorkflowReport');
 const SuggestionReport = require('../models/SuggestionReport');
 const CriticismReport = require('../models/CriticismReport');
 const POI = require('../models/POI');
+const cacheService = require('../services/cacheService');
+
+const sendShortCacheHeaders = (res, browserSeconds = 15) => {
+  res.set('Cache-Control', `private, max-age=${browserSeconds}`);
+};
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -34,6 +39,13 @@ const safePct = (cur, prev) => {
    ═══════════════════════════════════════════════════════════════════ */
 const getAlertsIntelligence = async (req, res) => {
   try {
+    const cacheKey = `intel:alerts:v1:${req.query.from || ''}:${req.query.to || ''}`;
+    const cached = await cacheService.get(cacheKey);
+    if (cached) {
+      sendShortCacheHeaders(res);
+      return res.status(200).json(cached);
+    }
+
     const now = new Date();
     const from = parseDateParam(req.query.from) || addDays(startOfDay(now), -29);
     const to = parseDateParam(req.query.to, { end: true }) || endOfDay(now);
@@ -108,10 +120,12 @@ const getAlertsIntelligence = async (req, res) => {
 
     // ── Escalations (status-based) ──
     const escalationStats = await Report.aggregate([
+      { $match: { generated_at: { $gte: from, $lte: to } } },
       { $group: { _id: '$status', count: { $sum: 1 } } }
     ]);
 
     const escalationByPlatform = await Report.aggregate([
+      { $match: { generated_at: { $gte: from, $lte: to } } },
       { $group: { _id: { platform: '$platform', status: '$status' }, count: { $sum: 1 } } }
     ]);
 
@@ -137,22 +151,7 @@ const getAlertsIntelligence = async (req, res) => {
       { $sort: { _id: 1 } }
     ]);
 
-    // ── Top Active Accounts (most alerts) ──
-    const topActiveAccounts = await Alert.aggregate([
-      { $match: { created_at: { $gte: from, $lte: to } } },
-      {
-        $group: {
-          _id: { author: '$author', handle: '$author_handle', platform: '$platform' },
-          alertCount: { $sum: 1 },
-          highRisk: { $sum: { $cond: [{ $eq: ['$risk_level', 'high'] }, 1, 0] } },
-          mediumRisk: { $sum: { $cond: [{ $eq: ['$risk_level', 'medium'] }, 1, 0] } },
-          lowRisk: { $sum: { $cond: [{ $eq: ['$risk_level', 'low'] }, 1, 0] } },
-          latestAlert: { $max: '$created_at' }
-        }
-      },
-      { $sort: { alertCount: -1 } },
-      { $limit: 15 }
-    ]);
+    // ── Top Active Accounts (Removed to prevent timeouts, using Frequent Engagers on frontend instead) ──
 
     // ── Keywords analytics ──
     const keywordStats = await Keyword.aggregate([
@@ -242,7 +241,7 @@ const getAlertsIntelligence = async (req, res) => {
       Report.countDocuments({ generated_at: { $gte: prevFrom, $lte: prevTo } })
     ]);
 
-    res.status(200).json({
+    const alertsIntelPayload = {
       generatedAt: now.toISOString(),
       dateRange: { from: from.toISOString(), to: to.toISOString() },
       accounts: {
@@ -277,16 +276,7 @@ const getAlertsIntelligence = async (req, res) => {
         previousTotal: prevReports,
         changePct: safePct(currentReports, prevReports)
       },
-      topActiveAccounts: topActiveAccounts.map(r => ({
-        author: r._id.author,
-        handle: r._id.handle,
-        platform: r._id.platform,
-        alertCount: r.alertCount,
-        highRisk: r.highRisk,
-        mediumRisk: r.mediumRisk,
-        lowRisk: r.lowRisk,
-        latestAlert: r.latestAlert
-      })),
+
       keywords: {
         byCategory: keywordStats.map(r => ({
           category: r._id, total: r.total, active: r.active, avgWeight: Number((r.avgWeight || 0).toFixed(1))
@@ -304,7 +294,10 @@ const getAlertsIntelligence = async (req, res) => {
         alerts: { current: currentAlerts, previous: prevAlerts, changePct: safePct(currentAlerts, prevAlerts) },
         reports: { current: currentReports, previous: prevReports, changePct: safePct(currentReports, prevReports) }
       }
-    });
+    };
+    await cacheService.set(cacheKey, alertsIntelPayload, 45);
+    sendShortCacheHeaders(res);
+    res.status(200).json(alertsIntelPayload);
   } catch (error) {
     console.error('Alerts intelligence error:', error);
     res.status(500).json({ message: error.message });
@@ -316,10 +309,18 @@ const getAlertsIntelligence = async (req, res) => {
    ═══════════════════════════════════════════════════════════════════ */
 const getGrievancesIntelligence = async (req, res) => {
   try {
+    const cacheKey = `intel:grievances:v1:${req.query.from || ''}:${req.query.to || ''}`;
+    const cached = await cacheService.get(cacheKey);
+    if (cached) {
+      sendShortCacheHeaders(res);
+      return res.status(200).json(cached);
+    }
+
     const now = new Date();
     const from = parseDateParam(req.query.from) || addDays(startOfDay(now), -29);
     const to = parseDateParam(req.query.to, { end: true }) || endOfDay(now);
     const dateMatch = { post_date: { $gte: from, $lte: to } };
+    const reportDateMatch = { post_date: { $gte: from, $lte: to } };
 
     // ── Total Grievances ──
     const [totalGrievances, grievancesInRange] = await Promise.all([
@@ -353,21 +354,25 @@ const getGrievancesIntelligence = async (req, res) => {
 
     // ── Grievance Workflow Reports by Status ──
     const gwrStatusDist = await GrievanceWorkflowReport.aggregate([
+      { $match: reportDateMatch },
       { $group: { _id: '$status', count: { $sum: 1 } } }
     ]);
 
     // ── Grievance Workflow Reports by Category ──
     const gwrCategoryDist = await GrievanceWorkflowReport.aggregate([
+      { $match: reportDateMatch },
       { $group: { _id: '$category', count: { $sum: 1 } } }
     ]);
 
     // ── Suggestion Reports category ──
     const suggCategoryDist = await SuggestionReport.aggregate([
+      { $match: reportDateMatch },
       { $group: { _id: '$category', count: { $sum: 1 } } }
     ]);
 
     // ── Criticism Reports category ──
     const critCategoryDist = await CriticismReport.aggregate([
+      { $match: reportDateMatch },
       { $group: { _id: '$category', count: { $sum: 1 } } }
     ]);
 
@@ -434,18 +439,18 @@ const getGrievancesIntelligence = async (req, res) => {
 
     // ── Reports shared (grievance workflow shared_at exists) ──
     const [gwrTotal, gwrShared, gwrPending, gwrEscalated, gwrClosed] = await Promise.all([
-      GrievanceWorkflowReport.countDocuments({}),
-      GrievanceWorkflowReport.countDocuments({ shared_at: { $exists: true, $ne: null } }),
-      GrievanceWorkflowReport.countDocuments({ status: 'PENDING' }),
-      GrievanceWorkflowReport.countDocuments({ status: 'ESCALATED' }),
-      GrievanceWorkflowReport.countDocuments({ status: 'CLOSED' })
+      GrievanceWorkflowReport.countDocuments(reportDateMatch),
+      GrievanceWorkflowReport.countDocuments({ ...reportDateMatch, shared_at: { $exists: true, $ne: null } }),
+      GrievanceWorkflowReport.countDocuments({ ...reportDateMatch, status: 'PENDING' }),
+      GrievanceWorkflowReport.countDocuments({ ...reportDateMatch, status: 'ESCALATED' }),
+      GrievanceWorkflowReport.countDocuments({ ...reportDateMatch, status: 'CLOSED' })
     ]);
 
     const [suggTotal, suggShared, critTotal, critShared] = await Promise.all([
-      SuggestionReport.countDocuments({}),
-      SuggestionReport.countDocuments({ shared_at: { $exists: true, $ne: null } }),
-      CriticismReport.countDocuments({}),
-      CriticismReport.countDocuments({ shared_at: { $exists: true, $ne: null } })
+      SuggestionReport.countDocuments(reportDateMatch),
+      SuggestionReport.countDocuments({ ...reportDateMatch, shared_at: { $exists: true, $ne: null } }),
+      CriticismReport.countDocuments(reportDateMatch),
+      CriticismReport.countDocuments({ ...reportDateMatch, shared_at: { $exists: true, $ne: null } })
     ]);
 
     // Previous period comparison
@@ -457,7 +462,7 @@ const getGrievancesIntelligence = async (req, res) => {
       Grievance.countDocuments({ is_active: true, post_date: { $gte: prevFrom, $lte: prevTo } })
     ]);
 
-    res.status(200).json({
+    const grievancesIntelPayload = {
       generatedAt: now.toISOString(),
       dateRange: { from: from.toISOString(), to: to.toISOString() },
       summary: {
@@ -502,9 +507,81 @@ const getGrievancesIntelligence = async (req, res) => {
         previous: prevCount,
         changePct: safePct(currentCount, prevCount)
       }
-    });
+    };
+    await cacheService.set(cacheKey, grievancesIntelPayload, 45);
+    sendShortCacheHeaders(res);
+    res.status(200).json(grievancesIntelPayload);
   } catch (error) {
     console.error('Grievances intelligence error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+const getGrievanceReportsFeed = async (req, res) => {
+  try {
+    const now = new Date();
+    const from = parseDateParam(req.query.from) || addDays(startOfDay(now), -29);
+    const to = parseDateParam(req.query.to, { end: true }) || endOfDay(now);
+    const dateQuery = { post_date: { $gte: from, $lte: to } };
+
+    const [grievanceReports, suggestionReports, criticismReports] = await Promise.all([
+      GrievanceWorkflowReport.find(dateQuery).sort({ post_date: -1, created_at: -1 }).limit(1000).lean(),
+      SuggestionReport.find(dateQuery).sort({ post_date: -1, created_at: -1 }).limit(1000).lean(),
+      CriticismReport.find(dateQuery).sort({ post_date: -1, created_at: -1 }).limit(1000).lean()
+    ]);
+
+    const grievanceIds = [...new Set(
+      [...grievanceReports, ...suggestionReports, ...criticismReports]
+        .map((report) => String(report.grievance_id || '').trim())
+        .filter(Boolean)
+    )];
+
+    const grievances = grievanceIds.length
+      ? await Grievance.find(
+          { id: { $in: grievanceIds } },
+          {
+            id: 1,
+            platform: 1,
+            post_date: 1,
+            analysis: 1,
+            posted_by: 1,
+            content: 1
+          }
+        ).lean()
+      : [];
+
+    const grievanceMap = new Map(grievances.map((grievance) => [String(grievance.id), grievance]));
+
+    const enrich = (report, type) => {
+      const source = grievanceMap.get(String(report.grievance_id || ''));
+      return {
+        ...report,
+        _type: type,
+        sentiment: source?.analysis?.sentiment || null,
+        risk_level: source?.analysis?.risk_level || null,
+        grievance_platform: source?.platform || null,
+        grievance_post_date: source?.post_date || null,
+        grievance_text: source?.content?.full_text || source?.content?.text || null
+      };
+    };
+
+    const reports = [
+      ...grievanceReports.map((report) => enrich(report, 'grievance')),
+      ...suggestionReports.map((report) => enrich(report, 'suggestion')),
+      ...criticismReports.map((report) => enrich(report, 'criticism'))
+    ].sort((a, b) => {
+      const left = new Date(b.post_date || b.created_at || 0).getTime();
+      const right = new Date(a.post_date || a.created_at || 0).getTime();
+      return left - right;
+    });
+
+    res.status(200).json({
+      generatedAt: now.toISOString(),
+      dateRange: { from: from.toISOString(), to: to.toISOString() },
+      reports
+    });
+  } catch (error) {
+    console.error('Grievance reports feed error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -686,5 +763,6 @@ const getProfilesIntelligence = async (req, res) => {
 module.exports = {
   getAlertsIntelligence,
   getGrievancesIntelligence,
+  getGrievanceReportsFeed,
   getProfilesIntelligence
 };

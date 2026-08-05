@@ -16,15 +16,18 @@ import { useDistrictDetail, useCityLeaderboard, useTopicAnalytics } from '../../
 /**
  * District drill-down content.
  */
-const DistrictDetailPanel = ({ districtKey, filters }) => {
+const DistrictDetailPanel = ({ districtKey, filters, active = true }) => {
   const navigate = useNavigate();
   const [showAllCities, setShowAllCities] = useState(false);
   const [showAllTopics, setShowAllTopics] = useState(false);
   const [postsTab, setPostsTab] = useState('recent'); // 'recent' | 'top' | 'influencers'
 
-  const { data, loading } = useDistrictDetail(districtKey, filters);
-  const { data: allCities, loading: allCitiesLoading } = useCityLeaderboard(districtKey, filters, { enabled: showAllCities });
-  const { data: allTopics, loading: allTopicsLoading } = useTopicAnalytics(districtKey, filters, { enabled: showAllTopics });
+  // `active` lets the parent tab stay mounted (preserving showAllCities/
+  // showAllTopics/postsTab selections) while hidden, without this panel
+  // continuing to fetch/refetch in the background.
+  const { data, loading, error } = useDistrictDetail(districtKey, filters, { enabled: active });
+  const { data: allCities, loading: allCitiesLoading } = useCityLeaderboard(districtKey, filters, { enabled: active && showAllCities });
+  const { data: allTopics, loading: allTopicsLoading } = useTopicAnalytics(districtKey, filters, { enabled: active && showAllTopics });
 
   const districtName = formatGeoName(data?.district?.name || districtKey);
   const stats = data?.stats;
@@ -36,6 +39,16 @@ const DistrictDetailPanel = ({ districtKey, filters }) => {
 
   const goToCityMentions = (row) => navigate(`/grievances?location=${encodeURIComponent(row.city_name || row.name)}`);
   const goToDistrictMentions = () => navigate(`/grievances?location=${encodeURIComponent(districtName)}`);
+
+  if (!loading && error) {
+    return (
+      <div className="bg-white rounded-xl border border-red-200 p-10 flex flex-col items-center justify-center gap-2 text-red-500">
+        <span className="text-2xl">⚠️</span>
+        <span className="text-sm font-semibold">{error}</span>
+        <span className="text-xs text-slate-400">This is a failed request, not an empty district — try again or check your access.</span>
+      </div>
+    );
+  }
 
   if (!loading && !stats) {
     return (
@@ -96,7 +109,12 @@ const DistrictDetailPanel = ({ districtKey, filters }) => {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <div className="lg:col-span-2">
-          <SentimentTrendChart data={data?.sentiment_trend || []} loading={loading} title={`${districtName} · Sentiment Trend`} />
+          <SentimentTrendChart
+            data={data?.sentiment_trend || []}
+            loading={loading}
+            title={`${districtName} · Sentiment Trend`}
+            windowNote={filters?.from && filters?.to && filters.from === filters.to ? 'Showing trailing 7 days — your filter selects a single day' : undefined}
+          />
         </div>
         <div className="bg-white rounded-xl border border-slate-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04)] p-4">
           <h3 className="text-sm font-bold text-slate-800 mb-2">Platform Distribution</h3>

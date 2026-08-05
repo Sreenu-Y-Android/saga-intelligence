@@ -18,8 +18,16 @@ const ChartTooltip = ({ active, payload, label }) => {
   );
 };
 
-/** Daily sentiment trend — reused for both a single district and the state-wide series. */
-const SentimentTrendChart = ({ data = [], loading, title = 'Sentiment Trend', height = 220 }) => {
+/**
+ * Daily sentiment trend — reused for both a single district and the
+ * state-wide series.
+ *
+ * `windowNote`: pass a short string (e.g. "showing trailing 7 days — your
+ * filter selects a single day") when the chart's actual date range differs
+ * from what the surrounding KPIs reflect, so that divergence is visible
+ * instead of silent.
+ */
+const SentimentTrendChart = ({ data = [], loading, title = 'Sentiment Trend', height = 220, windowNote }) => {
   if (loading) {
     return <div className="bg-white rounded-xl border border-slate-200 p-4 animate-pulse" style={{ height: height + 48 }} />;
   }
@@ -33,10 +41,18 @@ const SentimentTrendChart = ({ data = [], loading, title = 'Sentiment Trend', he
   }
 
   const hasSentimentData = data.some((d) => (d.positive || 0) > 0 || (d.negative || 0) > 0 || (d.neutral || 0) > 0);
+  // A day can have real mention volume that's entirely unclassified — if the
+  // breakdown mode only ever plotted positive/negative/neutral, that day
+  // would render as a flat zero even though it had activity. The faint
+  // Total line is always drawn underneath so that volume stays visible.
+  const hasUnclassifiedVolume = data.some((d) => (d.total || 0) > (d.positive || 0) + (d.negative || 0) + (d.neutral || 0));
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-4">
-      <h3 className="text-sm font-bold text-slate-800 mb-2">{title}</h3>
+      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+        <h3 className="text-sm font-bold text-slate-800">{title}</h3>
+        {windowNote && <span className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 font-semibold">{windowNote}</span>}
+      </div>
       <div style={{ width: '100%', height }}>
         <ResponsiveContainer>
           <AreaChart data={data} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
@@ -65,6 +81,9 @@ const SentimentTrendChart = ({ data = [], loading, title = 'Sentiment Trend', he
             <Legend wrapperStyle={{ fontSize: 11 }} />
             {hasSentimentData ? (
               <>
+                {hasUnclassifiedVolume && (
+                  <Area type="monotone" dataKey="total" name="Total Mentions (incl. unclassified)" stroke="#94a3b8" fill="none" strokeWidth={1} strokeDasharray="3 3" dot={false} />
+                )}
                 <Area type="monotone" dataKey="neutral" name="Neutral" stroke="#f59e0b" fill="url(#geoNeutral)" strokeWidth={1.5} dot={{ r: 3 }} />
                 <Area type="monotone" dataKey="positive" name="Positive" stroke="#10b981" fill="url(#geoPositive)" strokeWidth={2} dot={{ r: 3 }} />
                 <Area type="monotone" dataKey="negative" name="Negative" stroke="#ef4444" fill="url(#geoNegative)" strokeWidth={2} dot={{ r: 3 }} />

@@ -217,7 +217,7 @@ async function buildAlertsData(filters = {}) {
   for (const a of rawAlerts) {
     const key = (a.author_handle || a.author || 'unknown').toLowerCase();
     if (!profileMap.has(key)) {
-      const topic = a.relevance_pipeline?.topic || a.source_category || 'Normal';
+      const topic = a.target_pipeline?.topic || a.source_category || 'Normal';
       profileMap.set(key, {
         author: a.author || a.author_handle || 'Unknown',
         handle: a.author_handle ? `@${a.author_handle.replace(/^@/, '')}` : '',
@@ -272,7 +272,7 @@ async function buildAlertsData(filters = {}) {
     author: a.author || a.author_handle || 'Unknown',
     handle: a.author_handle ? `@${a.author_handle.replace(/^@/, '')}` : '',
     platform: a.platform || 'x',
-    topic: a.relevance_pipeline?.topic || a.source_category || a.llm_analysis?.grievance_type || 'Normal',
+    topic: a.target_pipeline?.topic || a.source_category || a.llm_analysis?.grievance_type || 'Normal',
     risk: a.risk_level || 'high',
     alert_date: a.published_at || a.created_at,
     link: a.content_url || '#'

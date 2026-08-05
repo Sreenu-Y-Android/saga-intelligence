@@ -67,7 +67,7 @@
     "react-router-dom": "^7.5.1",
     "react-scripts": "5.0.1",
     "react-simple-maps": "^3.0.0",
-    "react-to-print": "^3.2.0",
+    "react-to-print": "^2.15.1",
     "recharts": "^3.6.0",
     "sonner": "^2.0.3",
     "tailwind-merge": "^3.2.0",
@@ -79,8 +79,7 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build",
-    "test": "craco test",
-    "build:districts": "node scripts/build-district-geojson.js"
+    "test": "craco test"
   },
   "browserslist": {
     "production": [
@@ -98,6 +97,7 @@
     "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
     "@craco/craco": "^7.1.0",
     "@eslint/js": "9.23.0",
+    "@turf/turf": "^7.3.5",
     "autoprefixer": "^10.4.20",
     "eslint": "9.23.0",
     "eslint-plugin-import": "2.31.0",

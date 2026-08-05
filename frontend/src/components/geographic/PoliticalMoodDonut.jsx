@@ -11,9 +11,21 @@ const PoliticalMoodDonut = ({ positivePct = 0, neutralPct = 0, negativePct = 0, 
     { key: 'negative', label: 'Negative', value: negativePct },
   ];
   const dominant = [...data].sort((a, b) => b.value - a.value)[0];
+  const hasData = positivePct + neutralPct + negativePct > 0;
 
   if (loading) {
     return <div className="h-full w-full animate-pulse flex items-center justify-center"><div className="h-24 w-24 rounded-full bg-slate-100" /></div>;
+  }
+
+  if (!hasData) {
+    return (
+      <div className="flex items-center gap-3">
+        <div className="w-[92px] h-[92px] rounded-full border-4 border-dashed border-slate-200 flex items-center justify-center flex-shrink-0">
+          <span className="text-[10px] text-slate-400 text-center px-2">No data</span>
+        </div>
+        <div className="text-xs text-slate-400">No mentions in this window yet.</div>
+      </div>
+    );
   }
 
   return (

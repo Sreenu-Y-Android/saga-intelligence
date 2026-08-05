@@ -7,8 +7,18 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "lint": "eslint src/**/*.js",
-    "reprocess:mahabubnagar:dry": "node scripts/reprocess_mahabubnagar_ac.js --dry-run",
-    "reprocess:mahabubnagar": "node scripts/reprocess_mahabubnagar_ac.js --execute"
+    "reprocess:sangrur:dry": "node scripts/reprocess_sangrur_ac.js --dry-run",
+    "reprocess:sangrur": "node scripts/reprocess_sangrur_ac.js --execute",
+    "db:clean": "node scripts/clean-db.js",
+    "seed:policies": "node scripts/seed_policy_mappings.js",
+    "fetch:bsk": "node scripts/fetch_bsk_now.js",
+    "fetch:bsk:x": "node scripts/fetch_bsk_now.js x",
+    "pipeline:alerts": "node scripts/alerts_to_mentions.js",
+    "pipeline:alerts:fast": "node scripts/alerts_to_mentions.js --fast",
+    "pipeline:alerts:dry": "node scripts/alerts_to_mentions.js --dry-run",
+    "check:apis": "node scripts/check_platform_apis.js",
+    "backfill-alert-published-at": "node src/scripts/backfill-alert-published-at.js",
+    "backfill-matched-keywords": "node src/scripts/backfill-matched-keywords.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.983.0",
@@ -29,7 +39,6 @@
     "dotenv": "^16.4.5",
     "exceljs": "^4.4.0",
     "express": "^4.19.2",
-    "form-data": "^4.0.5",
     "google-translate-api-x": "^10.7.2",
     "google-trends-api": "^4.9.2",
     "googleapis": "^134.0.0",

@@ -74,6 +74,16 @@ const contentSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  // An admin deleted the Alert generated for this content. Distinct from
+  // `is_deleted` above (which tracks the ORIGINAL POST's availability, not
+  // our alert about it). Checked by every alert-creation path
+  // (velocityAlertService, monitorService.rescanContent/scanSourceOnce) so a
+  // deleted alert doesn't get silently recreated the next time this same
+  // content is re-evaluated.
+  alert_suppressed: {
+    type: Boolean,
+    default: false
+  },
   // Whether the content has expired (e.g. Instagram stories after 24h)
   is_expired: {
     type: Boolean,
@@ -215,7 +225,7 @@ const contentSchema = new mongoose.Schema({
 
 // NOTE: index will be migrated at runtime in backend/src/index.js (fixIndexes)
 contentSchema.index({ platform: 1, content_id: 1 }, { unique: true });
-// contentSchema.index({ id: 1 }); // Removed: redundant with unique:true on id field
+contentSchema.index({ id: 1 }); // Critical: used by alert $lookup pipelines
 contentSchema.index({ content_id: 1 }); // Standalone for $expr lookups
 contentSchema.index({ platform: 1, source_id: 1, published_at: -1 });
 contentSchema.index({ platform: 1, risk_level: 1 });

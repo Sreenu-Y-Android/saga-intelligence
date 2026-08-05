@@ -1,17 +1,19 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import { format, formatDistanceToNowStrict } from 'date-fns';
 import {
-    Heart, MessageCircle, Repeat2, BarChart3, Bookmark,
-    BadgeCheck, Play, Download, Loader2, Eye, Shield, Tag, MapPin, AlertTriangle, Trash2
+    Heart, MessageCircle, Repeat2, BarChart3, Bookmark, Network,
+    BadgeCheck, Play, Download, Loader2, Eye, Shield, Tag, MapPin, AlertTriangle, Trash2, AtSign,
+    ImageOff, Video as VideoIcon, Globe
 } from 'lucide-react';
 import { Card, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
-import { normalizeMediaList } from '../AlertCards';
+import { normalizeMediaList, PostEngagersDialog } from '../AlertCards';
 import { cn } from '../../lib/utils';
 import { useAuth } from '../../contexts/AuthContext';
-
-const SPECIAL_ACCESS_EMAIL = 'sreenu@gmail.com';
+import { canManageRestrictedGrievanceUi } from '../../lib/grievanceUiPermissions';
+import api from '../../lib/api';
+import { toast } from 'sonner';
 const GlobeIcon = ({ className }) => (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className={className}>
         <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zM1.6 8a6.4 6.4 0 0 1 12.8 0 6.4 6.4 0 0 1-12.8 0z" />
@@ -126,42 +128,12 @@ const highlightMentions = (text) => {
     );
 };
 
-const ActionButtons = ({ grievance, onAction, isDownloading = false, enableSpecialActions = false }) => {
+const ActionButtons = ({ grievance, onAction, isDownloading = false }) => {
     const { user } = useAuth();
-    const canEditDelete = enableSpecialActions && user?.email === SPECIAL_ACCESS_EMAIL;
+    const canDeleteGrievance = canManageRestrictedGrievanceUi(user);
 
     return (
         <div className="flex items-center gap-1 shrink-0">
-            {canEditDelete && (
-                <select
-                    className="h-7 text-[11px] font-semibold rounded ring-1 ring-slate-200 bg-slate-100 text-slate-700 px-1 transition-all duration-150"
-                    title="Edit sentiment"
-                    value={(grievance.analysis?.sentiment || 'neutral')}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => {
-                        e.stopPropagation();
-                        onAction?.('edit_sentiment', { grievance, sentiment: e.target.value });
-                    }}
-                >
-                    <option value="positive">Positive</option>
-                    <option value="neutral">Moderate</option>
-                    <option value="negative">Negative</option>
-                </select>
-            )}
-            {canEditDelete && (
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-red-700 bg-red-100 hover:bg-red-200 ring-1 ring-red-200 transition-all duration-150 active:scale-95 active:translate-y-[1px]"
-                    title="Delete"
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        onAction?.('delete', { grievance });
-                    }}
-                >
-                    <Trash2 className="h-4 w-4" />
-                </Button>
-            )}
             <Button
                 variant="ghost"
                 size="icon"
@@ -176,7 +148,24 @@ const ActionButtons = ({ grievance, onAction, isDownloading = false, enableSpeci
                 {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             </Button>
 
-            {/*
+            {canDeleteGrievance && (
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-red-600 bg-red-50 hover:bg-red-100 ring-1 ring-red-100 transition-all duration-150 active:scale-95 active:translate-y-[1px]"
+                    title="Delete Grievance"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm('Are you sure you want to delete this grievance? This action cannot be undone.')) {
+                            onAction?.('delete', { grievance });
+                        }
+                    }}
+                >
+                    <Trash2 className="h-4 w-4" />
+                </Button>
+            )}
+
+            {/* 
             <Button
                 variant="ghost"
                 size="icon"
@@ -188,11 +177,27 @@ const ActionButtons = ({ grievance, onAction, isDownloading = false, enableSpeci
                 }}
             >
                 Q
-            </Button> 
+            </Button>
             */}
         </div>
     );
 };
+
+const TranslateButton = ({ isTranslated, isTranslating, onTranslate }) => (
+    <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onTranslate?.(); }}
+        disabled={isTranslating}
+        className="text-[11px] font-medium text-blue-600 hover:text-blue-800 flex items-center gap-1 transition-all duration-150 active:scale-95 shrink-0"
+    >
+        {isTranslating ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+            <Globe className="h-3 w-3" />
+        )}
+        <span>{isTranslated ? 'Show Original' : (isTranslating ? 'Translating...' : 'Translate')}</span>
+    </button>
+);
 
 const SentimentBadge = ({ analysis }) => {
     if (!analysis?.analyzed_at) return null;
@@ -200,7 +205,7 @@ const SentimentBadge = ({ analysis }) => {
     const badgeConfig = {
         positive: { bg: 'bg-green-100', text: 'text-green-700', ring: 'ring-green-200', label: 'Positive' },
         negative: { bg: 'bg-red-100', text: 'text-red-700', ring: 'ring-red-200', label: 'Negative' },
-        neutral: { bg: 'bg-amber-100', text: 'text-amber-700', ring: 'ring-amber-200', label: 'Moderate' }
+        neutral: { bg: 'bg-amber-100', text: 'text-amber-700', ring: 'ring-amber-200', label: 'Neutral' }
     };
     const config = badgeConfig[sentiment] || badgeConfig.neutral;
     return (
@@ -211,15 +216,15 @@ const SentimentBadge = ({ analysis }) => {
     );
 };
 
-const LocationBadge = ({ detectedLocation }) => {
-    if (!detectedLocation?.city) return null;
-    return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ring-1 bg-cyan-50 text-cyan-700 ring-cyan-200">
-            <MapPin className="h-2.5 w-2.5" />
-            {detectedLocation.city}
-        </span>
-    );
-};
+// const OldLocationBadge = ({ detectedLocation }) => {
+//    if (!detectedLocation?.city) return null;
+//    return (
+//        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ring-1 bg-cyan-50 text-cyan-700 ring-cyan-200">
+//            <MapPin className="h-2.5 w-2.5" />
+//            {detectedLocation.city}
+//        </span>
+//    );
+// };
 
 const TOPIC_STYLES = {
     'Political Criticism': 'bg-purple-50 text-purple-700 ring-purple-200',
@@ -247,6 +252,34 @@ const GrievanceTopicBadge = ({ analysis }) => {
         <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ring-1 ${style}`}>
             <Tag className="h-2.5 w-2.5" />
             {displayTopic}
+        </span>
+    );
+};
+
+const TaggedAccountBadge = ({ account }) => {
+    if (!account) return null;
+    const isHashtag = account.startsWith('#');
+    const display = account.replace(/^[@#]/, '');
+    return (
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ring-1 bg-slate-100 text-slate-700 ring-slate-200">
+            {isHashtag ? <Tag className="h-2.5 w-2.5" /> : <AtSign className="h-2.5 w-2.5" />}
+            {display}
+        </span>
+    );
+};
+
+const LocationBadge = ({ location }) => {
+    if (!location || (!location.city && !location.district && !location.constituency)) return null;
+    const display = location.constituency || location.city || location.district;
+    const isRoundRobin = (location.source || '').includes('round_robin');
+    return (
+        <span className={cn(
+            "inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ring-1",
+            isRoundRobin ? "bg-amber-50 text-amber-700 ring-amber-200" : "bg-emerald-50 text-emerald-700 ring-emerald-200"
+        )}>
+            <MapPin className="h-2.5 w-2.5" />
+            {display}
+            {isRoundRobin && <span className="ml-0.5 opacity-60 text-[8px]">(RR)</span>}
         </span>
     );
 };
@@ -408,6 +441,276 @@ const WorkflowMeta = ({ grievance, onAction }) => {
     );
 };
 
+/* ─── Robust Media Renderer ─────────────────────────────────────────
+ * Walks a fallback chain of URLs and hot-swaps on each error. Final
+ * fallback is a visible placeholder card — never a blank box.
+ *
+ * Candidate order (richest → cheapest):
+ *   1. archived S3 URL              (item.s3_url / s3_preview)
+ *   2. preview / thumbnail          (item.preview_url / item.preview)
+ *   3. raw url                      (item.url)
+ *   4. original_url (raw upstream)  (item.original_url)
+ *   5. proxy variant of each        (getProxiedMediaUrl(...))
+ */
+const buildMediaCandidates = (item, getProxiedMediaUrl, preferPoster = false) => {
+    if (!item) return [];
+    const raw = [
+        item.s3_preview,
+        item.s3_url,
+        preferPoster ? item.preview_url : null,
+        preferPoster ? item.preview : null,
+        item.preview_url,
+        item.preview,
+        item.url,
+        item.original_url,
+        item.video_url,
+        item.original_video_url
+    ].filter((u) => typeof u === 'string' && u.length > 0);
+
+    const proxied = typeof getProxiedMediaUrl === 'function'
+        ? raw.map((u) => getProxiedMediaUrl(u)).filter(Boolean)
+        : [];
+
+    const seen = new Set();
+    const out = [];
+    for (const u of [...raw, ...proxied]) {
+        if (!u || seen.has(u)) continue;
+        seen.add(u);
+        out.push(u);
+    }
+    return out;
+};
+
+const MediaPlaceholder = ({ isVideo, className }) => (
+    <div className={cn(
+        'flex flex-col items-center justify-center select-none',
+        isVideo
+            ? 'bg-gradient-to-br from-slate-700 to-slate-900 text-white/70'
+            : 'text-slate-400 bg-slate-100 border border-dashed border-slate-200',
+        className
+    )}>
+        {isVideo ? (
+            <>
+                <div className="bg-white/20 rounded-full p-3 backdrop-blur-sm border border-white/20 mb-1.5">
+                    <Play className="h-5 w-5 text-white fill-white" />
+                </div>
+                <span className="text-[10px] font-medium uppercase tracking-wider text-white/50">Play video</span>
+            </>
+        ) : (
+            <>
+                <ImageOff className="h-6 w-6 mb-1" />
+                <span className="text-[10px] font-medium uppercase tracking-wider">Image unavailable</span>
+            </>
+        )}
+    </div>
+);
+
+const RobustImg = ({ item, getProxiedMediaUrl, isVideoPoster = false, className = '', alt = '' }) => {
+    const candidates = useMemo(
+        () => buildMediaCandidates(item, getProxiedMediaUrl, isVideoPoster),
+        [item, getProxiedMediaUrl, isVideoPoster]
+    );
+    const [idx, setIdx] = useState(0);
+
+    if (!candidates.length || idx >= candidates.length) {
+        return <MediaPlaceholder isVideo={isVideoPoster} className={cn('w-full h-full', className)} />;
+    }
+
+    return (
+        <img
+            src={candidates[idx]}
+            alt={alt}
+            className={className}
+            referrerPolicy="no-referrer"
+            loading="lazy"
+            onError={() => setIdx((i) => i + 1)}
+        />
+    );
+};
+
+/* ─── Video Thumbnail: tries image poster → native <video> → HLS.js first-frame
+ * → finally a styled play card. Never shows "unavailable". ─── */
+const VideoThumbnail = ({ item, getProxiedMediaUrl, className = '', grievance }) => {
+    const imgCandidates = useMemo(
+        () => buildMediaCandidates(item, getProxiedMediaUrl, true)
+              .filter(u => !/\.(mp4|m3u8|webm|mov|m4s)(\?|$)/i.test(u)),
+        [item, getProxiedMediaUrl]
+    );
+    const videoCandidates = useMemo(() => {
+        const raw = [
+            grievance?.content?.archived_video_url,
+            item?.s3_url,
+            item?.video_url,
+            item?.url,
+            item?.original_video_url,
+            item?.original_url
+        ].filter(u => typeof u === 'string' && u.length > 0);
+        const proxied = typeof getProxiedMediaUrl === 'function'
+            ? raw.map(u => getProxiedMediaUrl(u)).filter(Boolean) : [];
+        const seen = new Set();
+        return [...raw, ...proxied].filter(u => { if (!u || seen.has(u)) return false; seen.add(u); return true; });
+    }, [item, getProxiedMediaUrl, grievance]);
+
+    const [imgIdx, setImgIdx] = useState(0);
+    const [vidIdx, setVidIdx] = useState(0);
+    const [phase, setPhase] = useState('img'); // 'img' -> 'video' -> 'placeholder'
+    const hlsVideoRef = React.useRef(null);
+
+    // For HLS sources, native <video src=…> fails immediately on Chrome/Firefox.
+    // Attach HLS.js to extract a first-frame poster on those.
+    const currentVidUrl = videoCandidates[vidIdx];
+    const isHls = !!currentVidUrl && /\.m3u8(\?|$)/i.test(currentVidUrl);
+
+    React.useEffect(() => {
+        if (phase !== 'video' || !isHls) return;
+        const video = hlsVideoRef.current;
+        if (!video || !currentVidUrl) return;
+        // Skip if Safari (native HLS) — the <video> tag handles it directly.
+        if (video.canPlayType('application/vnd.apple.mpegurl')) return;
+        let hls;
+        try {
+            const Hls = require('hls.js');
+            if (!Hls.isSupported()) return;
+            hls = new Hls({ maxBufferLength: 4, maxMaxBufferLength: 8 });
+            hls.loadSource(currentVidUrl);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.ERROR, (_, data) => {
+                if (data?.fatal) {
+                    if (vidIdx + 1 < videoCandidates.length) setVidIdx((i) => i + 1);
+                    else setPhase('placeholder');
+                }
+            });
+        } catch (_) {
+            setPhase('placeholder');
+        }
+        return () => { try { hls && hls.destroy(); } catch (_) {} };
+    }, [phase, isHls, currentVidUrl, vidIdx, videoCandidates.length]);
+
+    // Phase 1: Try loading poster images
+    if (phase === 'img' && imgCandidates.length > 0 && imgIdx < imgCandidates.length) {
+        return (
+            <img
+                src={imgCandidates[imgIdx]}
+                alt=""
+                className={className}
+                referrerPolicy="no-referrer"
+                loading="lazy"
+                onError={() => {
+                    if (imgIdx + 1 < imgCandidates.length) setImgIdx(i => i + 1);
+                    else setPhase('video');
+                }}
+            />
+        );
+    }
+
+    // Phase 2: Try <video> for first-frame poster. For m3u8 the effect above
+    // wires up HLS.js; for native MP4/WebM/Safari-HLS we just set src.
+    if (phase !== 'placeholder' && videoCandidates.length > 0 && vidIdx < videoCandidates.length) {
+        return (
+            <video
+                ref={hlsVideoRef}
+                src={isHls ? undefined : videoCandidates[vidIdx]}
+                className={className}
+                referrerPolicy="no-referrer"
+                preload="metadata"
+                muted
+                playsInline
+                onLoadedData={(e) => { try { e.currentTarget.currentTime = 0.1; } catch (_) {} }}
+                onError={() => {
+                    // For HLS, the HLS.js error handler manages fallback. Avoid double-advancing.
+                    if (isHls) return;
+                    if (vidIdx + 1 < videoCandidates.length) setVidIdx(i => i + 1);
+                    else setPhase('placeholder');
+                }}
+            />
+        );
+    }
+
+    // Phase 3: Styled play card — never shows "unavailable"
+    return <MediaPlaceholder isVideo className={cn('w-full h-full', className)} />;
+};
+
+/* ─── Robust Video (poster fallback + video source fallback) ─── */
+const RobustVideo = ({ item, getProxiedMediaUrl, className = '', onPlay }) => {
+    const posterCandidates = useMemo(
+        () => buildMediaCandidates(item, getProxiedMediaUrl, true),
+        [item, getProxiedMediaUrl]
+    );
+    const videoCandidates = useMemo(() => {
+        if (!item) return [];
+        const raw = [
+            item.s3_url,
+            item.video_url,
+            item.url,
+            item.original_video_url,
+            item.original_url
+        ].filter((u) => typeof u === 'string' && u.length > 0);
+        const proxied = typeof getProxiedMediaUrl === 'function'
+            ? raw.map((u) => getProxiedMediaUrl(u)).filter(Boolean)
+            : [];
+        const seen = new Set();
+        const out = [];
+        for (const u of [...raw, ...proxied]) {
+            if (!u || seen.has(u)) continue;
+            seen.add(u);
+            out.push(u);
+        }
+        return out;
+    }, [item, getProxiedMediaUrl]);
+
+    const [posterIdx, setPosterIdx] = useState(0);
+    const [videoIdx, setVideoIdx] = useState(0);
+    const [videoFailed, setVideoFailed] = useState(false);
+
+    if (videoFailed || !videoCandidates.length) {
+        // Fall back to poster image with play overlay, or placeholder
+        return (
+            <div className={cn('relative', className)}>
+                <RobustImg
+                    item={item}
+                    getProxiedMediaUrl={getProxiedMediaUrl}
+                    isVideoPoster
+                    className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                    <div className="bg-black/60 rounded-full p-3 backdrop-blur-sm border border-white/30">
+                        <Play className="h-5 w-5 text-white fill-white" />
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    const posterSrc = posterCandidates[posterIdx] || undefined;
+
+    return (
+        <div className={cn('relative', className)} onClick={onPlay}>
+            <video
+                poster={posterSrc}
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+                playsInline
+                muted
+                preload="metadata"
+                onError={() => {
+                    if (videoIdx + 1 < videoCandidates.length) {
+                        setVideoIdx((i) => i + 1);
+                    } else {
+                        setVideoFailed(true);
+                    }
+                }}
+            >
+                <source src={videoCandidates[videoIdx]} />
+            </video>
+            <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                <div className="bg-black/60 rounded-full p-3 backdrop-blur-sm border border-white/30">
+                    <Play className="h-5 w-5 text-white fill-white" />
+                </div>
+            </div>
+        </div>
+    );
+};
+
 /* ─── Media Grid (Twitter style — rounded) ─── */
 const MediaGrid = ({ media, getProxiedMediaUrl, onAction, grievance }) => {
     const normalized = normalizeMediaList(media);
@@ -416,28 +719,45 @@ const MediaGrid = ({ media, getProxiedMediaUrl, onAction, grievance }) => {
 
     const renderItem = (item, index, className = '') => {
         const isVideo = item.type === 'video' || item.type === 'animated_gif';
-        const src = getProxiedMediaUrl?.(item.s3_url || item.url || item.preview) || item.url || item.preview;
-        const poster = getProxiedMediaUrl?.(item.s3_preview || item.preview || item.url) || item.preview || item.url;
         return (
             <div key={index} className={cn('relative overflow-hidden cursor-pointer bg-slate-100', className)}
-                onClick={(e) => { e.stopPropagation(); onAction?.('view_media', { grievance, media: { type: item.type, url: item.url, video_url: item.url, preview_url: item.preview } }); }}>
+                onClick={(e) => {
+                    e.stopPropagation();
+                    const videoUrl = (isVideo && grievance.content?.archived_video_url)
+                        ? grievance.content.archived_video_url
+                        : (item.video_url || item.url || item.preview_url);
+                    onAction?.('view_media', {
+                        grievance,
+                        media: {
+                            type: item?.type,
+                            url: item?.url,
+                            video_url: videoUrl,
+                            preview_url: item?.preview_url || item?.preview,
+                            tweet_id: grievance.tweet_id
+                        }
+                    });
+                }}>
                 {isVideo ? (
+                    <VideoThumbnail
+                        item={item}
+                        getProxiedMediaUrl={getProxiedMediaUrl}
+                        className="w-full h-full object-cover"
+                        grievance={grievance}
+                    />
+                ) : (
+                    <RobustImg
+                        item={item}
+                        getProxiedMediaUrl={getProxiedMediaUrl}
+                        className="w-full h-full object-cover"
+                    />
+                )}
+                {isVideo && (
                     <>
-                        <img src={poster} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" loading="lazy" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
                         <div className="absolute inset-0 flex items-center justify-center bg-black/20">
                             <div className="bg-black/60 rounded-full p-3 backdrop-blur-sm border border-white/30"><Play className="h-5 w-5 text-white fill-white" /></div>
                         </div>
                         {item.type === 'animated_gif' && <span className="absolute bottom-2 left-2 bg-black/70 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">GIF</span>}
                     </>
-                ) : (
-                    <img src={src} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" loading="lazy" onError={(e) => {
-                        // Show a placeholder instead of hiding
-                        e.target.onerror = null;
-                        e.target.style.objectFit = 'contain';
-                        e.target.style.background = '#f1f5f9';
-                        e.target.style.padding = '2rem';
-                        e.target.src = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>');
-                    }} />
                 )}
             </div>
         );
@@ -569,10 +889,11 @@ const ParentFacebookPost = ({ context, getProxiedMediaUrl, onAction, grievance }
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 /*                  X (TWITTER) LAYOUT                     */
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-const XLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, enableSpecialActions = false }) => {
+const XLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, isPostEngagersOpen, setIsPostEngagersOpen, postEngagersTab, setPostEngagersTab, isTranslated, translatedText, isTranslating, onTranslate }) => {
     const user = grievance.posted_by || {};
     const handle = (user.handle || '').replace('@', '');
-    const text = grievance.content?.full_text || grievance.content?.text || '';
+    const originalText = grievance.content?.full_text || grievance.content?.text || '';
+    const text = (isTranslated && translatedText) ? translatedText : originalText;
     const media = grievance.content?.media || [];
     const engagement = grievance.engagement || {};
     const ctx = grievance.context || {};
@@ -584,7 +905,7 @@ const XLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, 
     };
 
     // Check if we have a parent tweet to display in a thread
-    const parentTweet = ctx.in_reply_to?.tweet_id ? ctx.in_reply_to : ctx.thread_parent;
+    const parentTweet = ctx.in_reply_to;
 
     return (
         <div className="flex flex-col">
@@ -618,13 +939,12 @@ const XLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, 
                             <div className="flex items-center gap-1 flex-wrap">
                                 <span className="font-bold text-[15px] text-[#0f1419] truncate max-w-[180px]">{user.display_name || handle}</span>
                                 {user.is_verified && <BadgeCheck className="h-4 w-4 text-[#1d9bf0] shrink-0" />}
-                                <span className="text-[15px] text-[#536471] truncate">@{handle}</span>
-                                <span className="text-[#536471]">·</span>
-                                <span className="text-[15px] text-[#536471] hover:underline cursor-pointer" title={formatFullDate(grievance.post_date)}>{timeAgo(grievance.post_date)}</span>
+
+                                <span className="text-[15px] text-[#536471] hover:underline cursor-pointer ml-1" title={formatFullDate(grievance.post_date)}>{timeAgo(grievance.post_date)}</span>
                             </div>
                             <WorkflowMeta grievance={grievance} onAction={onAction} />
                         </div>
-                        <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} enableSpecialActions={enableSpecialActions} />
+                        <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} />
                     </div>
                     {/* Only show "Replying to" if we DON'T show the parent thread above (fallback) */}
                     {(!parentTweet?.tweet_id) && ctx.in_reply_to?.posted_by?.handle && (
@@ -634,20 +954,32 @@ const XLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, 
                         </div>
                     )}
                     {text && <div className="text-[15px] text-[#0f1419] leading-5 mt-1 whitespace-pre-wrap break-words">{highlightMentions(text)}</div>}
+                    {originalText && (
+                        <div className="mt-1">
+                            <TranslateButton isTranslated={isTranslated} isTranslating={isTranslating} onTranslate={onTranslate} />
+                        </div>
+                    )}
                     {media.length > 0 && <MediaGrid media={media} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} grievance={grievance} />}
                     <QuotedTweet context={ctx.quoted} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} grievance={grievance} />
                     <div className="flex items-center justify-between mt-3 max-w-[425px] -ml-2">
                         {[
-                            { icon: MessageCircle, count: engagement.replies, hoverColor: 'hover:bg-[#1d9bf0]/10', textHover: 'group-hover:text-[#1d9bf0]', isComment: true },
-                            { icon: Repeat2, count: engagement.retweets, hoverColor: 'hover:bg-[#00ba7c]/10', textHover: 'group-hover:text-[#00ba7c]' },
-                            { icon: Heart, count: engagement.likes, hoverColor: 'hover:bg-[#f91880]/10', textHover: 'group-hover:text-[#f91880]' },
+                            { icon: MessageCircle, count: engagement.replies, hoverColor: 'hover:bg-[#1d9bf0]/10', textHover: 'group-hover:text-[#1d9bf0]', tab: 'comment' },
+                            { icon: Repeat2, count: engagement.retweets, hoverColor: 'hover:bg-[#00ba7c]/10', textHover: 'group-hover:text-[#00ba7c]', tab: 'retweet' },
+                            { icon: Heart, count: engagement.likes, hoverColor: 'hover:bg-[#f91880]/10', textHover: 'group-hover:text-[#f91880]', tab: 'like' },
                             { icon: BarChart3, count: engagement.views, hoverColor: 'hover:bg-[#1d9bf0]/10', textHover: 'group-hover:text-[#1d9bf0]' },
-                        ].map(({ icon: Icon, count, hoverColor, textHover, isComment }, i) => (
+                        ].map(({ icon: Icon, count, hoverColor, textHover, tab }, i) => (
                             <button
                                 key={i}
                                 type="button"
-                                onClick={openDetails}
-                                data-comment-btn={isComment ? "true" : undefined}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (tab) {
+                                        setPostEngagersTab(tab);
+                                        setIsPostEngagersOpen(true);
+                                    } else {
+                                        openDetails();
+                                    }
+                                }}
                                 className={cn('flex items-center gap-1.5 group p-2 rounded-full transition-all duration-150 active:scale-95 active:translate-y-[1px]', hoverColor)}
                             >
                                 <Icon className={cn('h-[18px] w-[18px] text-[#536471]', textHover)} />
@@ -673,24 +1005,42 @@ const FacebookMediaGrid = ({ media, getProxiedMediaUrl, onAction, grievance }) =
     const count = normalized.length;
     const renderFBItem = (item, index, className = '') => {
         const isVideo = item.type === 'video' || item.type === 'animated_gif';
-        const src = getProxiedMediaUrl?.(item.s3_url || item.url || item.preview) || item.url || item.preview;
-        const poster = getProxiedMediaUrl?.(item.s3_preview || item.preview || item.url) || item.preview || item.url;
         return (
             <div key={index} className={cn('relative overflow-hidden cursor-pointer bg-slate-100', className)}
-                onClick={(e) => { e.stopPropagation(); onAction?.('view_media', { grievance, media: { type: item.type, url: item.url, video_url: item.url, preview_url: item.preview } }); }}>
+                onClick={(e) => {
+                    e.stopPropagation();
+                    const videoUrl = (isVideo && grievance.content?.archived_video_url)
+                        ? grievance.content.archived_video_url
+                        : (item.video_url || item.url || item.preview_url);
+                    onAction?.('view_media', {
+                        grievance,
+                        media: {
+                            type: item?.type,
+                            url: item?.url,
+                            video_url: videoUrl,
+                            preview_url: item?.preview_url || item?.preview,
+                            tweet_id: grievance.tweet_id
+                        }
+                    });
+                }}>
                 {isVideo ? (
-                    <>
-                        <img src={poster} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" loading="lazy" onError={(e) => { e.target.src = ''; e.target.className = 'hidden'; }} />
-                        <div className="absolute inset-0 flex items-center justify-center"><div className="bg-black/50 rounded-full p-4"><Play className="h-6 w-6 text-white fill-white" /></div></div>
-                    </>
+                    <VideoThumbnail
+                        item={item}
+                        getProxiedMediaUrl={getProxiedMediaUrl}
+                        className="w-full h-full object-cover"
+                        grievance={grievance}
+                    />
                 ) : (
-                    <img src={src} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" loading="lazy" onError={(e) => {
-                        e.target.onerror = null;
-                        e.target.style.objectFit = 'contain';
-                        e.target.style.background = '#f1f5f9';
-                        e.target.style.padding = '2rem';
-                        e.target.src = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>');
-                    }} />
+                    <RobustImg
+                        item={item}
+                        getProxiedMediaUrl={getProxiedMediaUrl}
+                        className="w-full h-full object-cover"
+                    />
+                )}
+                {isVideo && (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="bg-black/50 rounded-full p-4"><Play className="h-6 w-6 text-white fill-white" /></div>
+                    </div>
                 )}
             </div>
         );
@@ -704,13 +1054,15 @@ const FacebookMediaGrid = ({ media, getProxiedMediaUrl, onAction, grievance }) =
             {normalized.slice(1, 4).map((m, i) => (
                 <div key={i + 1} className="relative">{renderFBItem(m, i + 1, 'aspect-square')}{i === 2 && count > 4 && <div className="absolute inset-0 bg-black/50 flex items-center justify-center"><span className="text-white text-2xl font-bold">+{count - 4}</span></div>}</div>
             ))}
+
         </div>
     );
 };
 
-const FacebookLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, enableSpecialActions = false }) => {
+const FacebookLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, isTranslated, translatedText, isTranslating, onTranslate }) => {
     const user = grievance.posted_by || {};
-    const text = grievance.content?.full_text || grievance.content?.text || '';
+    const originalText = grievance.content?.full_text || grievance.content?.text || '';
+    const text = (isTranslated && translatedText) ? translatedText : originalText;
     const media = grievance.content?.media || [];
     const engagement = grievance.engagement || {};
     const totalReactions = (engagement.likes || 0);
@@ -718,7 +1070,7 @@ const FacebookLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
 
     // Parent post from context (for comment threads)
     const ctx = grievance.context || {};
-    const parentPost = ctx.in_reply_to?.tweet_id ? ctx.in_reply_to : ctx.thread_parent;
+    const parentPost = ctx.in_reply_to;
 
     return (
         <div>
@@ -750,9 +1102,14 @@ const FacebookLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
                             <WorkflowMeta grievance={grievance} onAction={onAction} />
                         </div>
                     </div>
-                    <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} enableSpecialActions={enableSpecialActions} />
+                    <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} />
                 </div>
                 {text && <div className="mt-3 text-[15px] text-[#050505] leading-5 whitespace-pre-wrap break-words">{highlightMentions(text)}</div>}
+                {originalText && (
+                    <div className="mt-1">
+                        <TranslateButton isTranslated={isTranslated} isTranslating={isTranslating} onTranslate={onTranslate} />
+                    </div>
+                )}
                 {media.length > 0 && <div className="mt-3 -mx-4"><FacebookMediaGrid media={media} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} grievance={grievance} /></div>}
                 {totalReactions > 0 && (
                     <div className="flex items-center justify-between px-1 py-2.5 border-b border-[#ced0d4]">
@@ -790,9 +1147,10 @@ const FacebookLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 /*                   WHATSAPP LAYOUT                       */
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, enableSpecialActions = false }) => {
+const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState = {}, isTranslated, translatedText, isTranslating, onTranslate }) => {
     const user = grievance.posted_by || {};
-    const text = grievance.content?.full_text || grievance.content?.text || '';
+    const originalText = grievance.content?.full_text || grievance.content?.text || '';
+    const text = (isTranslated && translatedText) ? translatedText : originalText;
     const media = grievance.content?.media || [];
     const displayName = user.display_name || grievance.complainant_phone || 'Unknown';
     const phone = grievance.complainant_phone || user.handle || '';
@@ -806,7 +1164,7 @@ const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
                     <p className="text-[12.5px] font-semibold text-[#0f172a] truncate">{displayName}</p>
                     <WorkflowMeta grievance={grievance} onAction={onAction} />
                 </div>
-                <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} enableSpecialActions={enableSpecialActions} />
+                <ActionButtons grievance={grievance} onAction={onAction} isDownloading={!!downloadState?.downloading} />
             </div>
             <div className="flex justify-center mb-3">
                 <span className="bg-[#e1f3fb] text-[#54656f] text-[11px] font-medium px-3 py-1 rounded-lg shadow-sm">
@@ -827,18 +1185,29 @@ const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
                                 if (!normalized.length) return null;
                                 const n = normalized[0];
                                 const isVideo = n.type === 'video' || n.type === 'animated_gif';
-                                const src = getProxiedMediaUrl?.(n.url || n.preview) || n.url;
-                                const poster = getProxiedMediaUrl?.(n.preview || n.url) || n.preview;
                                 return (
                                     <div key={i} className="relative cursor-pointer rounded-lg overflow-hidden mb-1"
-                                        onClick={(e) => { e.stopPropagation(); onAction?.('view_media', { grievance, media: { type: n.type, url: n.url, video_url: n.url, preview_url: n.preview } }); }}>
+                                        onClick={(e) => { 
+                                            e.stopPropagation(); 
+                                            const videoUrl = (isVideo && grievance.content?.archived_video_url) ? grievance.content.archived_video_url : n.url;
+                                            onAction?.('view_media', { grievance, media: { type: n.type, url: n.url, video_url: videoUrl, preview_url: n.preview, tweet_id: grievance.tweet_id } }); 
+                                        }}>
                                         {isVideo ? (
-                                            <>
-                                                <img src={poster} alt="" className="w-full max-h-52 object-cover rounded-lg" referrerPolicy="no-referrer" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
+                                            <div className="relative">
+                                                <VideoThumbnail
+                                                    item={n}
+                                                    getProxiedMediaUrl={getProxiedMediaUrl}
+                                                    className="w-full max-h-52 object-cover rounded-lg"
+                                                    grievance={grievance}
+                                                />
                                                 <div className="absolute inset-0 flex items-center justify-center"><div className="bg-[#00a884]/80 rounded-full p-2.5"><Play className="h-5 w-5 text-white fill-white" /></div></div>
-                                            </>
+                                            </div>
                                         ) : (
-                                            <img src={src} alt="" className="w-full max-h-52 object-cover rounded-lg" referrerPolicy="no-referrer" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
+                                            <RobustImg
+                                                item={n}
+                                                getProxiedMediaUrl={getProxiedMediaUrl}
+                                                className="w-full max-h-52 object-cover rounded-lg"
+                                            />
                                         )}
                                     </div>
                                 );
@@ -846,6 +1215,11 @@ const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
                         </div>
                     )}
                     {text && <p className="text-[14.2px] text-[#111b21] leading-[19px] whitespace-pre-wrap break-words">{text}</p>}
+                    {originalText && (
+                        <div className="mt-1">
+                            <TranslateButton isTranslated={isTranslated} isTranslating={isTranslating} onTranslate={onTranslate} />
+                        </div>
+                    )}
                     <div className="flex items-center justify-end gap-1 mt-1">
                         <span className="text-[11px] text-[#667781]">{grievance.post_date ? format(new Date(grievance.post_date), 'h:mm a') : ''}</span>
                     </div>
@@ -858,7 +1232,37 @@ const WhatsAppLayout = ({ grievance, getProxiedMediaUrl, onAction, downloadState
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 /*                 MAIN GRIEVANCE CARD                     */
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloadState = {}, isActioned = false, isSelected = false, compact = false, enableSpecialActions = false }) => {
+export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloadState = {}, isActioned = false, isSelected = false, compact = false }) => {
+    const [isPostEngagersOpen, setIsPostEngagersOpen] = useState(false);
+    const [postEngagersTab, setPostEngagersTab] = useState('all');
+    const [isTranslated, setIsTranslated] = useState(false);
+    const [translatedText, setTranslatedText] = useState('');
+    const [isTranslating, setIsTranslating] = useState(false);
+
+    const handleTranslate = async () => {
+        if (isTranslated) {
+            setIsTranslated(false);
+            return;
+        }
+        if (translatedText) {
+            setIsTranslated(true);
+            return;
+        }
+        const sourceText = grievance.content?.full_text || grievance.content?.text || '';
+        if (!sourceText) return;
+        setIsTranslating(true);
+        try {
+            const res = await api.post('/grievances/translate', { text: sourceText });
+            setTranslatedText(res.data.translatedText);
+            setIsTranslated(true);
+        } catch (error) {
+            console.error('Translation failed:', error);
+            toast.error('Translation failed. Please try again.');
+        } finally {
+            setIsTranslating(false);
+        }
+    };
+
     const platform = (grievance.platform || 'x').toLowerCase();
     const isX = platform === 'x' || platform === 'twitter';
     const isFB = platform === 'facebook';
@@ -875,10 +1279,11 @@ export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloa
 
     return (
         <Card id={`grievance-card-${grievance.id}`} className={cn(
-            "relative overflow-hidden shadow-sm border transition-shadow",
+            "overflow-hidden shadow-sm border transition-shadow",
             sentimentBorderColor && `border-l-[3px] ${sentimentBorderColor}`,
             isActioned ? "animate-card-action-blink border-green-400 z-10" : "border-slate-200 hover:shadow-md"
         )}>
+
             {(isDownloading || downloadState?.error) && (
                 <div className="px-4 py-2 border-b border-slate-100 bg-blue-50/40">
                     {isDownloading && (
@@ -900,11 +1305,11 @@ export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloa
 
             {/* Platform-native Content */}
             <CardContent className={cn('p-3', isWA && 'p-2')}>
-                {isX && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
-                {isFB && <FacebookLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
-                {isWA && <WhatsAppLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
-                {isIG && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
-                {isYT && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} enableSpecialActions={enableSpecialActions} />}
+                {isX && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} isPostEngagersOpen={isPostEngagersOpen} setIsPostEngagersOpen={setIsPostEngagersOpen} postEngagersTab={postEngagersTab} setPostEngagersTab={setPostEngagersTab} isTranslated={isTranslated} translatedText={translatedText} isTranslating={isTranslating} onTranslate={handleTranslate} />}
+                {isFB && <FacebookLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} isTranslated={isTranslated} translatedText={translatedText} isTranslating={isTranslating} onTranslate={handleTranslate} />}
+                {isWA && <WhatsAppLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} isTranslated={isTranslated} translatedText={translatedText} isTranslating={isTranslating} onTranslate={handleTranslate} />}
+                {isIG && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} isPostEngagersOpen={isPostEngagersOpen} setIsPostEngagersOpen={setIsPostEngagersOpen} postEngagersTab={postEngagersTab} setPostEngagersTab={setPostEngagersTab} isTranslated={isTranslated} translatedText={translatedText} isTranslating={isTranslating} onTranslate={handleTranslate} />}
+                {isYT && <XLayout grievance={grievance} getProxiedMediaUrl={getProxiedMediaUrl} onAction={onAction} downloadState={downloadState} isPostEngagersOpen={isPostEngagersOpen} setIsPostEngagersOpen={setIsPostEngagersOpen} postEngagersTab={postEngagersTab} setPostEngagersTab={setPostEngagersTab} isTranslated={isTranslated} translatedText={translatedText} isTranslating={isTranslating} onTranslate={handleTranslate} />}
             </CardContent>
 
             {/* Footer */}
@@ -913,10 +1318,15 @@ export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloa
                     <PlatformBadge platform={platform} />
                     <SentimentBadge analysis={grievance.analysis} />
                     <GrievanceTopicBadge analysis={grievance.analysis} />
-                    <LocationBadge detectedLocation={grievance.detected_location} />
+                    <LocationBadge location={grievance.detected_location} />
                     <span>Detected {timeAgo(grievance.detected_date || grievance.created_at)} ago</span>
                 </div>
                 <div className="flex items-center gap-3">
+                    {(platform === 'x' || platform === 'twitter' || platform === 'youtube') && (
+                        <button type="button" className="text-blue-600 hover:text-blue-800 flex items-center gap-1 font-medium transition-all duration-150 active:scale-95 active:translate-y-[1px]" onClick={() => { setPostEngagersTab('all'); setIsPostEngagersOpen(true); }}>
+                            <Network className="h-3 w-3" /> Post Engagers
+                        </button>
+                    )}
                     {grievance.analysis?.analyzed_at && (
                         <button type="button" className="text-blue-600 hover:text-blue-800 flex items-center gap-1 font-medium transition-all duration-150 active:scale-95 active:translate-y-[1px]" onClick={() => onAction?.('view_analysis', { grievance })}>
                             <Eye className="h-3 w-3" /> Analysis
@@ -927,8 +1337,16 @@ export const GrievanceCard = ({ grievance, onAction, getProxiedMediaUrl, downloa
                     </button>
                 </div>
             </div>
+
+            <PostEngagersDialog
+                open={isPostEngagersOpen}
+                onOpenChange={setIsPostEngagersOpen}
+                contentId={grievance?.id}
+                platform={platform === 'twitter' ? 'x' : platform}
+                content={grievance}
+                initialTab={postEngagersTab}
+            />
         </Card>
     );
 };
-//added comment
 export default GrievanceCard;

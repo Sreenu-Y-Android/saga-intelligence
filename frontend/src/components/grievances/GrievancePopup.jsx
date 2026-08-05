@@ -3,13 +3,15 @@ import api from '../../lib/api';
 import { toast } from 'sonner';
 import {
     X, GripHorizontal, Send, MessageSquare, Loader2, Check,
-    Copy, ChevronDown, AlertTriangle, Plus, Lock, User, Shield, Reply, Share2
+    Copy, ChevronDown, AlertTriangle, Plus, Lock, User, Shield, Reply, Share2, Trash2, AtSign
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
 import { ScrollArea } from '../ui/scroll-area';
 import { cn } from '../../lib/utils';
+import { useAuth } from '../../contexts/AuthContext';
+import { canManageRestrictedGrievanceUi } from '../../lib/grievanceUiPermissions';
 
 /* ─── Constants ─── */
 const CATEGORIES = [
@@ -58,7 +60,9 @@ const formatFullDate = (date) => {
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 /*                    GRIEVANCE POPUP (G)                           */
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
-export const GrievancePopup = ({ grievance, onClose, userName = '', onReportCreated }) => {
+export const GrievancePopup = ({ grievance, onClose, onAction, userName = '', onReportCreated }) => {
+    const { user } = useAuth();
+    const canDeleteGrievance = canManageRestrictedGrievanceUi(user);
     const popupRef = useRef(null);
     const [pos, setPos] = useState({ x: 20, y: Math.max(20, (window.innerHeight - 660) / 2) });
     const [size, setSize] = useState({ width: 760, height: 660 });
@@ -502,6 +506,26 @@ export const GrievancePopup = ({ grievance, onClose, userName = '', onReportCrea
                                 )}>{i + 1}. {s === 'compose' ? 'Compose' : s === 'action' ? 'Communicate' : s === 'details' ? 'Log' : 'Done'}</span>
                             ))}
                         </div>
+                        {grievance.tagged_account && (
+                            <div className="flex items-center gap-1 bg-white/20 px-2 py-1 rounded-md mr-2 text-[12px] font-bold">
+                                <AtSign className="h-3 w-3" />
+                                {grievance.tagged_account}
+                            </div>
+                        )}
+                        {canDeleteGrievance && (
+                            <button 
+                                onClick={() => {
+                                    if (window.confirm('Are you sure you want to delete this grievance?')) {
+                                        onAction?.('delete', grievance);
+                                        onClose();
+                                    }
+                                }}
+                                className="p-1.5 hover:bg-red-500 rounded transition-colors"
+                                title="Delete Grievance"
+                            >
+                                <Trash2 className="h-5 w-5" />
+                            </button>
+                        )}
                         <button onClick={onClose} className="p-1.5 hover:bg-white/20 rounded transition-colors"><X className="h-5 w-5" /></button>
                     </div>
                 </div>

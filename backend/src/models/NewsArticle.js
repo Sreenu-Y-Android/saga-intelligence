@@ -29,6 +29,12 @@ const newsArticleSchema = new mongoose.Schema({
   },
   // Same three-bucket scheme as grievances/mentions: positive | negative | moderate.
   sentiment:        { type: String, enum: ['positive', 'negative', 'moderate'], default: 'moderate' },
+  // Who the sentiment above is actually about — the LLM already computes these
+  // when scoring `sentiment`; kept instead of discarded so a "Negative" badge
+  // can show *who* it's negative for instead of reading as generic bad news.
+  sentiment_target:           { type: String, default: '' }, // e.g. "INC", "BRS", leader name, or "none"
+  sentiment_target_alignment: { type: String, default: '' }, // ally | opposition | neutral | none
+  sentiment_reasoning:        { type: String, default: '' }, // 1-2 sentence model justification
   source_type:      { type: String, enum: ['rss', 'keyword_search', 'domain'], default: 'rss' },
   relevance_score:  { type: Number, default: 0 },
   keywords_matched: [String],

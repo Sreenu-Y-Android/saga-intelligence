@@ -3,13 +3,108 @@
 
 <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#000000" />
-    <meta name="description" content="Blura Saga" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#FF9933" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Blura Saga" />
+    <meta name="application-name" content="Blura Saga" />
+    <meta name="description"
+        content="Blura Saga — real-time social media intelligence platform for the INC leadership in Telangana (A. Revanth Reddy &amp; Mallu Bhatti Vikramarka). Track mentions, sentiment, alerts, grievances and people-of-interest across X, YouTube, Facebook, Instagram, Telegram and news media." />
     <meta name="referrer" content="no-referrer" />
-    <link rel="icon" href="%PUBLIC_URL%/policelogo.jpg" />
-    <link rel="apple-touch-icon" href="%PUBLIC_URL%/policelogo.jpg" />
-    <title>Blura Saga</title>
+    <meta name="author" content="Blura Saga" />
+    <meta name="keywords"
+        content="A. Revanth Reddy, Mallu Bhatti Vikramarka, INC, Blura Saga, INC Telangana, Telangana CM, Telangana politics, social media monitoring, sentiment analysis, political intelligence" />
+    <meta name="robots" content="index,follow" />
+
+    <!-- Open Graph -->
+    <meta property="og:site_name" content="Blura Saga · INC Telangana" />
+    <meta property="og:title" content="Blura Saga · A. Revanth Reddy — Social Media Intelligence" />
+    <meta property="og:description"
+        content="Real-time mentions, sentiment, alerts &amp; grievances for the INC leadership in Telangana across every major platform." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="%PUBLIC_URL%/telangana_emblem.png" />
+    <meta property="og:locale" content="en_IN" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Blura Saga · A. Revanth Reddy" />
+    <meta name="twitter:description"
+        content="Social media intelligence platform for the INC leadership, Telangana." />
+    <meta name="twitter:image" content="%PUBLIC_URL%/telangana_emblem.png" />
+
+    <!-- Schema.org -->
+    <script type="application/ld+json">
+        {
+            "@context": "https://schema.org",
+            "@type": "WebApplication",
+            "name": "Blura Saga",
+            "alternateName": "INC Telangana Political Watch",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "Web",
+            "description": "Social media intelligence platform for the INC leadership, Telangana. Tracks mentions, sentiment and grievances in real time.",
+            "publisher": {
+                "@type": "Organization",
+                "name": "INC Telangana"
+            }
+        }
+    </script>
+
+    <link rel="icon" href="%PUBLIC_URL%/telangana_emblem.png" />
+    <link rel="apple-touch-icon" href="%PUBLIC_URL%/telangana_emblem.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+    <title>BLURA SAGA</title>
+
+    <style>
+        /* Splash while the bundle loads */
+        #initial-tdp-splash {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 16px;
+            background: radial-gradient(circle at 30% 20%, #FF9933 0%, transparent 40%),
+                radial-gradient(circle at 70% 80%, #138808 0%, transparent 45%),
+                linear-gradient(135deg, #0a1128 0%, #14213d 40%, #1b2a4a 75%, #0f2a1a 100%);
+            color: #fff;
+            font-family: 'Oswald', 'Inter', system-ui, sans-serif;
+            letter-spacing: 0.18em;
+            z-index: 99999;
+        }
+
+        #initial-tdp-splash .ring {
+            width: 78px;
+            height: 78px;
+            border-radius: 50%;
+            border: 4px solid rgba(255, 231, 179, 0.35);
+            border-top-color: #FFE7B3;
+            animation: tdpSplashSpin 0.9s linear infinite;
+        }
+
+        #initial-tdp-splash h1 {
+            margin: 0;
+            font-weight: 800;
+            font-size: 20px;
+            text-transform: uppercase;
+        }
+
+        #initial-tdp-splash p {
+            margin: 0;
+            font-size: 11px;
+            opacity: 0.8;
+            letter-spacing: 0.3em;
+        }
+
+        @keyframes tdpSplashSpin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
     <script>
         // Only load visual edit scripts when inside an iframe
         if (window.self !== window.top) {
@@ -33,7 +128,31 @@
 </head>
 
 <body>
-    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <noscript>You need to enable JavaScript to run Blura Saga.</noscript>
+    <div id="initial-tdp-splash">
+        <div class="ring"></div>
+        <h1>Blura Saga</h1>
+        <p></p>
+    </div>
+    <script>
+        // Remove splash once React mounts content into #root
+        (function () {
+            var maxWait = 12000;
+            var start = Date.now();
+            var iv = setInterval(function () {
+                var root = document.getElementById('root');
+                if ((root && root.children.length > 0) || Date.now() - start > maxWait) {
+                    var splash = document.getElementById('initial-tdp-splash');
+                    if (splash) {
+                        splash.style.transition = 'opacity 0.45s ease';
+                        splash.style.opacity = '0';
+                        setTimeout(function () { splash && splash.remove(); }, 480);
+                    }
+                    clearInterval(iv);
+                }
+            }, 120);
+        })();
+    </script>
     <div id="root"></div>
     <!--
       This HTML file is a template.

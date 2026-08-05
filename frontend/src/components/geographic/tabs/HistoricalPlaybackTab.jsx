@@ -8,19 +8,9 @@ import StateKpiTile from '../StateKpiTile';
 import SentimentTrendChart from '../SentimentTrendChart';
 import InsightsSummaryPanel from '../InsightsSummaryPanel';
 import { MOOD_LEGEND, bucketColorForIndex, DISTRICT_GEOJSON_SOURCES } from '../sentimentScale';
+import { PLATFORM_META } from '../platformScale';
+import { toLocalYMD } from '../geoDate';
 import { usePlayback } from '../../../hooks/useGeoIntel';
-
-const PLATFORM_COLORS = { x: '#1d9bf0', facebook: '#1877f2', instagram: '#e1306c', youtube: '#ff0000', whatsapp: '#25d366', unknown: '#94a3b8' };
-
-const PLATFORM_LABELS = {
-  x: 'X (Twitter)',
-  facebook: 'Facebook',
-  instagram: 'Instagram',
-  youtube: 'YouTube',
-  whatsapp: 'WhatsApp',
-  rss: 'RSS News',
-  unknown: 'Other'
-};
 
 const PRESETS = [
   { label: 'Last 7 Days', days: 7 },
@@ -28,7 +18,6 @@ const PRESETS = [
   { label: 'Last 90 Days', days: 90 },
 ];
 
-const toDateInput = (d) => d.toISOString().slice(0, 10);
 const pct = (n, t) => (t > 0 ? Math.round((n / t) * 100) : 0);
 
 const aggregateFrames = (frames) => {
@@ -52,38 +41,51 @@ const aggregateFrames = (frames) => {
  * markers on the timeline for the sharpest single-day swings, an optional
  * previous-period comparison, and a rule-based insights summary.
  */
-const HistoricalPlaybackTab = () => {
-  const [rangeDays, setRangeDays] = useState(30);
+const HistoricalPlaybackTab = ({ sharedFilters, active = true }) => {
+  const [rangeDays, setRangeDays] = useState(7);
   const [frameIdx, setFrameIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [compareMode, setCompareMode] = useState(false);
   const timerRef = useRef(null);
 
+  // Inherits platform/sentiment/topic from the shared GeoFilterBar so
+  // switching to Playback doesn't silently drop whatever the user was
+  // already filtering by on the other tabs — only the date range is
+  // Playback's own (a fixed range doesn't fit a "scrub through time" UI).
   const filters = useMemo(() => {
     const to = new Date();
     const from = new Date(to.getTime() - rangeDays * 86400000);
-    return { from: toDateInput(from), to: toDateInput(to) };
-  }, [rangeDays]);
+    return {
+      from: toLocalYMD(from),
+      to: toLocalYMD(to),
+      platform: sharedFilters?.platform,
+      sentiment: sharedFilters?.sentiment,
+      topic: sharedFilters?.topic,
+    };
+  }, [rangeDays, sharedFilters?.platform, sharedFilters?.sentiment, sharedFilters?.topic]);
 
   const prevFilters = useMemo(() => {
     const to = new Date(new Date(filters.from).getTime() - 86400000);
     const from = new Date(to.getTime() - rangeDays * 86400000);
-    return { from: toDateInput(from), to: toDateInput(to) };
+    return { ...filters, from: toLocalYMD(from), to: toLocalYMD(to) };
   }, [filters, rangeDays]);
 
-  const { data, loading } = usePlayback(filters);
-  const { data: prevData, loading: prevLoading } = usePlayback(prevFilters, { enabled: compareMode });
+  // `active` lets the page keep this tab mounted (preserving the range/
+  // scrubber position/compare toggle) while hidden, without it continuing
+  // to fetch or tick the animation timer in the background.
+  const { data, loading, error } = usePlayback(filters, { enabled: active });
+  const { data: prevData, loading: prevLoading } = usePlayback(prevFilters, { enabled: active && compareMode });
   const frames = useMemo(() => data?.frames || [], [data]);
 
   useEffect(() => { setFrameIdx(0); setPlaying(false); }, [rangeDays, data]);
 
   useEffect(() => {
-    if (!playing || !frames.length) return;
+    if (!active || !playing || !frames.length) return;
     timerRef.current = setInterval(() => {
       setFrameIdx((i) => (i + 1 >= frames.length ? 0 : i + 1));
     }, 700);
     return () => clearInterval(timerRef.current);
-  }, [playing, frames.length]);
+  }, [active, playing, frames.length]);
 
   const currentFrame = frames[frameIdx];
 
@@ -166,7 +168,9 @@ const HistoricalPlaybackTab = () => {
 
     if (compareMode && prevTotals) {
       const chg = changePct(totals.total, prevTotals.total);
-      if (Math.abs(chg) >= 10) notes.push({ tone: chg > 0 ? 'info' : 'positive', text: `Volume ${chg > 0 ? 'grew' : 'declined'} ${Math.abs(chg)}% vs the equivalent previous period.` });
+      // Neutral tone regardless of direction — volume change isn't
+      // inherently good or bad, matching TrendIndicator's rationale.
+      if (Math.abs(chg) >= 10) notes.push({ tone: 'info', text: `Volume ${chg > 0 ? 'grew' : 'declined'} ${Math.abs(chg)}% vs the equivalent previous period.` });
     }
 
     if (!notes.length) notes.push({ tone: 'info', text: 'No major sentiment swings detected in this window.' });
@@ -184,6 +188,12 @@ const HistoricalPlaybackTab = () => {
           <p className="text-[10px] text-slate-400">Replay political conversation and sentiment evolution over time</p>
         </div>
       </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 text-xs font-semibold rounded-lg px-3 py-2">
+          {error} — showing whatever loaded successfully.
+        </div>
+      )}
 
       {/* Historical KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -257,10 +267,12 @@ const HistoricalPlaybackTab = () => {
                 {eventFrames.length > 0 && (
                   <div className="relative h-3 mb-0.5">
                     {eventFrames.map((e) => (
-                      <span
+                      <button
                         key={e.index}
+                        type="button"
                         title={`${e.date} · sharp ${e.severity} swing`}
-                        className={`absolute top-0 w-1.5 h-1.5 rounded-full -translate-x-1/2 cursor-pointer ${e.severity === 'negative' ? 'bg-red-500' : 'bg-emerald-500'}`}
+                        aria-label={`Jump to ${e.date}, a sharp ${e.severity} sentiment swing`}
+                        className={`absolute top-0 w-1.5 h-1.5 rounded-full -translate-x-1/2 cursor-pointer p-0 border-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-slate-400 ${e.severity === 'negative' ? 'bg-red-500' : 'bg-emerald-500'}`}
                         style={{ left: `${(e.index / Math.max(1, frames.length - 1)) * 100}%` }}
                         onClick={() => { setPlaying(false); setFrameIdx(e.index); }}
                       />
@@ -271,6 +283,8 @@ const HistoricalPlaybackTab = () => {
                   <button
                     type="button"
                     onClick={() => setPlaying((p) => !p)}
+                    aria-label={playing ? 'Pause playback' : 'Play playback'}
+                    aria-pressed={playing}
                     className="flex items-center justify-center w-8 h-8 rounded-full bg-yellow-600 text-white hover:bg-yellow-700 flex-shrink-0 transition-colors"
                   >
                     {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 ml-0.5" />}
@@ -302,9 +316,10 @@ const HistoricalPlaybackTab = () => {
                     <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} tickLine={false} axisLine={false} allowDecimals={false} />
                     <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8 }} />
                     <Legend wrapperStyle={{ fontSize: 10 }} />
-                    {platformKeys.map((k) => (
-                      <Area key={k} type="monotone" dataKey={k} stackId="1" name={PLATFORM_LABELS[k] || k} stroke={PLATFORM_COLORS[k] || PLATFORM_COLORS.unknown} fill={PLATFORM_COLORS[k] || PLATFORM_COLORS.unknown} fillOpacity={0.5} />
-                    ))}
+                    {platformKeys.map((k) => {
+                      const meta = PLATFORM_META[k] || PLATFORM_META.unknown;
+                      return <Area key={k} type="monotone" dataKey={k} stackId="1" name={meta.label} stroke={meta.color} fill={meta.color} fillOpacity={0.5} />;
+                    })}
                   </AreaChart>
                 </ResponsiveContainer>
               </div>

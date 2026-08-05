@@ -68,6 +68,15 @@ const listEvents = async (req, res) => {
     const query = {};
     if (status && status !== 'all') query.status = status;
 
+    // RBAC: a scoped MLA / MP sees only events whose `location` matches their
+    // constituency name(s). Super-admins / party-leadership pass through.
+    if (req.scope && !req.scope.canSeeAll) {
+      const allowed = req.scope.constituencies || [];
+      if (allowed.length === 0) return res.status(200).json([]);
+      const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.location = { $regex: allowed.map(esc).join('|'), $options: 'i' };
+    }
+
     const events = await Event.find(query).sort({ start_date: -1 });
     res.status(200).json(events);
   } catch (error) {

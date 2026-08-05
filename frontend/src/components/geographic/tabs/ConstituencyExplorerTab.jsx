@@ -36,28 +36,31 @@ const SUB_TABS = [
 /**
  * Constituency Explorer — an investigative workspace for a single seat.
  */
-const ConstituencyExplorerTab = ({ filters = {} }) => {
+const ConstituencyExplorerTab = ({ filters = {}, active = true }) => {
   const navigate = useNavigate();
-  const { data: leaderboard, loading: leaderboardLoading } = useConstituencyLeaderboard(90);
+  // `active` lets the page keep this tab mounted (preserving search/selected
+  // seat/sub-tab/compare choice) while hidden, without it continuing to
+  // fetch in the background.
+  const { data: leaderboard, loading: leaderboardLoading, error: leaderboardError } = useConstituencyLeaderboard(filters, { enabled: active });
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(null);
   const [subTab, setSubTab] = useState('overview');
   const [compareWith, setCompareWith] = useState('');
 
-  const capitalizeIssue = (str) => {
-    if (!str) return '';
-    const s = String(str).replace(/_/g, ' ').trim();
-    if (s.toLowerCase() === 'law and order' || s.toLowerCase() === 'law order') return 'Law & Order';
-    return s.replace(/\b\w/g, (c) => c.toUpperCase());
-  };
-
   const goToGrievances = (opts = {}) => {
     const params = new URLSearchParams();
-    if (opts.search) params.set('search', capitalizeIssue(opts.search));
-    if (opts.topic) params.set('topic', capitalizeIssue(opts.topic));
+    if (opts.search) params.set('search', opts.search);
+    // `opts.topic` is now the literal analysis.grievance_type/category value
+    // the backend's top-issues aggregation grouped by — send it verbatim so
+    // it exact-matches what the Grievances page actually filters on, instead
+    // of re-formatting a value that (pre-fix) used to be a local keyword-
+    // lexicon key with no relation to any stored field.
+    if (opts.topic) params.set('topic', opts.topic);
     if (selected) params.set('location', selected);
-    if (filters?.from) params.set('from', filters.from);
-    if (filters?.to) params.set('to', filters.to);
+    const fromDate = opts.from || filters?.from;
+    const toDate = opts.to || filters?.to;
+    if (fromDate) params.set('from', fromDate);
+    if (toDate) params.set('to', toDate);
     navigate(`/grievances?${params.toString()}`);
   };
 
@@ -69,8 +72,8 @@ const ConstituencyExplorerTab = ({ filters = {} }) => {
 
   const filtered = search ? rows.filter((r) => r.constituency.toLowerCase().includes(search.toLowerCase())) : rows;
 
-  const { detail, narrative, loading: detailLoading } = useConstituencyDetail(selected, 90);
-  const { data: comparison, loading: comparisonLoading } = useConstituencyComparison(selected, compareWith || null, 90);
+  const { detail, narrative, loading: detailLoading, error: detailError } = useConstituencyDetail(selected, filters, { enabled: active });
+  const { data: comparison, loading: comparisonLoading, error: comparisonError } = useConstituencyComparison(selected, compareWith || null, filters, { enabled: active });
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[270px_minmax(0,1fr)] gap-3 items-start">
@@ -91,6 +94,9 @@ const ConstituencyExplorerTab = ({ filters = {} }) => {
             />
           </div>
         </div>
+        {leaderboardError && (
+          <div className="text-[10px] text-red-600 font-semibold px-3 py-1.5 border-b border-red-100 bg-red-50">{leaderboardError}</div>
+        )}
         <div className="max-h-[620px] overflow-y-auto">
           {leaderboardLoading ? (
             <div className="p-3 space-y-2 animate-pulse">
@@ -122,6 +128,9 @@ const ConstituencyExplorerTab = ({ filters = {} }) => {
           </div>
         ) : (
           <>
+            {detailError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-xs font-semibold rounded-lg px-3 py-2">{detailError}</div>
+            )}
             <div className={`${CARD} p-4`}>
               <div className="flex flex-wrap items-center gap-4">
                 <div className="flex-1 min-w-[180px]">
@@ -134,17 +143,41 @@ const ConstituencyExplorerTab = ({ filters = {} }) => {
                     <div className="text-xs text-slate-500 mt-0.5">MLA: <b className="text-slate-700">{detail.mla.name}</b> · {detail.mla.party} {detail.mla.alliance ? `(${detail.mla.alliance})` : ''}</div>
                   )}
                 </div>
-                {detail && (
-                  <>
-                    <RiskGauge score={Math.max(0, -detail.sentiment.sentiment_index)} size={72} />
-                    <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
-                      <div><span className="text-slate-400">Mentions</span><br /><span className="font-bold text-slate-800 tabular-nums">{detail.sentiment.total.toLocaleString()}</span></div>
-                      <div><span className="text-slate-400">Positive</span><br /><span className="font-bold text-emerald-600 tabular-nums">{detail.sentiment.positive_pct ?? Math.round((detail.sentiment.positive / Math.max(1, detail.sentiment.total)) * 100)}%</span></div>
-                      <div><span className="text-slate-400">Negative</span><br /><span className="font-bold text-red-500 tabular-nums">{detail.sentiment.negative_pct ?? Math.round((detail.sentiment.negative / Math.max(1, detail.sentiment.total)) * 100)}%</span></div>
-                      <div><span className="text-slate-400">Index</span><br /><span className="font-bold text-slate-800 tabular-nums">{detail.sentiment.sentiment_index}</span></div>
+                {detailLoading ? (
+                  <div className="flex items-center gap-4 animate-pulse">
+                    <div className="w-14 h-14 bg-slate-100 rounded-full" />
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+                      <div className="w-16 h-5 bg-slate-100 rounded" />
+                      <div className="w-16 h-5 bg-slate-100 rounded" />
+                      <div className="w-16 h-5 bg-slate-100 rounded" />
+                      <div className="w-16 h-5 bg-slate-100 rounded" />
                     </div>
-                  </>
-                )}
+                  </div>
+                ) : detail ? (() => {
+                  // constituency-intel has no separate AI risk score (unlike
+                  // Geographic Intelligence's districts) — this gauge used to
+                  // show max(0, -sentiment_index), which is only ever
+                  // non-zero for net-negative seats and reads as "broken"
+                  // (a flat 0/100) for any neutral-or-better seat. Negative
+                  // mention share is meaningful regardless of the seat's
+                  // overall lean, and matches the "Negative %" stat beside it.
+                  const negativePct = detail.sentiment.negative_pct
+                    ?? Math.round((detail.sentiment.negative / Math.max(1, detail.sentiment.total)) * 100);
+                  return (
+                    <>
+                      <div className="text-center flex-shrink-0">
+                        <RiskGauge score={negativePct} size={72} />
+                        <div className="text-[9px] text-slate-400 uppercase font-bold mt-0.5">Negative Share</div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+                        <div><span className="text-slate-400">Mentions</span><br /><span className="font-bold text-slate-800 tabular-nums">{detail.sentiment.total.toLocaleString()}</span></div>
+                        <div><span className="text-slate-400">Positive</span><br /><span className="font-bold text-emerald-600 tabular-nums">{detail.sentiment.positive_pct ?? Math.round((detail.sentiment.positive / Math.max(1, detail.sentiment.total)) * 100)}%</span></div>
+                        <div><span className="text-slate-400">Negative</span><br /><span className="font-bold text-red-500 tabular-nums">{negativePct}%</span></div>
+                        <div><span className="text-slate-400">Index</span><br /><span className="font-bold text-slate-800 tabular-nums">{detail.sentiment.sentiment_index}</span></div>
+                      </div>
+                    </>
+                  );
+                })() : null}
               </div>
             </div>
 
@@ -166,12 +199,26 @@ const ConstituencyExplorerTab = ({ filters = {} }) => {
 
             {subTab === 'overview' && (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                <div className={`${CARD} h-[340px] p-2`}>
-                  <ConstituencyHeatMap currentConstituency={selected} />
+                <div className={`${CARD} h-[340px] p-2 flex flex-col`}>
+                  <div className="flex-1 min-h-0">
+                    <ConstituencyHeatMap currentConstituency={selected} />
+                  </div>
+                  {/* This map is a cross-page-shared, always-365-day snapshot
+                      (see ConstituencyHeatMap's module-level cache) — it does
+                      not reflect the page's date range/platform/sentiment
+                      filters the way the seat list and profile below do. */}
+                  <div className="text-[9px] text-slate-400 text-center pt-1">Fixed 365-day snapshot — not affected by the filters above</div>
                 </div>
                 <div className={`${CARD} p-4`}>
                   <h3 className="text-sm font-bold text-slate-800 mb-2">Top Issues</h3>
-                  {!detail?.top_issues?.length ? (
+                  {detailLoading ? (
+                    <div className="flex flex-wrap gap-2 animate-pulse py-4">
+                      <div className="h-6 w-24 bg-slate-100 rounded-full" />
+                      <div className="h-6 w-20 bg-slate-100 rounded-full" />
+                      <div className="h-6 w-28 bg-slate-100 rounded-full" />
+                      <div className="h-6 w-16 bg-slate-100 rounded-full" />
+                    </div>
+                  ) : !detail?.top_issues?.length ? (
                     <div className="text-xs text-slate-400 py-6 text-center">No classified issues yet</div>
                   ) : (
                     <div className="flex flex-wrap gap-1.5">
@@ -179,11 +226,11 @@ const ConstituencyExplorerTab = ({ filters = {} }) => {
                         <button
                           key={i.issue}
                           type="button"
-                          onClick={() => goToGrievances({ topic: i.issue, search: i.issue })}
+                          onClick={() => goToGrievances({ topic: i.issue })}
                           className="text-[10px] bg-slate-100 hover:bg-yellow-100 text-slate-700 hover:text-yellow-900 px-2.5 py-1 rounded-full font-medium transition-colors flex items-center gap-1 cursor-pointer border border-slate-200/60"
-                          title={`View grievances for ${capitalizeIssue(i.issue)}`}
+                          title={`View grievances for ${i.issue}`}
                         >
-                          <span>{capitalizeIssue(i.issue)}</span>
+                          <span>{i.issue}</span>
                           <span className="opacity-60">· {i.count}</span>
                         </button>
                       ))}
@@ -217,21 +264,29 @@ const ConstituencyExplorerTab = ({ filters = {} }) => {
               <div className={`${CARD} p-4 space-y-4`}>
                 <div>
                   <h3 className="text-sm font-bold text-slate-800 mb-2">Top Issues</h3>
-                  <div className="flex flex-wrap gap-1.5">
-                    {(detail?.top_issues || []).map((i) => (
-                      <button
-                        key={i.issue}
-                        type="button"
-                        onClick={() => goToGrievances({ topic: i.issue, search: i.issue })}
-                        className="text-[10px] bg-slate-100 hover:bg-yellow-100 text-slate-700 hover:text-yellow-900 px-2.5 py-1 rounded-full font-medium transition-colors flex items-center gap-1 cursor-pointer border border-slate-200/60"
-                        title={`View grievances for ${capitalizeIssue(i.issue)}`}
-                      >
-                        <span>{capitalizeIssue(i.issue)}</span>
-                        <span className="opacity-60">· {i.count}</span>
-                      </button>
-                    ))}
-                    {!detail?.top_issues?.length && <span className="text-xs text-slate-400">No classified issues yet</span>}
-                  </div>
+                  {detailLoading ? (
+                    <div className="flex flex-wrap gap-2 animate-pulse py-2">
+                      <div className="h-6 w-24 bg-slate-100 rounded-full" />
+                      <div className="h-6 w-20 bg-slate-100 rounded-full" />
+                      <div className="h-6 w-28 bg-slate-100 rounded-full" />
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {(detail?.top_issues || []).map((i) => (
+                        <button
+                          key={i.issue}
+                          type="button"
+                          onClick={() => goToGrievances({ topic: i.issue })}
+                          className="text-[10px] bg-slate-100 hover:bg-yellow-100 text-slate-700 hover:text-yellow-900 px-2.5 py-1 rounded-full font-medium transition-colors flex items-center gap-1 cursor-pointer border border-slate-200/60"
+                          title={`View grievances for ${i.issue}`}
+                        >
+                          <span>{i.issue}</span>
+                          <span className="opacity-60">· {i.count}</span>
+                        </button>
+                      ))}
+                      {!detail?.top_issues?.length && <span className="text-xs text-slate-400">No classified issues yet</span>}
+                    </div>
+                  )}
                 </div>
                 <div className="pt-4 border-t border-slate-50">
                   <h3 className="text-sm font-bold text-slate-800 mb-2">Trending Hashtags</h3>
@@ -269,6 +324,9 @@ const ConstituencyExplorerTab = ({ filters = {} }) => {
                     ))}
                   </select>
                 </div>
+                {comparisonError && (
+                  <div className="text-xs text-red-600 font-semibold mb-2">{comparisonError}</div>
+                )}
                 {!compareWith ? (
                   <div className="text-xs text-slate-400 py-6 text-center">Pick a second seat to compare</div>
                 ) : comparisonLoading ? (

@@ -4,8 +4,11 @@ export const MLA_PARTY_META = {
   INC: {
     label: 'INC',
     fullName: 'Indian National Congress',
-    color: '#2563eb',
-    accent: 'from-blue-500/10 to-transparent',
+    // Solid fallback for text/icon/stroke contexts — an amber rather than BJP's
+    // brighter orange, since INC's real saffron/white/green tricolor is rendered
+    // as an actual swatch wherever a gradient background is possible instead.
+    color: '#CA8A04',
+    accent: 'from-orange-500/10 via-white/10 to-green-600/10',
   },
   BRS: {
     label: 'BRS',
