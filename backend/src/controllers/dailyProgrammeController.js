@@ -2,6 +2,10 @@ const DailyProgramme = require('../models/DailyProgramme');
 const PeriscopeUpload = require('../models/PeriscopeUpload');
 const { createAuditLog } = require('../services/auditService');
 const { uploadPeriscopeToS3, getPeriscopeDownloadUrl } = require('../services/periscopeS3Service');
+const cacheService = require('../services/cacheService');
+
+const PROGRAMMES_CACHE_PREFIX = 'daily-programmes:v1';
+const invalidateProgrammesCache = () => cacheService.invalidatePrefix(PROGRAMMES_CACHE_PREFIX);
 
 // Helper to get start and end of a day
 const getDayRange = (dateStr) => {
@@ -20,6 +24,13 @@ const getProgrammesByDate = async (req, res) => {
 
         if (!date) {
             return res.status(400).json({ message: 'date query parameter is required' });
+        }
+
+        const cacheKey = `${PROGRAMMES_CACHE_PREFIX}:${date}`;
+        const cached = await cacheService.get(cacheKey);
+        if (cached) {
+            res.set('Cache-Control', 'private, max-age=15');
+            return res.status(200).json(cached);
         }
 
         const { start, end } = getDayRange(date);
@@ -44,12 +55,15 @@ const getProgrammesByDate = async (req, res) => {
             }
         });
 
-        res.status(200).json({
+        const payload = {
             date,
             total: programmes.length,
             categoryLabels,
             programmes: grouped
-        });
+        };
+        await cacheService.set(cacheKey, payload, 60);
+        res.set('Cache-Control', 'private, max-age=15');
+        res.status(200).json(payload);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -111,6 +125,7 @@ const saveProgrammesBulk = async (req, res) => {
             count: created.length
         });
 
+        await invalidateProgrammesCache();
         res.status(201).json({
             message: `Saved ${created.length} programmes for ${date}`,
             count: created.length
@@ -141,6 +156,7 @@ const createProgramme = async (req, res) => {
             createdBy: req.user?.email || req.user?.id || 'system'
         });
 
+        await invalidateProgrammesCache();
         res.status(201).json(programme);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -164,6 +180,7 @@ const updateProgramme = async (req, res) => {
             { new: true }
         );
 
+        await invalidateProgrammesCache();
         res.status(200).json(updated);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -183,6 +200,7 @@ const deleteProgramme = async (req, res) => {
 
         await DailyProgramme.deleteOne({ id: req.params.id });
 
+        await invalidateProgrammesCache();
         res.status(200).json({ message: 'Programme deleted' });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -205,6 +223,7 @@ const clearProgrammesByDate = async (req, res) => {
             deleted: result.deletedCount
         });
 
+        await invalidateProgrammesCache();
         res.status(200).json({
             message: `Cleared ${result.deletedCount} programmes for ${date}`
         });

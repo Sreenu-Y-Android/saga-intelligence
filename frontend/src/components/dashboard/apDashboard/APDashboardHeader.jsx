@@ -172,7 +172,7 @@ const APDashboardHeader = ({ filters, onFiltersChange, onRefresh, loading }) => 
         {/* Title */}
         <div className="flex-1 min-w-0">
           <h1 className="text-lg font-bold text-slate-900 leading-tight">
-            AP Political Intelligence Dashboard
+            Political Intelligence Dashboard
           </h1>
           <p className="text-xs text-slate-500 mt-0.5 hidden sm:block">
             Real-time intelligence across all 119 Telangana constituencies

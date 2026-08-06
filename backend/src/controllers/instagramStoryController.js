@@ -1,6 +1,17 @@
 const InstagramStory = require('../models/InstagramStory');
+const Source = require('../models/Source');
+const { sourceScopeFilter } = require('../middleware/scopeMiddleware');
 const { archiveStoryMedia, deleteStoryFromS3 } = require('../services/storyS3Service');
 const axios = require('axios');
+
+// For a scoped MLA/MP, resolve the Source ids (Instagram tracked accounts) they
+// are allowed to see. Returns null when the caller can see everything.
+const allowedSourceIds = async (scope) => {
+  const filter = sourceScopeFilter(scope);
+  if (!filter || Object.keys(filter).length === 0) return null;
+  const sources = await Source.find({ platform: 'instagram', ...filter }).select('id').lean();
+  return sources.map((s) => s.id);
+};
 
 /**
  * GET /api/instagram-stories
@@ -22,6 +33,15 @@ const getStories = async (req, res) => {
     const filter = {};
     if (source_id) filter.source_id = source_id;
     if (author_handle) filter.author_handle = author_handle.replace('@', '').toLowerCase();
+
+    // RBAC: scoped MLA/MP only sees stories from Instagram accounts tagged to
+    // their seat (or party-wide). Super admin / legacy roles pass through.
+    const scopedIds = await allowedSourceIds(req.scope);
+    if (scopedIds !== null) {
+      filter.source_id = source_id && scopedIds.includes(source_id)
+        ? source_id
+        : { $in: scopedIds };
+    }
 
     // By default, exclude expired stories
     if (include_expired !== 'true') {
@@ -356,11 +376,13 @@ const cleanupStories = async (req, res) => {
 const getStoryStats = async (req, res) => {
   try {
     const now = new Date();
+    const scopedIds = await allowedSourceIds(req.scope);
+    const base = scopedIds === null ? {} : { source_id: { $in: scopedIds } };
     const [total, active, archived, expired] = await Promise.all([
-      InstagramStory.countDocuments(),
-      InstagramStory.countDocuments({ expires_at: { $gt: now }, is_available: true }),
-      InstagramStory.countDocuments({ is_archived: true }),
-      InstagramStory.countDocuments({ expires_at: { $lt: now } })
+      InstagramStory.countDocuments({ ...base }),
+      InstagramStory.countDocuments({ ...base, expires_at: { $gt: now }, is_available: true }),
+      InstagramStory.countDocuments({ ...base, is_archived: true }),
+      InstagramStory.countDocuments({ ...base, expires_at: { $lt: now } })
     ]);
 
     res.json({ total, active, archived, expired });

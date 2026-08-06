@@ -1,21 +1,29 @@
 const ALL_PAGES = [
   { path: '/dashboard', name: 'Dashboard', icon: 'LayoutDashboard' },
   { path: '/alerts', name: 'Alerts', icon: 'AlertTriangle' },
-  { path: '/monitors', name: 'SM Handles', icon: 'Monitor' },
+  { path: '/monitors', name: 'Profiles Live Monitor', icon: 'Monitor' },
   { path: '/grievances', name: 'Grievances', icon: 'MessageSquare' },
+  { path: '/public-web-articles', name: 'Web Articles', icon: 'Newspaper' },
   { path: '/global-search', name: 'Global Search', icon: 'Globe' },
   { path: '/events', name: 'Events', icon: 'CalendarDays' },
   { path: '/events-report', name: 'Events Report', icon: 'FileText' },
   { path: '/unified-reports', name: 'Unified Reports', icon: 'FileText' },
+  { path: '/intelligence-dashboard', name: 'Reports', icon: 'BarChart3' },
   { path: '/settings', name: 'Settings', icon: 'Settings' },
-  { path: '/help', name: 'Help Guide', icon: 'HelpCircle' },
+  // { path: '/help', name: 'Help Guide', icon: 'HelpCircle' },
   { path: '/announcements', name: 'Announcements', icon: 'Megaphone' },
   { path: '/sources', name: 'Sources', icon: 'Rss' },
   { path: '/person-of-interest', name: 'Profile', icon: 'UserSearch' },
+  { path: '/geographic-intelligence', name: 'Geographic Intelligence', icon: 'Map' },
   { path: '/access-management', name: 'Access Management', icon: 'ShieldCheck' }
 ];
 
 const PAGE_FEATURES = {
+  '/geographic-intelligence': [
+    { id: 'district_view', label: 'District View' },
+    { id: 'city_view', label: 'City View' },
+    { id: 'risk_score', label: 'Risk Score' }
+  ],
   '/alerts': [
     { id: 'active', label: 'Active' },
     { id: 'false_positive', label: 'False Positive' },

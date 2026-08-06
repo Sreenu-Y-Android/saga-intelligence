@@ -70,12 +70,10 @@ const searchHistorySchema = new mongoose.Schema({
 });
 
 searchHistorySchema.index({ user_id: 1, searched_at: -1 });
-searchHistorySchema.index({ user_id: 1, searched_at: -1, _id: -1 });
 searchHistorySchema.index({ user_id: 1, search_type: 1, searched_at: -1 });
 searchHistorySchema.index({ user_id: 1, platform: 1, searched_at: -1 });
 searchHistorySchema.index({ user_id: 1, search_type: 1, platform: 1, searched_at: -1 });
 searchHistorySchema.index({ user_id: 1, query_normalized: 1, searched_at: -1 });
-searchHistorySchema.index({ user_id: 1, id: 1 });
 searchHistorySchema.index({ user_id: 1, query: 'text', results_search_text: 'text' });
 
 module.exports = mongoose.model('SearchHistory', searchHistorySchema);

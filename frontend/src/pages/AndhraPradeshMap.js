@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { TDP_PORTRAITS } from '../config/partyMedia';
+import { PARTY_PORTRAITS } from '../config/partyMedia';
 import { Card } from '../components/ui/card';
 
 // Revamped Dashboard Component imports
@@ -20,9 +20,11 @@ import APRecentActivity from '../components/dashboard/apDashboard/APRecentActivi
 import APGeographicHighlights from '../components/dashboard/apDashboard/APGeographicHighlights';
 import APConstituencyPanel from '../components/dashboard/apDashboard/APConstituencyPanel';
 
+// Keys match politicalSentimentService's target_entity output enum
+// (see buildPrompt in backend/src/services/politicalSentimentService.js).
 const LEADERSHIP_TARGET_ENTITY = {
-  'portrait-primary': 'bsk',
-  'portrait-lokesh': 'bsk_son',
+  'portrait-primary': 'revanth',
+  'portrait-secondary': 'bhatti',
 };
 
 const AndhraPradeshMap = ({ embedded = false }) => {
@@ -80,7 +82,7 @@ const AndhraPradeshMap = ({ embedded = false }) => {
 
   return (
     <div className="space-y-4 max-w-[1600px] mx-auto p-1">
-      {/* Top Banner Row: Header + leadership portraits */}
+      {/* Top Banner Row: Header + Leadership Portraits */}
       <div className="flex flex-col xl:flex-row gap-3 items-stretch">
         <div className="flex-1 flex flex-col">
           <APDashboardHeader
@@ -94,7 +96,7 @@ const AndhraPradeshMap = ({ embedded = false }) => {
         {/* Leadership Quick Navigation Cards */}
         <Card className="p-3 border border-slate-200 bg-white flex items-center justify-center gap-4 xl:w-[280px] shrink-0 shadow-sm">
           <div className="flex items-center gap-4">
-            {TDP_PORTRAITS.map((portrait) => (
+            {PARTY_PORTRAITS.map((portrait) => (
               <button
                 key={portrait.id}
                 type="button"

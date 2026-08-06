@@ -12,6 +12,12 @@ const getAuditLogs = async (req, res) => {
     if (action && action !== 'all') query.action = action;
     if (user_id) query.user_id = user_id;
 
+    // RBAC: a scoped MLA/MP may only see their own audit trail. Super admin and
+    // party leadership (canSeeAll) see every user's actions.
+    if (req.scope && !req.scope.canSeeAll) {
+      query.user_id = req.user?.id;
+    }
+
     if (start_date || end_date) {
       query.timestamp = {};
       if (start_date) {

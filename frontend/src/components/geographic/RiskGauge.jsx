@@ -1,16 +1,10 @@
 import React from 'react';
 import { RadialBarChart, RadialBar, PolarAngleAxis, ResponsiveContainer } from 'recharts';
-
-const colorForScore = (score) => {
-  if (score >= 75) return '#ef4444';
-  if (score >= 50) return '#f97316';
-  if (score >= 25) return '#f59e0b';
-  return '#10b981';
-};
+import { colorForRiskScore } from './sentimentScale';
 
 /** Circular risk-score gauge (0-100) — used on the district snapshot panel. */
 const RiskGauge = ({ score = 0, size = 96 }) => {
-  const color = colorForScore(score);
+  const color = colorForRiskScore(score);
   const data = [{ value: score, fill: color }];
 
   return (

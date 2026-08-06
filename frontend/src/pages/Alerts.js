@@ -2,80 +2,92 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom';
 import { useNotification } from '../context/NotificationContext';
 import api from '../lib/api';
-import { AlertTriangle, CheckCircle, Flag, XCircle, Zap, Activity, MessageSquare, Filter, ExternalLink, Search, Calendar, Download, Loader2, ArrowUpCircle, Plus, LayoutGrid, LayoutList, Users } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Flag, XCircle, Zap, Activity, MessageSquare, Filter, ExternalLink, Search, Calendar, Download, Loader2, ArrowUpCircle, Plus, LayoutGrid, LayoutList, Tag, Users } from 'lucide-react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Skeleton } from '../components/ui/skeleton';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Textarea } from '../components/ui/textarea';
 import { toast } from 'sonner';
-import { TwitterAlertCard, YoutubeAlertCard } from '../components/AlertCards';
-import { FrequentEngagersDialog } from '../components/FrequentEngagersDialog';
+import { TwitterAlertCard, YoutubeAlertCard, FrequentEngagersDialog } from '../components/AlertCards';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Popover, PopoverContent, PopoverTrigger } from '../components/ui/popover';
 import { Calendar as CalendarComponent } from '../components/ui/calendar';
 import { format } from 'date-fns';
-import ReportsContent from '../components/ReportsContent';
 import AddSourceModal from '../components/AddSourceModal';
 import { useRbac } from '../contexts/RbacContext';
+import { useAuth } from '../contexts/AuthContext';
+import { canManageRestrictedGrievanceUi } from '../lib/grievanceUiPermissions';
 
-const ALERT_STATUS_TABS = [
-  { value: 'active', label: 'Active' },
-];
-
+const ALERT_STATUS_VALUES = ['active', 'false_positive', 'acknowledged', 'escalated'];
+const ALERTS_CACHE_KEY = 'alertsCache_v2';
+const ALERTS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const ENGAGER_AUTO_QUEUE_TRIGGER_KEY = 'engagerAutoQueueLastTriggerAt';
 const ENGAGER_AUTO_QUEUE_TRIGGER_TTL = 60 * 60 * 1000; // 1 hour
-
-const DATE_FILTER_MAX_RANGE_DAYS = 90;
-const getDateFilterBounds = () => {
-  const today = new Date();
-  const earliest = new Date(today);
-  earliest.setDate(earliest.getDate() - DATE_FILTER_MAX_RANGE_DAYS);
-  return { fromDate: earliest, toDate: today };
-};
+const ALERTS_PAGE_SIZE = 20;
+// Negative/Moderate/Positive pills must reflect stance RELATIVE TO the client
+// (llm_analysis.target_sentiment), not the generic risk_level enum — risk_level
+// is shared with non-political alert types (e.g. velocity/viral spikes) that
+// never went through the political-sentiment pipeline, so filtering on it
+// let unrelated alerts leak into the wrong bucket.
+const SENTIMENT_BY_CATEGORY = { high: 'negative', medium: 'moderate', low: 'positive' };
 
 const Alerts = () => {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const { user } = useAuth();
+  const canEditAlerts = canManageRestrictedGrievanceUi(user);
+  const [searchParams] = useSearchParams();
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
   const isFirstLoadRef = useRef(true);
-  const [activeTab, setActiveTab] = useState('active'); // Always start on Active tab
+  const activeTab = 'all';
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 1024);
   const [monitoredHandles, setMonitoredHandles] = useState([]);
+  const [frequentEngagersOpen, setFrequentEngagersOpen] = useState(false);
   const [viewMode, setViewMode] = useState('grid');
   const [alertCategory, setAlertCategory] = useState('all'); // 'all', 'risk', 'viral', 'new_post'
   const [totalResults, setTotalResults] = useState(0);
   const [alertStats, setAlertStats] = useState(null);
   const [downloadStates, setDownloadStates] = useState({});
   const [newAlertCount, setNewAlertCount] = useState(0); // Count of new alerts since last scroll-to-top
+  const [pendingNewAlerts, setPendingNewAlerts] = useState([]); // Buffer for new alerts during polling
   const scrollAnchorRef = useRef({ shouldRestore: false, prevHeight: 0, prevScroll: 0 });
-
-  const ALERTS_CACHE_KEY = 'alertsCache_v1';
-  const ALERTS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+  const scrollContainerRef = useRef(null);
 
   // Search & Pagination States
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  const [targetAlertId, setTargetAlertId] = useState(null);
   const [platformFilter, setPlatformFilter] = useState('all');
   const [keywordFilter, setKeywordFilter] = useState('all');
   const [availableKeywords, setAvailableKeywords] = useState([]);
   const [sourceCategoryFilter, setSourceCategoryFilter] = useState('all');
-  const [dateRange, setDateRange] = useState({ start: '', end: '' });
-  const { fromDate: dateFilterFromDate, toDate: dateFilterToDate } = useMemo(() => getDateFilterBounds(), []);
+  const [dateRange, setDateRange] = useState(() => {
+    const fromParam = searchParams.get('from');
+    const toParam = searchParams.get('to');
+    try {
+      return {
+        start: fromParam ? new Date(fromParam).toISOString() : '',
+        end: toParam ? new Date(toParam).toISOString() : ''
+      };
+    } catch {
+      return { start: '', end: '' };
+    }
+  });
+  const [topicClassificationFilter, setTopicClassificationFilter] = useState('all');
+  const [topicCounts, setTopicCounts] = useState([]);
   const [instagramContentFilter, setInstagramContentFilter] = useState('all_posts_reels');
   const [instagramStoriesStatusFilter, setInstagramStoriesStatusFilter] = useState('all');
   const [capturedStories, setCapturedStories] = useState([]);
   const [capturedStoriesLoading, setCapturedStoriesLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [nextCursor, setNextCursor] = useState(null);
-  const [hasMore, setHasMore] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [error, setError] = useState(null);
-  const observerTarget = useRef(null);
+  const loadMoreSentinelRef = useRef(null);
   const isFetchingRef = useRef(false);
-  const lastFetchKeyRef = useRef('');
+  const isPollingRef = useRef(false);
   const fetchAbortRef = useRef(null);
   const fetchRequestSeqRef = useRef(0);
 
@@ -86,11 +98,11 @@ const Alerts = () => {
   const { markAllRead } = useNotification();
   const { hasFeatureAccess } = useRbac();
 
-  const visibleStatusTabs = useMemo(
-    () => ALERT_STATUS_TABS.filter((tab) => hasFeatureAccess('/alerts', tab.value)),
+  const accessibleAlertStatuses = useMemo(
+    () => ALERT_STATUS_VALUES.filter((status) => hasFeatureAccess('/alerts', status)),
     [hasFeatureAccess]
   );
-  const hasAnyAlertFeature = visibleStatusTabs.length > 0;
+  const hasAnyAlertFeature = accessibleAlertStatuses.length > 0;
   const isCapturedStoriesView = platformFilter === 'instagram' && instagramContentFilter === 'captured_stories';
 
   const SOURCE_CATEGORY_OPTIONS = [
@@ -111,12 +123,13 @@ const Alerts = () => {
       'platform', platformFilter,
       'keyword', keywordFilter,
       'sourceCat', sourceCategoryFilter,
+      'topicClass', topicClassificationFilter,
       'start', dateRange.start || '',
       'end', dateRange.end || '',
       'igContent', instagramContentFilter,
       'igStories', instagramStoriesStatusFilter
     ].join('|');
-  }, [activeTab, alertCategory, debouncedSearchQuery, platformFilter, keywordFilter, sourceCategoryFilter, dateRange.start, dateRange.end, instagramContentFilter, instagramStoriesStatusFilter]);
+  }, [activeTab, alertCategory, debouncedSearchQuery, platformFilter, keywordFilter, sourceCategoryFilter, topicClassificationFilter, dateRange.start, dateRange.end, instagramContentFilter, instagramStoriesStatusFilter]);
 
   const readCache = useCallback((key) => {
     try {
@@ -146,14 +159,12 @@ const Alerts = () => {
 
   // Read status from URL query params (e.g., /alerts?status=acknowledged)
   useEffect(() => {
-    const statusParam = searchParams.get('status');
     const searchParam = searchParams.get('search');
     const platformParam = searchParams.get('platform');
     const categoryParam = searchParams.get('category');
-
-    if (statusParam && ALERT_STATUS_TABS.some((tab) => tab.value === statusParam)) {
-      setActiveTab(statusParam);
-    }
+    const alertIdParam = searchParams.get('alertId');
+    const fromParam = searchParams.get('from');
+    const toParam = searchParams.get('to');
 
     if (platformParam) {
       setPlatformFilter(platformParam);
@@ -168,25 +179,25 @@ const Alerts = () => {
       setSearchQuery(searchParam);
       setDebouncedSearchQuery(searchParam);
     }
-    // Note: 'handle' param is handled separately within ReportsContent
+
+    if (alertIdParam) {
+      setTargetAlertId(alertIdParam);
+    } else {
+      setTargetAlertId(null);
+    }
+
+    if (fromParam || toParam) {
+      try {
+        setDateRange({
+          start: fromParam ? new Date(fromParam).toISOString() : '',
+          end: toParam ? new Date(toParam).toISOString() : ''
+        });
+      } catch (err) {
+        console.error('Failed to parse date range params:', err);
+      }
+    }
   }, [searchParams]);
 
-  useEffect(() => {
-    if (!hasAnyAlertFeature) return;
-    const allowedValues = visibleStatusTabs.map((tab) => tab.value);
-    if (!allowedValues.includes(activeTab)) {
-      setActiveTab(allowedValues[0]);
-    }
-  }, [activeTab, hasAnyAlertFeature, visibleStatusTabs]);
-
-  // Helper to clear handle param from URL
-  const clearHandleParam = () => {
-    setSearchParams(prev => {
-      const newParams = new URLSearchParams(prev);
-      newParams.delete('handle');
-      return newParams;
-    });
-  };
 
   const updateDownloadState = (id, updates) => {
     setDownloadStates((prev) => ({
@@ -203,7 +214,6 @@ const Alerts = () => {
 
   // Add Source Modal States
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
-  const [showEngagersDialog, setShowEngagersDialog] = useState(false);
   const [initialSourceData, setInitialSourceData] = useState(null);
 
   // Fetch reports for escalated alerts to show report status
@@ -294,21 +304,13 @@ const Alerts = () => {
   // Reset pagination when filters change
   useEffect(() => {
     setPage(1);
-    setNextCursor(null);
-    setHasMore(true);
+    setHasMore(false);
     if (!hasAnyAlertFeature) return;
-    if (activeTab === 'reports') return;
-    const cacheKey = buildCacheKey();
-    const cached = readCache(cacheKey);
-    if (cached?.alerts?.length) {
-      setAlerts(cached.alerts);
-      setTotalResults(cached.totalResults || 0);
-      setHasMore(cached.hasMore ?? true);
-      setPage(cached.nextPage || 2);
-      setNextCursor(cached.nextCursor || null);
-      if (cached.alertStats) setAlertStats(cached.alertStats);
-    }
-  }, [activeTab, alertCategory, debouncedSearchQuery, platformFilter, keywordFilter, sourceCategoryFilter, dateRange, buildCacheKey, readCache, hasAnyAlertFeature]);
+    // Clear cache to force fresh fetch on filter change
+    try {
+      localStorage.removeItem(ALERTS_CACHE_KEY);
+    } catch (e) { /* ignore */ }
+  }, [activeTab, alertCategory, debouncedSearchQuery, platformFilter, keywordFilter, sourceCategoryFilter, topicClassificationFilter, dateRange, hasAnyAlertFeature]);
 
   useEffect(() => {
     if (platformFilter !== 'instagram') {
@@ -322,6 +324,34 @@ const Alerts = () => {
       setInstagramStoriesStatusFilter('all');
     }
   }, [instagramContentFilter]);
+
+  // Fetch topic classification counts from server
+  const fetchTopicCounts = useCallback(async () => {
+    try {
+      const params = {
+        status: 'all',
+        platform: platformFilter !== 'all' ? platformFilter : undefined,
+        startDate: dateRange.start || undefined,
+        endDate: dateRange.end || undefined
+      };
+
+      if (alertCategory === 'viral') {
+        params.alert_type = 'velocity';
+      } else if (alertCategory === 'risk') {
+        params.alert_type = 'risk';
+      } else if (['high', 'medium', 'low'].includes(alertCategory)) {
+        params.sentiment = SENTIMENT_BY_CATEGORY[alertCategory];
+      } else if (alertCategory === 'critical') {
+        params.risk_level = alertCategory;
+      }
+
+      const response = await api.get('/alerts/topic-counts', { params });
+      setTopicCounts(response.data || []);
+    } catch (error) {
+      console.error('Failed to fetch topic classification counts:', error);
+      setTopicCounts([]);
+    }
+  }, [platformFilter, dateRange.start, dateRange.end, alertCategory]);
 
   useEffect(() => {
     const fetchKeywords = async () => {
@@ -339,36 +369,30 @@ const Alerts = () => {
 
     fetchKeywords();
 
-    // Prefetch lightweight summary for instant tab counts
+    // Prefetch lightweight summary so counts are available immediately
     api.get('/alerts/summary').then(res => {
-      if (res.data && !alertStats) {
+      if (res.data) {
         setAlertStats(prev => prev || res.data);
       }
     }).catch(() => { });
-  }, []);
+
+    // Fetch topic classification counts
+    fetchTopicCounts();
+  }, [fetchTopicCounts]);
+
+  // Re-fetch topic counts when relevant filters change
+  useEffect(() => {
+    fetchTopicCounts();
+  }, [fetchTopicCounts]);
 
   // Removed mapContentToAlert as it was only for content/feed fallback which is now unified
   // Removed fetchContentFeed as we now use /api/alerts for everything
 
-  const fetchAlerts = useCallback(async (isLoadMore = false, cursorOverride = null) => {
-    if (!hasAnyAlertFeature) {
-      setAlerts([]);
-      setHasMore(false);
-      setLoading(false);
-      setIsRefreshing(false);
-      setIsFetchingMore(false);
-      return;
-    }
-    const isCurrentTabAllowed = visibleStatusTabs.some((tab) => tab.value === activeTab);
-    if (!isCurrentTabAllowed) {
-      setLoading(false);
-      setIsRefreshing(false);
-      setIsFetchingMore(false);
-      return;
-    }
+  const fetchAlerts = useCallback(async (isLoadMore = false) => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     setError(null);
+
     if (isFirstLoadRef.current && !isLoadMore) {
       setLoading(true);
     } else if (isLoadMore) {
@@ -386,79 +410,80 @@ const Alerts = () => {
       if (!isLoadMore) fetchAbortRef.current = controller;
 
       const params = {
-        page: 1,
-        limit: 20,
+        page: isLoadMore ? page + 1 : 1,
+        limit: ALERTS_PAGE_SIZE,
         includeStats: !isLoadMore,
-        status: activeTab !== 'reports' ? activeTab : 'active',
+        status: 'all',
         search: debouncedSearchQuery || undefined,
         platform: platformFilter !== 'all' ? platformFilter : undefined,
         category: sourceCategoryFilter !== 'all' ? sourceCategoryFilter : undefined,
+        topic_classification: topicClassificationFilter !== 'all' ? topicClassificationFilter : undefined,
         startDate: dateRange.start || undefined,
         endDate: dateRange.end || undefined,
         keyword: keywordFilter !== 'all' ? keywordFilter : undefined
       };
 
-      if (isLoadMore && (cursorOverride || nextCursor)) {
-        params.cursor = cursorOverride || nextCursor;
-      }
-
       if (alertCategory === 'viral') {
         params.alert_type = 'velocity';
       } else if (alertCategory === 'risk') {
         params.alert_type = 'risk';
-      } else if (['high', 'medium', 'low', 'critical'].includes(alertCategory)) {
+      } else if (['high', 'medium', 'low'].includes(alertCategory)) {
+        params.sentiment = SENTIMENT_BY_CATEGORY[alertCategory];
+      } else if (alertCategory === 'critical') {
         params.risk_level = alertCategory;
       }
 
-      const response = await api.get('/alerts', { params, signal: controller.signal });
+      const promises = [
+        api.get('/alerts', { params, signal: controller.signal, timeout: 60000 })
+      ];
+
+      if (targetAlertId && !isLoadMore) {
+        promises.push(
+          api.get(`/alerts/${targetAlertId}`).catch((err) => {
+            console.error('[Alerts] Failed to fetch target alert:', err);
+            return null;
+          })
+        );
+      }
+
+      const results = await Promise.all(promises);
       if (requestSeq !== fetchRequestSeqRef.current) return;
 
+      const response = results[0];
+      const targetAlertRes = results[1];
+      const targetAlert = targetAlertRes?.data || null;
+
       const newAlerts = response.data.alerts || [];
-      const pagination = response.data.pagination;
-      setTotalResults(pagination.total || 0);
-      if (response.data.stats) setAlertStats(response.data.stats);
+      const pagination = response.data.pagination || {};
 
-      const uniqueNewAlerts = [];
-      const seenIds = new Set();
-      newAlerts.forEach(alert => {
-        if (!seenIds.has(alert.id)) {
-          seenIds.add(alert.id);
-          uniqueNewAlerts.push(alert);
-        }
-      });
-
-      if (isLoadMore) {
-        setAlerts(prev => {
-          const existingIds = new Set(prev.map(a => a.id));
-          const trulyUnique = uniqueNewAlerts.filter(a => !existingIds.has(a.id));
-          // If no new unique items, return same reference to avoid re-render loop
-          if (trulyUnique.length === 0) return prev;
-          return [...prev, ...trulyUnique];
-        });
-      } else {
-        setAlerts(uniqueNewAlerts);
-      }
-
-      // Safety: if server returned fewer items than requested, no more data
-      if (isLoadMore && uniqueNewAlerts.length === 0) {
-        setHasMore(false);
-        setNextCursor(null);
-        return;
-      }
-
+      setTotalResults((prev) => (typeof pagination.total === 'number' ? pagination.total : prev));
       setHasMore(pagination.hasMore);
       setNextCursor(pagination.nextCursor || null);
       setPage((prev) => (isLoadMore ? prev + 1 : 1));
 
-      // Cache the result (use functional approach to get latest alerts)
-      const cacheKey = buildCacheKey();
-      if (!isLoadMore) {
-        writeCache(cacheKey, {
-          alerts: uniqueNewAlerts,
+      if (response.data.stats) setAlertStats(response.data.stats);
+
+      if (isLoadMore) {
+        setAlerts((prev) => {
+          const existingIds = new Set(prev.map((a) => a.id));
+          const trulyUnique = newAlerts.filter((a) => !existingIds.has(a.id));
+          if (trulyUnique.length === 0) return prev;
+          return [...prev, ...trulyUnique];
+        });
+      } else {
+        if (targetAlert) {
+          const filteredNew = newAlerts.filter((a) => a.id !== targetAlert.id && a._id !== targetAlert._id);
+          setAlerts([targetAlert, ...filteredNew]);
+        } else {
+          setAlerts(newAlerts);
+        }
+        // Cache the first page for fast paint on next navigation
+        writeCache(buildCacheKey(), {
+          alerts: targetAlert 
+            ? [targetAlert, ...newAlerts.filter((a) => a.id !== targetAlert.id && a._id !== targetAlert._id)] 
+            : newAlerts,
           totalResults: pagination.total || 0,
-          hasMore: pagination.hasMore,
-          nextPage: 2,
-          nextCursor: pagination.nextCursor || null,
+          totalPages: pagination.totalPages || 1,
           alertStats: response.data.stats || null
         });
       }
@@ -475,7 +500,7 @@ const Alerts = () => {
       isFirstLoadRef.current = false;
       isFetchingRef.current = false;
     }
-  }, [activeTab, debouncedSearchQuery, platformFilter, keywordFilter, alertCategory, dateRange, sourceCategoryFilter, buildCacheKey, writeCache, nextCursor, hasAnyAlertFeature, visibleStatusTabs]);
+  }, [debouncedSearchQuery, targetAlertId, platformFilter, keywordFilter, alertCategory, dateRange, sourceCategoryFilter, topicClassificationFilter, buildCacheKey, writeCache, page]);
 
   const fetchCapturedStories = useCallback(async () => {
     if (!isCapturedStoriesView) {
@@ -535,11 +560,8 @@ const Alerts = () => {
     // We now fetch stats always (for the Escalated pending count), 
     // relying on the JSX to hide regular status counts if no search is active.
     try {
-      // Don't include URL queries in stats search - they're for investigation only
-      const searchParam = isUrlQuery(debouncedSearchQuery) ? '' : debouncedSearchQuery;
-
       const params = {
-        search: searchParam,
+        search: debouncedSearchQuery || undefined,
         platform: platformFilter !== 'all' ? platformFilter : undefined,
         category: sourceCategoryFilter !== 'all' ? sourceCategoryFilter : undefined,
         startDate: dateRange.start || undefined,
@@ -548,11 +570,18 @@ const Alerts = () => {
         keyword: keywordFilter !== 'all' ? keywordFilter : undefined
       };
 
+      // Topic classification filter for stats
+      if (topicClassificationFilter !== 'all') {
+        params.topic_classification = topicClassificationFilter;
+      }
+
       if (alertCategory === 'viral') {
         params.alert_type = 'velocity';
       } else if (alertCategory === 'risk') {
         params.alert_type = 'risk';
-      } else if (['high', 'medium', 'low', 'critical'].includes(alertCategory)) {
+      } else if (['high', 'medium', 'low'].includes(alertCategory)) {
+        params.sentiment = SENTIMENT_BY_CATEGORY[alertCategory];
+      } else if (alertCategory === 'critical') {
         params.risk_level = alertCategory;
       }
 
@@ -561,124 +590,109 @@ const Alerts = () => {
     } catch (error) {
       console.error('Failed to fetch alert stats:', error);
     }
-  }, [debouncedSearchQuery, platformFilter, keywordFilter, alertCategory, dateRange, sourceCategoryFilter]);
+  }, [debouncedSearchQuery, platformFilter, keywordFilter, alertCategory, dateRange, sourceCategoryFilter, topicClassificationFilter]);
 
   // Initial load or Filter change
-  // Debounce Search Query - but skip if it's a URL (for investigation)
+  // Debounce Search Query so the alerts search reacts to any detail the user types.
   useEffect(() => {
     const timer = setTimeout(() => {
-      // Don't use URLs as search filters - they're for investigation only
-      if (!isUrlQuery(searchQuery)) {
-        setDebouncedSearchQuery(searchQuery);
-      } else {
-        // Clear search filter if URL is pasted
-        setDebouncedSearchQuery('');
-      }
+      setDebouncedSearchQuery(searchQuery.trim());
     }, 600); // 600ms debounce
 
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Fetch Logic Triggered by Filters (Debounced Search, Tab Switch, etc.)
+  // Trigger fetch on filter change or initial load
   useEffect(() => {
-    if (!hasAnyAlertFeature) return;
-    const key = `${activeTab}|${alertCategory}|${debouncedSearchQuery}|${platformFilter}|${keywordFilter}|${sourceCategoryFilter}|${dateRange.start}|${dateRange.end}`;
-    const keyChanged = lastFetchKeyRef.current !== key;
+    setPage(1);
+    setNextCursor(null);
+    setHasMore(true);
+    fetchAlerts(false);
+  }, [activeTab, alertCategory, debouncedSearchQuery, platformFilter, keywordFilter, dateRange, sourceCategoryFilter, topicClassificationFilter]);
 
-    // Always update the key ref so transitions are detected correctly
-    lastFetchKeyRef.current = key;
+  // Infinite-scroll: load more when sentinel becomes visible
+  useEffect(() => {
+    const node = loadMoreSentinelRef.current;
+    if (!node) return undefined;
+    if (!hasMore) return undefined;
+    if (isCapturedStoriesView) return undefined;
 
-    // If on reports tab, let ReportsContent handle its own data fetching
-    if (activeTab === 'reports') return;
-
-    // Only reset and fetch if the filters or tab actually changed
-    if (keyChanged) {
-      setPage(1);
-      setNextCursor(null);
-      setHasMore(true);
-      fetchAlerts(false);
-    }
-  }, [activeTab, alertCategory, debouncedSearchQuery, platformFilter, keywordFilter, dateRange, sourceCategoryFilter, fetchAlerts, hasAnyAlertFeature]);
+    const scrollContainer = document.querySelector('main');
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !loading && !isFetchingRef.current) {
+          fetchAlerts(true);
+        }
+      },
+      { root: scrollContainer, rootMargin: '300px', threshold: 0.1 }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMore, loading, fetchAlerts, isCapturedStoriesView]);
 
   useEffect(() => {
     markAllRead();
   }, [markAllRead]);
 
-  // Infinite Scroll Observer
-  useEffect(() => {
-    if (!hasAnyAlertFeature) return;
-    const observer = new IntersectionObserver(
-      entries => {
-        if (entries[0].isIntersecting && hasMore && !loading && !isFetchingRef.current) {
-          fetchAlerts(true, nextCursor);
-        }
-      },
-      { threshold: 0.25, rootMargin: '200px' }
-    );
-
-    const target = observerTarget.current;
-    if (target) {
-      observer.observe(target);
-    }
-
-    return () => {
-      if (target) {
-        observer.unobserve(target);
-      }
-    };
-  }, [activeTab, hasMore, loading, nextCursor, fetchAlerts, hasAnyAlertFeature]);
-
   // Fetch reports for escalated alerts when viewing escalated tab
   useEffect(() => {
-    if (activeTab === 'escalated' && alerts.length > 0) {
+    if (alerts.some((alert) => alert.status === 'escalated')) {
       fetchReportsForAlerts(alerts);
     } else {
-      // Clear reports map when not on escalated tab
       setReportsMap({});
     }
-  }, [activeTab, alerts, fetchReportsForAlerts]);
+  }, [alerts, fetchReportsForAlerts]);
 
   // --- POLLING LOGIC ---
   const checkForNewAlerts = useCallback(async () => {
     if (!hasAnyAlertFeature) return;
-    // Only poll on 'active' tab for now to avoid complexity in history tabs
-    if (activeTab !== 'active' || isFetchingRef.current) return;
+    if (page !== 1 || isCapturedStoriesView) return;
+    if (isFetchingRef.current || isPollingRef.current) return;
+    isPollingRef.current = true;
 
     try {
       const params = {
         page: 1,
-        limit: 20,
-        status: 'active',
+        limit: ALERTS_PAGE_SIZE,
+        status: 'all',
         platform: platformFilter !== 'all' ? platformFilter : undefined,
         category: sourceCategoryFilter !== 'all' ? sourceCategoryFilter : undefined,
+        topic_classification: topicClassificationFilter !== 'all' ? topicClassificationFilter : undefined,
         search: debouncedSearchQuery || undefined,
         keyword: keywordFilter !== 'all' ? keywordFilter : undefined
       };
 
       if (alertCategory === 'viral') params.alert_type = 'velocity';
       else if (alertCategory === 'risk') params.alert_type = 'risk';
-      else if (['high', 'medium', 'low', 'critical'].includes(alertCategory)) params.risk_level = alertCategory;
+      else if (['high', 'medium', 'low'].includes(alertCategory)) params.sentiment = SENTIMENT_BY_CATEGORY[alertCategory];
+      else if (alertCategory === 'critical') params.risk_level = alertCategory;
 
-      const response = await api.get('/alerts', { params: { ...params, includeStats: true } });
+      const response = await api.get('/alerts', { params, timeout: 15000 });
       const mappedNew = response.data.alerts || [];
 
-      // Identify TRULY new items
+      // Identify truly new items — ALWAYS buffer them, never prepend directly.
+      // This prevents reorder chaos while user is reading.
       setAlerts(currentAlerts => {
-        const currentIds = new Set(currentAlerts.map(a => a.id));
+        const currentIds = new Set([
+          ...currentAlerts.map(a => a.id),
+          ...pendingNewAlerts.map(a => a.id)
+        ]);
         const trulyNew = mappedNew.filter(a => !currentIds.has(a.id));
 
         if (trulyNew.length > 0) {
-          // If scrolled down, anchor the scroll position to prevent visual jump
-          if (window.scrollY > 100) {
-            scrollAnchorRef.current = {
-              shouldRestore: true,
-              prevHeight: document.documentElement.scrollHeight,
-              prevScroll: window.scrollY
-            };
-            setNewAlertCount(prev => prev + trulyNew.length);
-          }
-          // Always merge immediately (Auto Load)
-          return [...trulyNew, ...currentAlerts];
+          // Always buffer — never auto-prepend regardless of scroll position
+          setPendingNewAlerts((prev) => {
+            const seen = new Set(prev.map((a) => a.id));
+            const merged = [...prev];
+            trulyNew.forEach((item) => {
+              if (!seen.has(item.id)) {
+                seen.add(item.id);
+                merged.push(item);
+              }
+            });
+            return merged;
+          });
+          setNewAlertCount((prev) => prev + trulyNew.length);
         }
         return currentAlerts;
       });
@@ -686,20 +700,39 @@ const Alerts = () => {
 
     } catch (e) {
       console.error("Polling error:", e); // Silent fail
+    } finally {
+      isPollingRef.current = false;
     }
-  }, [activeTab, loading, platformFilter, debouncedSearchQuery, alertCategory, keywordFilter, sourceCategoryFilter, hasAnyAlertFeature]);
+  }, [platformFilter, debouncedSearchQuery, alertCategory, keywordFilter, sourceCategoryFilter, topicClassificationFilter, hasAnyAlertFeature, page, isCapturedStoriesView]);
+
+  // Resolve the <main> scroll container from Layout
+  useEffect(() => {
+    scrollContainerRef.current = document.querySelector('main');
+  }, []);
 
   // Scroll Anchoring Effect
   React.useLayoutEffect(() => {
     if (scrollAnchorRef.current.shouldRestore) {
-      const newHeight = document.documentElement.scrollHeight;
+      const container = scrollContainerRef.current || document.documentElement;
+      const newHeight = container.scrollHeight;
       const diff = newHeight - scrollAnchorRef.current.prevHeight;
       if (diff > 0) {
-        window.scrollTo(0, scrollAnchorRef.current.prevScroll + diff);
+        (scrollContainerRef.current || window).scrollTo(0, scrollAnchorRef.current.prevScroll + diff);
       }
       scrollAnchorRef.current.shouldRestore = false;
     }
   }, [alerts]);
+
+  // Merge pending new alerts when user clicks the button
+  const mergePendingAlerts = useCallback(() => {
+    // Full re-fetch to load new alerts in proper order
+    setPendingNewAlerts([]);
+    setNewAlertCount(0);
+    setPage(1);
+    setNextCursor(null);
+    setHasMore(true);
+    fetchAlerts(false);
+  }, [fetchAlerts]);
 
   // Reset new count when at top
   useEffect(() => {
@@ -726,6 +759,34 @@ const Alerts = () => {
   }, []);
 
   useEffect(() => {
+    // Clear alerts cache on page load to ensure fresh data
+    try {
+      localStorage.removeItem(ALERTS_CACHE_KEY);
+    } catch (e) { /* ignore */ }
+
+    if (!hasAnyAlertFeature) return;
+
+    try {
+      const lastTriggeredAt = Number(localStorage.getItem(ENGAGER_AUTO_QUEUE_TRIGGER_KEY) || 0);
+      if (Date.now() - lastTriggeredAt < ENGAGER_AUTO_QUEUE_TRIGGER_TTL) return;
+    } catch (error) {
+      console.error('Failed to read engager auto-queue trigger cache:', error);
+    }
+
+    api.post('/x/engager-analysis-auto-queue')
+      .then(() => {
+        try {
+          localStorage.setItem(ENGAGER_AUTO_QUEUE_TRIGGER_KEY, String(Date.now()));
+        } catch (error) {
+          console.error('Failed to write engager auto-queue trigger cache:', error);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to trigger engager auto-queue:', error);
+      });
+  }, []);
+
+  useEffect(() => {
     // fetchSourcesMetadata is called initially and periodically
     fetchSourcesMetadata();
 
@@ -741,38 +802,6 @@ const Alerts = () => {
     return () => clearInterval(interval);
   }, [checkForNewAlerts, fetchAlerts, fetchAlertStats, fetchSourcesMetadata, fetchCapturedStories, isCapturedStoriesView]);
 
-  // The backend already auto-queues Frequent Engagers analyses hourly, but
-  // that timer only starts fresh on a backend restart — this pings the same
-  // endpoint once per hour (per browser) as a redundant nudge so a long
-  // backend uptime without a restart doesn't mean a long wait for the first
-  // handles to get analyzed.
-  useEffect(() => {
-    try {
-      const lastTriggeredAt = Number(localStorage.getItem(ENGAGER_AUTO_QUEUE_TRIGGER_KEY) || 0);
-      if (Date.now() - lastTriggeredAt < ENGAGER_AUTO_QUEUE_TRIGGER_TTL) return;
-    } catch (error) {
-      console.error('Failed to read engager auto-queue trigger cache:', error);
-    }
-
-    api.post('/engager/engager-analysis-auto-queue')
-      .then(() => {
-        try {
-          localStorage.setItem(ENGAGER_AUTO_QUEUE_TRIGGER_KEY, String(Date.now()));
-        } catch (error) {
-          console.error('Failed to write engager auto-queue trigger cache:', error);
-        }
-      })
-      .catch((error) => {
-        console.error('Failed to trigger engager auto-queue:', error);
-      });
-  }, []);
-
-  useEffect(() => {
-    if (!hasAnyAlertFeature) return;
-    if (!hasAnyAlertFeature) return undefined;
-    const interval = setInterval(checkForNewAlerts, 10000); // Poll every 10s
-    return () => clearInterval(interval);
-  }, [checkForNewAlerts, hasAnyAlertFeature]);
 
   useEffect(() => {
     return () => {
@@ -790,23 +819,95 @@ const Alerts = () => {
   const handleAlertResolve = (resolvedAlert) => {
     const newStatus = resolvedAlert.status;
 
-    // If the new status doesn't match the current tab, remove it immediately for better UX
-    setAlerts(prev => prev.filter(a => a.id !== resolvedAlert.id || (newStatus === activeTab)));
-    setInvestigatedAlerts(prev => prev.filter(a => a.id !== resolvedAlert.id || (newStatus === activeTab)));
+    setAlerts(prev => prev.map((alert) => (
+      alert.id === resolvedAlert.id ? { ...alert, status: newStatus } : alert
+    )));
+    setInvestigatedAlerts(prev => prev.map((alert) => (
+      alert.id === resolvedAlert.id ? { ...alert, status: newStatus } : alert
+    )));
 
     toast.success(`Alert moved to ${newStatus?.replace('_', ' ') || 'updated'}`);
     fetchAlertStats();
   };
 
-  const handleAlertDelete = (alertId) => {
-    setAlerts(prev => prev.filter(a => a.id !== alertId));
-    setInvestigatedAlerts(prev => prev.filter(a => a.id !== alertId));
-    fetchAlertStats();
+  // Patch an alert across both list states + nested content.analysis (so the
+  // ReasonModal and card badges reflect the change without a refetch).
+  const patchAlertLocally = (alertId, patch) => {
+    const apply = (a) => {
+      if (a.id !== alertId) return a;
+      const merged = { ...a, ...patch };
+      if (patch.llm_analysis) merged.llm_analysis = { ...(a.llm_analysis || {}), ...patch.llm_analysis };
+      if (patch.threat_details) merged.threat_details = { ...(a.threat_details || {}), ...patch.threat_details };
+      if (patch.content_details_patch && a.content_details) {
+        merged.content_details = {
+          ...a.content_details,
+          ...patch.content_details_patch,
+          analysis: patch.content_details_patch.analysis
+            ? { ...(a.content_details.analysis || {}), ...patch.content_details_patch.analysis }
+            : a.content_details.analysis
+        };
+      }
+      return merged;
+    };
+    setAlerts(prev => prev.map(apply));
+    setInvestigatedAlerts(prev => prev.map(apply));
   };
 
-  const handleAlertEditSentiment = (alertId, riskLevel) => {
-    setAlerts(prev => prev.map(a => (a.id === alertId ? { ...a, risk_level: riskLevel } : a)));
-    setInvestigatedAlerts(prev => prev.map(a => (a.id === alertId ? { ...a, risk_level: riskLevel } : a)));
+  const RISK_SCORE_BANDS = { low: 20, medium: 50, high: 75 };
+
+  const handleRiskLevelChange = async (alert, newLevel) => {
+    try {
+      const res = await api.put(`/alerts/${alert.id}/analysis-override`, { risk_level: newLevel });
+      const newScore = RISK_SCORE_BANDS[newLevel] ?? 0;
+      patchAlertLocally(alert.id, {
+        risk_level: newLevel,
+        threat_details: { risk_score: newScore },
+        llm_analysis: { score: newScore },
+        content_details_patch: {
+          risk_level: newLevel,
+          analysis: { risk_level: newLevel, risk_score: newScore }
+        }
+      });
+      toast.success(`Risk level updated to ${newLevel.toUpperCase()} (${newScore}%)`);
+      fetchAlertStats();
+      return res?.data;
+    } catch (error) {
+      console.error('Failed to update risk level:', error);
+      toast.error(error?.response?.data?.message || 'Failed to update risk level');
+      throw error;
+    }
+  };
+
+  const handleSentimentChange = async (alert, newSentiment) => {
+    try {
+      await api.put(`/alerts/${alert.id}/analysis-override`, { sentiment: newSentiment });
+      patchAlertLocally(alert.id, {
+        llm_analysis: { sentiment: newSentiment },
+        content_details_patch: {
+          sentiment: newSentiment,
+          analysis: { sentiment: newSentiment, llm_analysis: { sentiment: newSentiment } }
+        }
+      });
+      toast.success(`Sentiment updated to ${newSentiment.toUpperCase()}`);
+    } catch (error) {
+      console.error('Failed to update sentiment:', error);
+      toast.error(error?.response?.data?.message || 'Failed to update sentiment');
+      throw error;
+    }
+  };
+
+  const handleDeleteAlert = async (alert) => {
+    if (!window.confirm('Are you sure you want to permanently delete this alert?')) return;
+    try {
+      await api.delete(`/alerts/${alert.id}`);
+      setAlerts(prev => prev.filter(a => a.id !== alert.id));
+      setInvestigatedAlerts(prev => prev.filter(a => a.id !== alert.id));
+      toast.success('Alert deleted');
+      fetchAlertStats();
+    } catch (error) {
+      console.error('Failed to delete alert:', error);
+      toast.error('Failed to delete alert');
+    }
   };
 
   const handleInvestigate = async (url) => {
@@ -840,14 +941,6 @@ const Alerts = () => {
       // Also refresh stats to update counts
       fetchAlertStats();
 
-      // Auto-switch to active tab if not already there to see the result
-      const fallbackTab = visibleStatusTabs.some((tab) => tab.value === 'active')
-        ? 'active'
-        : visibleStatusTabs[0]?.value;
-      if (fallbackTab && activeTab !== fallbackTab) {
-        setActiveTab(fallbackTab);
-      }
-
       // Scroll to top to see the new result
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (error) {
@@ -876,11 +969,26 @@ const Alerts = () => {
       // Search query filter (search in text, author, author_handle)
       if (debouncedSearchQuery) {
         const searchLower = debouncedSearchQuery.toLowerCase();
-        const textMatch = alert.content_id?.text?.toLowerCase().includes(searchLower) ||
-          alert.content_details?.text?.toLowerCase().includes(searchLower);
-        const authorMatch = alert.author?.toLowerCase().includes(searchLower) ||
-          alert.author_handle?.toLowerCase().includes(searchLower);
-        if (!textMatch && !authorMatch) {
+        const searchableFields = [
+          alert.content_id?.text,
+          alert.content_details?.text,
+          alert.content_details?.translated_text,
+          alert.content_details?.scraped_content,
+          alert.content_details?.content_url,
+          alert.author,
+          alert.author_handle,
+          alert.platform,
+          alert.status,
+          alert.risk_level,
+          alert.source_category,
+          alert.llm_analysis?.grievance_type,
+          alert.source_meta?.name,
+          alert.source_meta?.handle
+        ]
+          .filter(Boolean)
+          .map((value) => String(value).toLowerCase());
+
+        if (!searchableFields.some((value) => value.includes(searchLower))) {
           return false;
         }
       }
@@ -910,6 +1018,11 @@ const Alerts = () => {
         }
       }
 
+      // Gate filter — always show only alerts with matched keywords
+      if (!alert.matched_keywords || alert.matched_keywords.length === 0) {
+        return false;
+      }
+
       // Date range filter
       if (dateRange.start || dateRange.end) {
         const alertDate = new Date(alert.created_at || alert.timestamp);
@@ -921,21 +1034,25 @@ const Alerts = () => {
         }
       }
 
-      // Status filter (activeTab)
-      // Investigated alerts are always is_investigation=true and initially active
-      if (activeTab === 'reports') {
-        return false; // Investigated alerts don't appear in reports tab
+      const alertStatus = alert.status || 'active';
+      if (!accessibleAlertStatuses.includes(alertStatus)) {
+        return false;
       }
 
-      // Match status
-      const alertStatus = alert.status || 'active';
-      if (activeTab !== alertStatus) {
-        return false;
+      // Topic Classification filter (grievance_type)
+      if (topicClassificationFilter !== 'all') {
+        const alertTopicCategory = alert.llm_analysis?.grievance_type ||
+          alert.content_details?.analysis?.llm_analysis?.grievance_type ||
+          '';
+        if (alertTopicCategory.toLowerCase() !== topicClassificationFilter.toLowerCase()) {
+          return false;
+        }
       }
 
       return true;
     });
-  }, [platformFilter, debouncedSearchQuery, alertCategory, keywordFilter, dateRange, activeTab]);
+  }, [platformFilter, debouncedSearchQuery, alertCategory, keywordFilter, dateRange, topicClassificationFilter, accessibleAlertStatuses]);
+
 
   const allFilteredAlerts = useMemo(() => {
     const filteredInvestigated = filterInvestigatedAlerts(investigatedAlerts);
@@ -1106,11 +1223,20 @@ const Alerts = () => {
         .sort((a, b) => getAlertTime(b) - getAlertTime(a));
     }
 
+    // Trust backend sort order (published_at: -1) — don't re-sort on frontend
+    // This prevents visual reordering when data loads
     return applyInstagramContentFilter([
       ...filteredInvestigated,
       ...filteredRegular
-    ]).sort((a, b) => getAlertTime(b) - getAlertTime(a));
+    ]);
   }, [alerts, investigatedAlerts, filterInvestigatedAlerts, platformFilter, instagramContentFilter, instagramStoriesStatusFilter, dateRange.start, dateRange.end, capturedStories, isCapturedStoriesView]);
+
+  const paginationTotal = isCapturedStoriesView ? allFilteredAlerts.length : totalResults;
+  const paginatedAlerts = useMemo(() => {
+    if (!isCapturedStoriesView) return allFilteredAlerts;
+    const startIndex = (page - 1) * ALERTS_PAGE_SIZE;
+    return allFilteredAlerts.slice(startIndex, startIndex + ALERTS_PAGE_SIZE);
+  }, [allFilteredAlerts, isCapturedStoriesView, page]);
 
   // Detect if search query is a URL
   const isUrlQuery = (query) => {
@@ -1122,22 +1248,16 @@ const Alerts = () => {
   const handleSearchChange = (value) => {
     setSearchQuery(value);
 
-    // If it looks like a URL and user presses Enter, we'll investigate
-    // Otherwise, it's normal filtering
+    // Clear the highlighted target alert if they change the query
+    setTargetAlertId(null);
   };
 
   // Handle search submit (Enter key or button click)
   const handleSearchSubmit = (e) => {
     if (e) e.preventDefault();
-
-    const query = searchQuery.trim();
-    if (!query) return;
-
-    // Check if it's a URL
-    if (isUrlQuery(query)) {
-      handleInvestigate(query);
+    if (searchQuery && isUrlQuery(searchQuery)) {
+      handleInvestigate(searchQuery);
     }
-    // Otherwise, just use it as a filter (already set in state)
   };
 
   const handleOpenAddSource = (data = null) => {
@@ -1196,8 +1316,12 @@ const Alerts = () => {
             <p className="text-sm text-muted-foreground mt-1">Monitor, triage, and respond to threat alerts in real-time</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => setShowEngagersDialog(true)} className="gap-2 shadow-sm">
-              <Users className="h-4 w-4" />
+            <Button
+              variant="outline"
+              className="gap-2 shadow-sm h-9 px-3 text-xs border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-400"
+              onClick={() => setFrequentEngagersOpen(true)}
+            >
+              <Users className="h-3.5 w-3.5" />
               Frequent Engagers
             </Button>
             <Button
@@ -1212,13 +1336,6 @@ const Alerts = () => {
             </Button>
           </div>
         </div>
-
-        <FrequentEngagersDialog
-          open={showEngagersDialog}
-          onOpenChange={setShowEngagersDialog}
-          onAddSource={handleOpenAddSource}
-          monitoredHandles={monitoredHandles}
-        />
 
         {/* Search & Filters Row */}
         <div className="flex flex-col md:flex-row md:items-center gap-3">
@@ -1327,62 +1444,20 @@ const Alerts = () => {
                       end: range?.to ? range.to.toISOString() : ''
                     });
                   }}
-                  fromDate={dateFilterFromDate}
-                  toDate={dateFilterToDate}
-                  disabled={{ before: dateFilterFromDate, after: dateFilterToDate }}
                   numberOfMonths={2}
                 />
               </PopoverContent>
             </Popover>
           </div>
-          {isRefreshing && !isFirstLoadRef.current && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              <span>Refreshing…</span>
-            </div>
-          )}
         </div>
 
-        {/* Status & Category Filter Bar */}
+        {/* Category Filter Bar */}
         <div className="border border-border bg-card rounded-md p-3 space-y-2.5">
-          {/* Status Tabs */}
-          <div className="w-full overflow-x-auto no-scrollbar">
-            <div className="flex items-center gap-1 min-w-max">
-              {visibleStatusTabs.map((tab) => (
-                <button
-                  key={tab.value}
-                  onClick={() => setActiveTab(tab.value)}
-                  data-testid={`tab-${tab.value}`}
-                  className={`relative px-3 py-1.5 text-sm font-medium transition-all rounded-md ${activeTab === tab.value
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-                    }`}
-                >
-                  <span className="flex items-center gap-1.5">
-                    {tab.label}
-                    {tab.value === 'escalated' && (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${activeTab === tab.value ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-destructive/10 text-destructive'}`}>
-                        {alertStats?.escalated_pending_report || 0}
-                      </span>
-                    )}
-                    {searchQuery && !isUrlQuery(searchQuery) && alertStats && (
-                      <span className={`text-[10px] ${activeTab === tab.value ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
-                        ({alertStats[tab.value] || 0})
-                      </span>
-                    )}
-                  </span>
-                </button>
-              ))}
-              {!hasAnyAlertFeature && (
-                <span className="px-3 py-1.5 text-sm text-muted-foreground">
-                  No alert features are assigned to your account.
-                </span>
-              )}
+          {!hasAnyAlertFeature && (
+            <div className="px-1 text-sm text-muted-foreground">
+              No alert features are assigned to your account.
             </div>
-          </div>
-
-          {/* Divider */}
-          <div className="border-t border-border/50" />
+          )}
 
           {/* Category Quick Filters */}
           <div className="flex items-center gap-1.5 text-sm overflow-x-auto no-scrollbar">
@@ -1405,6 +1480,53 @@ const Alerts = () => {
               </button>
             ))}
           </div>
+
+          {/* Topic Classification Filters */}
+          {topicCounts.length > 0 && (
+            <>
+              <div className="border-t border-border/50" />
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-medium uppercase tracking-wider">
+                  <Tag className="h-3 w-3" />
+                  <span>Topic Classification</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm overflow-x-auto no-scrollbar">
+                  <button
+                    onClick={() => setTopicClassificationFilter('all')}
+                    className={`px-3 py-1 font-medium transition-all rounded-full text-xs whitespace-nowrap ${topicClassificationFilter === 'all'
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                      }`}
+                  >
+                    All Topics
+                    <span className={`ml-1 text-[10px] ${topicClassificationFilter === 'all' ? 'text-white/80' : 'text-muted-foreground/70'}`}>
+                      ({topicCounts.reduce((sum, t) => sum + t.count, 0)})
+                    </span>
+                  </button>
+                  {topicCounts.map((topic) => (
+                    <button
+                      key={topic.topic}
+                      onClick={() => setTopicClassificationFilter(
+                        topicClassificationFilter === topic.topic ? 'all' : topic.topic
+                      )}
+                      className={`px-3 py-1 font-medium transition-all rounded-full text-xs whitespace-nowrap flex items-center gap-1.5 ${topicClassificationFilter === topic.topic
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent hover:border-border'
+                        }`}
+                    >
+                      {topic.topic}
+                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${topicClassificationFilter === topic.topic
+                        ? 'bg-white/20 text-white'
+                        : 'bg-muted text-muted-foreground'
+                        }`}>
+                        {topic.count}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
 
           {platformFilter === 'instagram' && (
             <div className="flex items-center gap-1.5 text-sm overflow-x-auto no-scrollbar pt-1">
@@ -1476,9 +1598,6 @@ const Alerts = () => {
                             end: range?.to ? range.to.toISOString() : ''
                           });
                         }}
-                        fromDate={dateFilterFromDate}
-                        toDate={dateFilterToDate}
-                        disabled={{ before: dateFilterFromDate, after: dateFilterToDate }}
                         numberOfMonths={2}
                       />
                     </PopoverContent>
@@ -1491,36 +1610,26 @@ const Alerts = () => {
 
         {/* Main Content Area */}
         <div>
-          {activeTab === 'reports' ? (
-            <ReportsContent
-              platformFilter={platformFilter}
-              dateRange={dateRange}
-              searchQuery={debouncedSearchQuery}
-              keywordFilter={keywordFilter}
-              viewHandle={searchParams.get('handle')}
-              onClearHandle={clearHandleParam}
-            />
-          ) : (
-            <>
-              {/* New Alert / Scroll Top Button */}
-              {(newAlertCount > 0 || (typeof window !== 'undefined' && window.scrollY > 300)) && (
-                <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-4">
-                  <button
-                    onClick={scrollToTop}
-                    className={`shadow-lg flex items-center gap-2 rounded-md px-4 py-2.5 font-medium text-sm transition-all hover:scale-105 ${newAlertCount > 0
-                      ? 'bg-primary hover:bg-primary/90 text-primary-foreground shadow-primary/30'
-                      : 'bg-card hover:bg-accent text-foreground border border-border'
-                      }`}
-                  >
-                    <ArrowUpCircle className="h-5 w-5" />
-                    {newAlertCount > 0 ? (
-                      <span>{newAlertCount} New Alerts</span>
-                    ) : null}
-                  </button>
-                </div>
-              )}
+          <>
+            {/* New Alert / Scroll Top Button */}
+            {(newAlertCount > 0 || (typeof window !== 'undefined' && window.scrollY > 300)) && (
+              <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-4">
+                <button
+                  onClick={scrollToTop}
+                  className={`shadow-lg flex items-center gap-2 rounded-md px-4 py-2.5 font-medium text-sm transition-all hover:scale-105 ${newAlertCount > 0
+                    ? 'bg-primary hover:bg-primary/90 text-primary-foreground shadow-primary/30'
+                    : 'bg-card hover:bg-accent text-foreground border border-border'
+                    }`}
+                >
+                  <ArrowUpCircle className="h-5 w-5" />
+                  {newAlertCount > 0 ? (
+                    <span>{newAlertCount} New Alerts</span>
+                  ) : null}
+                </button>
+              </div>
+            )}
 
-              {/* View Toggle Commented Out
+            {/* View Toggle Commented Out
               <div className="flex justify-end mb-4">
                 <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
                   <button
@@ -1547,155 +1656,175 @@ const Alerts = () => {
               </div>
               */}
 
-              {searchQuery && !isUrlQuery(searchQuery) && (
-                <div className="mb-4 text-xs text-muted-foreground flex flex-col gap-1">
-                  <div className="flex items-center justify-between">
-                    <span>Found <strong className="text-foreground">{totalResults}</strong> results matching "<strong className="text-foreground">{searchQuery}</strong>"</span>
-                  </div>
+            {searchQuery.trim() && (
+              <div className="mb-4 text-xs text-muted-foreground flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span>Found <strong className="text-foreground">{paginationTotal}</strong> results matching "<strong className="text-foreground">{searchQuery}</strong>"</span>
+                  <span className="text-[11px]">Sorted: Latest first</span>
                 </div>
-              )}
+              </div>
+            )}
 
-              {error && (
-                <div className="mb-4 text-xs text-destructive">{error}</div>
-              )}
+            {error && (
+              <div className="mb-4 text-xs text-destructive">{error}</div>
+            )}
 
-              {(() => {
-
-                if (isFirstLoadRef.current && allFilteredAlerts.length === 0 && (loading || capturedStoriesLoading)) {
-                  return (
-                    <div className="columns-1 md:columns-2 lg:columns-3 w-full [column-gap:1.5rem]">
-                      {[...Array(6)].map((_, i) => (
-                        <div key={i} className="break-inside-avoid mb-6">
-                          <Card className="p-4 space-y-3 border border-border rounded-md animate-pulse">
-                            <div className="flex items-center justify-between">
-                              <Skeleton className="h-5 w-16 rounded-full" />
-                              <Skeleton className="h-5 w-20 rounded-md" />
-                            </div>
-                            <div className="flex items-center gap-2.5">
-                              <Skeleton className="h-9 w-9 rounded-full" />
-                              <div className="space-y-1.5 flex-1">
-                                <Skeleton className="h-4 w-24" />
-                                <Skeleton className="h-3 w-16" />
-                              </div>
-                            </div>
-                            <Skeleton className="h-16 w-full rounded-md" />
-                            <Skeleton className="h-32 w-full rounded-md" />
-                            <div className="flex justify-between">
-                              <Skeleton className="h-3 w-24" />
-                              <Skeleton className="h-3 w-16" />
-                            </div>
-                          </Card>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                }
-
-                if (!loading && !capturedStoriesLoading && !isFetchingRef.current && allFilteredAlerts.length === 0) {
-                  return (
-                    <Card className="p-12 text-center border border-border rounded-md" data-testid="no-alerts">
-                      <AlertTriangle className="h-8 w-8 mx-auto text-muted-foreground/50 mb-3" />
-                      <p className="text-sm text-muted-foreground mb-2">No alerts found matching your criteria.</p>
-                      <Button
-                        variant="link"
-                        className="text-xs"
-                        onClick={() => {
-                          setSearchQuery('');
-                          setPlatformFilter('all');
-                          setKeywordFilter('all');
-                          setAlertCategory('all');
-                          setSourceCategoryFilter('all');
-                        }}
-                      >
-                        Clear All Filters
-                      </Button>
-                    </Card>
-                  );
-                }
-
+            {(() => {
+              // Show loading spinner on initial load with no alerts yet
+              if (loading && allFilteredAlerts.length === 0) {
                 return (
-                  <div className="flex flex-col lg:flex-row gap-8 items-start">
-                    <div className="flex-1 min-w-0">
-                      <div className="columns-1 md:columns-2 lg:columns-3 w-full [column-gap:1.5rem]">
-                        {allFilteredAlerts.map((alert, index) => {
-                          const isYoutube = alert?.platform === 'youtube';
-                          const isStoryArchiveCard = Boolean(alert?.is_story_archive);
-
-                          const contentData =
-                            alert?.content_details ||
-                            ((alert?.content_id && typeof alert.content_id === 'object') ? alert.content_id : null) ||
-                            {};
-
-                          const sourceData =
-                            alert?.source_meta ||
-                            alert?.source_details ||
-                            alert?.source ||
-                            (alert?.author ? { name: alert.author } : null);
-
-                          return (
-                            <div
-                              key={alert?.id || index}
-                              className="group relative flex flex-col break-inside-avoid mb-6"
-                              data-testid={`alert-item-${index}`}
-                            >
-                              {isYoutube ? (
-                                <YoutubeAlertCard
-                                  alert={alert}
-                                  content={contentData}
-                                  source={sourceData}
-                                  onResolve={handleAlertResolve}
-                                  onDelete={handleAlertDelete}
-                                  onEditSentiment={handleAlertEditSentiment}
-                                  enableSpecialActions
-                                  viewMode="grid"
-                                  hideActions={isStoryArchiveCard}
-                                  report={reportsMap[alert?.id]}
-                                  onAddSource={handleOpenAddSource}
-                                  isInvestigatedResult={alert?.is_investigation}
-                                />
-                              ) : (
-                                <TwitterAlertCard
-                                  alert={alert}
-                                  content={contentData}
-                                  source={sourceData}
-                                  onResolve={handleAlertResolve}
-                                  onDelete={handleAlertDelete}
-                                  onEditSentiment={handleAlertEditSentiment}
-                                  enableSpecialActions
-                                  viewMode="grid"
-                                  hideActions={isStoryArchiveCard}
-                                  searchQuery={searchQuery}
-                                  monitoredHandles={monitoredHandles}
-                                  report={reportsMap[alert?.id]}
-                                  onAddSource={handleOpenAddSource}
-                                  isInvestigatedResult={alert?.is_investigation}
-                                />
-                              )}
-                            </div>
-                          );
-                        })}
+                  <div className="flex items-center justify-center min-h-[60vh]">
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="relative w-16 h-16">
+                        <div className="absolute inset-0 rounded-full border-4 border-muted animate-spin border-t-primary"></div>
                       </div>
-
-                      {/* Load More Sentinel */}
-                      {!isCapturedStoriesView && hasMore && (
-                        <div ref={observerTarget} className="py-6 flex justify-center w-full">
-                          {!loading && !isFetchingMore && <span className="text-muted-foreground text-xs">Scroll to load more...</span>}
-                          {isFetchingMore && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                        </div>
-                      )}
-                      {!isCapturedStoriesView && !hasMore && allFilteredAlerts.length > 0 && (
-                        <div className="py-6 text-center text-muted-foreground text-xs w-full">
-                          All alerts loaded.
-                        </div>
-                      )}
+                      <p className="text-sm font-medium text-muted-foreground">Loading alerts...</p>
                     </div>
                   </div>
                 );
-              })()}
-            </>
-          )}
+              }
+
+              if (!loading && !capturedStoriesLoading && !isFetchingRef.current && allFilteredAlerts.length === 0) {
+                return (
+                  <Card className="p-12 text-center border border-border rounded-md" data-testid="no-alerts">
+                    <AlertTriangle className="h-8 w-8 mx-auto text-muted-foreground/50 mb-3" />
+                    <p className="text-sm text-muted-foreground mb-2">No alerts found matching your criteria.</p>
+                    <Button
+                      variant="link"
+                      className="text-xs"
+                      onClick={() => {
+                        setSearchQuery('');
+                        setPlatformFilter('all');
+                        setKeywordFilter('all');
+                        setAlertCategory('all');
+                        setSourceCategoryFilter('all');
+                        setTopicClassificationFilter('all');
+                      }}
+                    >
+                      Clear All Filters
+                    </Button>
+                  </Card>
+                );
+              }
+
+              return (
+                <div className="relative flex flex-col lg:flex-row gap-8 items-start">
+                  {/* Refresh overlay — shows when filter changes reload alerts */}
+                  {isRefreshing && !isFirstLoadRef.current && (
+                    <div className="absolute inset-0 z-20 flex items-start justify-center pt-32 bg-background/60 backdrop-blur-[1px] rounded-md pointer-events-none">
+                      <div className="flex flex-col items-center gap-2">
+                        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                        <span className="text-xs font-medium text-muted-foreground">Loading alerts…</span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-xs text-muted-foreground">
+                        Showing <strong className="text-foreground">{paginatedAlerts.length}</strong>
+                        {' '}of <strong className="text-foreground">{paginationTotal}</strong> alerts
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">Sorted by post time (latest first)</p>
+                    </div>
+
+                    <div className="columns-1 gap-6 md:columns-2 xl:columns-3 [column-fill:_balance]">
+                      {paginatedAlerts.map((alert, index) => {
+                        const isYoutube = alert?.platform === 'youtube';
+                        const isStoryArchiveCard = Boolean(alert?.is_story_archive);
+
+                        const contentData =
+                          alert?.content_details ||
+                          ((alert?.content_id && typeof alert.content_id === 'object') ? alert.content_id : null) ||
+                          {};
+
+                        const sourceData =
+                          alert?.source_meta ||
+                          alert?.source_details ||
+                          alert?.source ||
+                          (alert?.author ? { name: alert.author } : null);
+
+                        return (
+                          <div
+                            key={alert?.id || index}
+                            className="group relative mb-6 break-inside-avoid"
+                            data-testid={`alert-item-${index}`}
+                          >
+                            {isYoutube ? (
+                              <YoutubeAlertCard
+                                alert={alert}
+                                content={contentData}
+                                source={sourceData}
+                                onResolve={handleAlertResolve}
+                                onRiskLevelChange={canEditAlerts ? handleRiskLevelChange : undefined}
+                                onSentimentChange={canEditAlerts ? handleSentimentChange : undefined}
+                                onDelete={canEditAlerts ? handleDeleteAlert : undefined}
+                                viewMode="grid"
+                                hideActions={isStoryArchiveCard}
+                                report={reportsMap[alert?.id]}
+                                onAddSource={handleOpenAddSource}
+                                isInvestigatedResult={alert?.is_investigation}
+                              />
+                            ) : (
+                              <TwitterAlertCard
+                                alert={alert}
+                                content={contentData}
+                                source={sourceData}
+                                onResolve={handleAlertResolve}
+                                onRiskLevelChange={canEditAlerts ? handleRiskLevelChange : undefined}
+                                onSentimentChange={canEditAlerts ? handleSentimentChange : undefined}
+                                onDelete={canEditAlerts ? handleDeleteAlert : undefined}
+                                viewMode="grid"
+                                hideActions={isStoryArchiveCard}
+                                searchQuery={searchQuery}
+                                monitoredHandles={monitoredHandles}
+                                report={reportsMap[alert?.id]}
+                                onAddSource={handleOpenAddSource}
+                                isInvestigatedResult={alert?.is_investigation}
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Pagination loading indicator */}
+                    {!isCapturedStoriesView && isFetchingMore && (
+                      <div className="mt-6 flex justify-center">
+                        <div className="flex items-center gap-2">
+                          <div className="relative w-5 h-5">
+                            <div className="absolute inset-0 rounded-full border-2 border-muted animate-spin border-t-primary"></div>
+                          </div>
+                          <p className="text-xs text-muted-foreground">Loading more...</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Infinite-scroll sentinel — advances page when visible */}
+                    {!isCapturedStoriesView && (
+                      <div ref={loadMoreSentinelRef} className="h-4 w-full" aria-hidden="true" />
+                    )}
+                    {!isCapturedStoriesView && !hasMore && paginatedAlerts.length > 0 && (
+                      <p className="mt-6 text-center text-xs text-muted-foreground">
+                        You've reached the end · {paginationTotal} alert{paginationTotal === 1 ? '' : 's'} total
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </>
         </div>
       </div>
+
+      {/* New Alerts Button */}
+      {newAlertCount > 0 && (
+        <button
+          onClick={mergePendingAlerts}
+          className="fixed bottom-8 right-8 z-50 flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg shadow-lg hover:bg-blue-700 transition-colors font-medium text-sm"
+        >
+          <span>↑ {newAlertCount} New Alert{newAlertCount === 1 ? '' : 's'}</span>
+        </button>
+      )}
 
       <AddSourceModal
         open={sourceModalOpen}
@@ -1753,6 +1882,12 @@ const Alerts = () => {
           }
         }}
 
+      />
+      <FrequentEngagersDialog
+        open={frequentEngagersOpen}
+        onOpenChange={setFrequentEngagersOpen}
+        onAddSource={handleOpenAddSource}
+        monitoredHandles={monitoredHandles}
       />
     </>
   );

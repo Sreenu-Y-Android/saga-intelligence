@@ -377,7 +377,7 @@ exports.addRssKeyword = async (req, res) => {
     const mongoose = require('mongoose');
     const { keyword, language } = req.body;
 
-    // Accept one keyword or a comma-separated list ("cbn, ysr, polavaram"):
+    // Accept one keyword or a comma-separated list ("revanth, kcr, kaleshwaram"):
     // split, normalise, drop blanks and in-request duplicates.
     const requested = [...new Set(
       String(keyword || '')

@@ -7,6 +7,12 @@ const GrievanceWorkflowReport = require('../models/GrievanceWorkflowReport');
 const SuggestionReport = require('../models/SuggestionReport');
 const CriticismReport = require('../models/CriticismReport');
 const QueryReport = require('../models/QueryReport');
+const cacheService = require('../services/cacheService');
+const { sourceScopeFilter } = require('../middleware/scopeMiddleware');
+
+const sendShortCacheHeaders = (res, browserSeconds = 15) => {
+  res.set('Cache-Control', `private, max-age=${browserSeconds}`);
+};
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ALERT_STATUSES = ['generated', 'printed', 'sent', 'sent_to_intermediary', 'awaiting_reply', 'closed'];
@@ -175,6 +181,45 @@ const getWeeklyHourlyActivity = async () => {
 // @access  Private
 const getAnalyticsOverview = async (req, res) => {
   try {
+    // Scope-aware cache key: never let a scoped MLA/MP read a super-admin's
+    // cached aggregate (or vice-versa).
+    const scope = req.scope;
+    const scopeKey = !scope || scope.canSeeAll
+      ? 'all'
+      : [...(scope.constituencyKeys || [])].sort().join(',') || 'none';
+    const cacheKey = `analytics:overview:v1:${scopeKey}`;
+    const cached = await cacheService.get(cacheKey);
+    if (cached) {
+      sendShortCacheHeaders(res);
+      return res.status(200).json(cached);
+    }
+
+    // Source counts honour the owned-vs-party-wide rule; alerts are matched by
+    // seat name in title/description/keywords (mirrors the alerts report).
+    const srcFilter = sourceScopeFilter(scope);
+    let alertScope = {};
+    if (scope && !scope.canSeeAll) {
+      const seats = scope.constituencies || [];
+      if (seats.length === 0) {
+        const empty = {
+          total_sources: 0, active_sources: 0, total_content: 0,
+          active_alerts: 0, total_alerts: 0, risk_distribution: []
+        };
+        await cacheService.set(cacheKey, empty, 30);
+        sendShortCacheHeaders(res);
+        return res.status(200).json(empty);
+      }
+      const escape = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const seatRegex = new RegExp(seats.map(escape).join('|'), 'i');
+      alertScope = {
+        $or: [
+          { title: seatRegex },
+          { description: seatRegex },
+          { matched_keywords_normalized: seatRegex },
+        ],
+      };
+    }
+
     const [
       totalSources,
       activeSources,
@@ -183,11 +228,11 @@ const getAnalyticsOverview = async (req, res) => {
       totalAlerts,
       riskDist
     ] = await Promise.all([
-      Source.countDocuments({}),
-      Source.countDocuments({ is_active: true }),
+      Source.countDocuments({ ...srcFilter }),
+      Source.countDocuments({ ...srcFilter, is_active: true }),
       Content.countDocuments({}),
-      Alert.countDocuments({ status: 'active' }),
-      Alert.countDocuments({}),
+      Alert.countDocuments({ ...alertScope, status: 'active' }),
+      Alert.countDocuments({ ...alertScope }),
       Analysis.aggregate([
         {
           $group: {
@@ -198,14 +243,17 @@ const getAnalyticsOverview = async (req, res) => {
       ])
     ]);
 
-    res.status(200).json({
+    const payload = {
       total_sources: totalSources,
       active_sources: activeSources,
       total_content: totalContent,
       active_alerts: activeAlerts,
       total_alerts: totalAlerts,
       risk_distribution: riskDist
-    });
+    };
+    await cacheService.set(cacheKey, payload, 30);
+    sendShortCacheHeaders(res);
+    res.status(200).json(payload);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -216,7 +264,7 @@ const getAnalyticsOverview = async (req, res) => {
 // @access  Private
 const getTrends = async (req, res) => {
   try {
-    const days = parseInt(req.query.days) || 90;
+    const days = parseInt(req.query.days) || 7;
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
 
@@ -259,6 +307,15 @@ const getTrends = async (req, res) => {
 // @access  Private
 const getUnifiedReportsAnalytics = async (req, res) => {
   try {
+    const fromKey = (req.query.from || '').toString();
+    const toKey = (req.query.to || '').toString();
+    const cacheKey = `analytics:unified-reports:v1:${fromKey}:${toKey}`;
+    const cached = await cacheService.get(cacheKey);
+    if (cached) {
+      sendShortCacheHeaders(res);
+      return res.status(200).json(cached);
+    }
+
     const now = new Date();
     const todayStart = startOfDay(now);
     const nowEnd = endOfDay(now);
@@ -398,7 +455,7 @@ const getUnifiedReportsAnalytics = async (req, res) => {
       getWeeklyHourlyActivity()
     ]);
 
-    res.status(200).json({
+    const responsePayload = {
       generatedAt: now.toISOString(),
       windows: {
         weekly: {
@@ -437,7 +494,10 @@ const getUnifiedReportsAnalytics = async (req, res) => {
         grievanceCategory: grievanceCategoryBreakdown,
         weeklyActivity
       }
-    });
+    };
+    await cacheService.set(cacheKey, responsePayload, 45);
+    sendShortCacheHeaders(res);
+    res.status(200).json(responsePayload);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

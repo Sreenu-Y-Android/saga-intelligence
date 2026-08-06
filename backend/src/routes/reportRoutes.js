@@ -32,7 +32,17 @@ router.use(protect, loadUserPermissions, requireReportsAccess);
  */
 router.get('/', async (req, res) => {
     try {
+        // Cache the JSON keyed on query params so repeat visits & pagination flicks
+        // skip the gate-cache + Report find + Alert/Content batch lookups entirely.
+        const cacheKey = `reports:list:v1:${JSON.stringify(req.query || {})}`;
+        const cached = await cacheService.get(cacheKey);
+        if (cached) {
+            res.set('Cache-Control', 'private, max-age=15');
+            return res.json(cached);
+        }
         const reports = await reportService.getAllReports(req.query);
+        await cacheService.set(cacheKey, reports, 30);
+        res.set('Cache-Control', 'private, max-age=15');
         res.json(reports);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -54,6 +64,8 @@ router.get('/stats', async (req, res) => {
 router.post('/escalate/:id', async (req, res) => {
     try {
         const report = await reportService.createReportFromAlert(req.params.id);
+        await cacheService.invalidatePrefix('reports:list:v1');
+        await cacheService.invalidatePrefix('reports:stats:v1');
         res.status(201).json(report);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -92,6 +104,7 @@ router.post('/status/:id', async (req, res) => {
 router.put('/:id', async (req, res) => {
     try {
         const report = await reportService.updateReport(req.params.id, req.body);
+        await cacheService.invalidatePrefix('reports:list:v1');
         res.json(report);
     } catch (error) {
         res.status(500).json({ error: error.message });

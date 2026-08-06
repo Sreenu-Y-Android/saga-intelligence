@@ -92,8 +92,8 @@ export const TG_MLAS = [
     ]
   },
   {
-    "constituency": "ARMOOR",
-    "key": "armoor",
+    "constituency": "ARMUR",
+    "key": "armur",
     "mla": "Paidi Rakesh Reddy",
     "shortName": "Paidi Rakesh Reddy",
     "party": "BJP",
@@ -176,8 +176,8 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "BELLAMPALLI (SC)",
-    "key": "bellampalli",
+    "constituency": "BELLAMPALLE (SC)",
+    "key": "bellampalle",
     "mla": "Gaddam Vinod",
     "shortName": "Gaddam Vinod",
     "party": "INC",
@@ -330,7 +330,7 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "DEVARAKADRA",
+    "constituency": "DEVARKADRA",
     "key": "devarkadra",
     "mla": "Gavinolla Madhusudan Reddy (GMR)",
     "shortName": "Gavinolla Madhusudan Reddy (GMR)",
@@ -430,8 +430,8 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "GHANPUR",
-    "key": "ghanpur",
+    "constituency": "GHANPUR (STATION) (SC)",
+    "key": "ghanpurstation",
     "mla": "Kadiyam Srihari",
     "shortName": "Kadiyam Srihari",
     "party": "BRS",
@@ -439,7 +439,7 @@ export const TG_MLAS = [
     "role": "MLA",
     "district": "Jangaon",
     "districtKey": "JANGAON",
-    "reservation": null,
+    "reservation": "SC",
     "image": "/MLA_Images/BRS/SRI  KADIYAM SRIHARI.jpg",
     "handles": []
   },
@@ -532,8 +532,8 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "JAGITIAL",
-    "key": "jagitial",
+    "constituency": "JAGTIAL",
+    "key": "jagtial",
     "mla": "DR. Sanjay",
     "shortName": "DR. Sanjay",
     "party": "BRS",
@@ -546,8 +546,8 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "JANGAON",
-    "key": "jangaon",
+    "constituency": "JANGOAN",
+    "key": "jangoan",
     "mla": "Palla Rajeshwar Reddy",
     "shortName": "Palla Rajeshwar Reddy",
     "party": "BRS",
@@ -763,8 +763,8 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "KUKATPALLY",
-    "key": "kukatpally",
+    "constituency": "KUKATPALLE",
+    "key": "kukatpalle",
     "mla": "Madhavaram Krishna Rao",
     "shortName": "Madhavaram Krishna Rao",
     "party": "BRS",
@@ -821,8 +821,8 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "MAHESHWARAM",
-    "key": "maheshwaram",
+    "constituency": "MAHESWARAM",
+    "key": "maheswaram",
     "mla": "Patlolla Sabitha Indra Reddy",
     "shortName": "Patlolla Sabitha Indra Reddy",
     "party": "BRS",
@@ -1096,17 +1096,17 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "NARASAMPET",
-    "key": "narasampet",
-    "mla": "Donthi Madhava Reddy",
-    "shortName": "Madhava Reddy",
+    "constituency": "MAHBUBNAGAR",
+    "key": "mahbubnagar",
+    "mla": "Yennam Srinivas Reddy",
+    "shortName": "Srinivas Reddy",
     "party": "INC",
     "alliance": "INDIA",
     "role": "MLA",
-    "district": "Warangal",
-    "districtKey": "WARANGAL",
+    "district": "Mahabubnagar",
+    "districtKey": "MAHABUBNAGAR",
     "reservation": null,
-    "image": "/MLA_Images/INC/SRI  DONTHI MADHAVA REDDY.jpg",
+    "image": "",
     "handles": []
   },
   {
@@ -1145,10 +1145,10 @@ export const TG_MLAS = [
     "party": "INC",
     "alliance": "INDIA",
     "role": "MLA",
-    "district": "Warangal",
-    "districtKey": "WARANGAL",
+    "district": "Mahabubabad",
+    "districtKey": "MAHABUBABAD",
     "reservation": null,
-    "image": "",
+    "image": "/MLA_Images/INC/SRI  DONTHI MADHAVA REDDY.jpg",
     "handles": []
   },
   {
@@ -1309,7 +1309,7 @@ export const TG_MLAS = [
   },
   {
     "constituency": "QUTHBULLAPUR",
-    "key": "qutbullapur",
+    "key": "quthbullapur",
     "mla": "K.P. Vivekanand",
     "shortName": "K.P. Vivekanand",
     "party": "BRS",
@@ -1406,8 +1406,8 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "SECUNDERABAD CANTONMENT (SC)",
-    "key": "secunderabadcantonment",
+    "constituency": "SECUNDERABAD CANTT. (SC)",
+    "key": "secunderabadcantt",
     "mla": "Sriganesh",
     "shortName": "Sriganesh",
     "party": "INC",
@@ -1518,8 +1518,8 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "THUNGATHURTHY (SC)",
-    "key": "thungathurthy",
+    "constituency": "THUNGATHURTHI (SC)",
+    "key": "thungathurthi",
     "mla": "Mandula Samel",
     "shortName": "Mandula Samel",
     "party": "INC",
@@ -1560,8 +1560,8 @@ export const TG_MLAS = [
     "handles": []
   },
   {
-    "constituency": "VIKARABAD (SC)",
-    "key": "vikarabad",
+    "constituency": "VICARABAD (SC)",
+    "key": "vicarabad",
     "mla": "Gaddam Prasad Kumar",
     "shortName": "Gaddam Prasad",
     "party": "INC",
@@ -1620,8 +1620,8 @@ export const TG_MLAS = [
     ]
   },
   {
-    "constituency": "WARDHANNAPET (SC)",
-    "key": "wardhannapet",
+    "constituency": "WARADHANAPET (SC)",
+    "key": "waradhanapet",
     "mla": "K.R. Nagaraj",
     "shortName": "K.R. Nagaraj",
     "party": "INC",

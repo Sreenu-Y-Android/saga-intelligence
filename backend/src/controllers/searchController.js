@@ -562,9 +562,9 @@ const glanceSearch = async (req, res) => {
         };
 
         // Known keywords for fuzzy matching unknown words
-        const knownKeywords = ['hyderabad', 'bangalore', 'mumbai', 'chennai', 'delhi', 'kolkata', 'pune', 'jaipur',
-            'telangana', 'andhra', 'karnataka', 'maharashtra', 'tamil', 'kerala', 'gujarat', 'rajasthan',
-            'political', 'government', 'parliament', 'election', 'minister', 'chief', 'police', 'congress', 'bjp',
+        const knownKeywords = ['hyderabad', 'secunderabad', 'warangal', 'karimnagar', 'nizamabad', 'khammam', 'nalgonda', 'mahabubnagar',
+            'telangana', 'telugu', 'karnataka', 'maharashtra', 'tamil', 'kerala', 'odisha', 'andhra', 'andhra pradesh',
+            'political', 'government', 'parliament', 'election', 'minister', 'chief', 'police', 'congress', 'brs', 'bjp', 'aimim',
             'trending', 'latest', 'breaking', 'news', 'update', 'analysis'];
 
         // Levenshtein distance for fuzzy matching
@@ -756,10 +756,10 @@ const glanceSearch = async (req, res) => {
             .lean();
 
         // Scope filter: Telangana-only focus (primary), police + politics/government (primary).
-        const topicRegex = /\b(police|ts\s*police|dgp|commissioner|fir|arrest|detain|detention|raid|crime|murder|assault|rape|molest|kidnap|law\s*and\s*order|public\s*safety|security|traffic|enforcement|checkpoint|protest|rally|stone\s*pelting|clash|communal|riot|court|hc|high\s*court|sc|supreme\s*court|bail|sit|ed|cbi|acb|vigilance|ghmc|collector|rdo|tahsildar|minister|mla|mp|cm|chief\s*minister|governor|cabinet|budget|assembly|parliament|election|polls|by\s*election|vote|evm|bjp|congress|brs|trs|aimim|kcr|revanth|owaisi|k\s*chandrashekar|revanth\s*reddy|hy\s*draa|hydraa|water|power|electricity|road|transport|metro|bus|rtc|drainage|flood|rain|weather|pollution|health|hospital|school|college|education|university|jobs|employment|student|farmer|agriculture)\b/i;
+        const topicRegex = /\b(police|tg\s*police|dgp|commissioner|fir|arrest|detain|detention|raid|crime|murder|assault|rape|molest|kidnap|law\s*and\s*order|public\s*safety|security|traffic|enforcement|checkpoint|protest|rally|stone\s*pelting|clash|communal|riot|court|hc|high\s*court|sc|supreme\s*court|bail|sit|ed|cbi|acb|vigilance|municipal|ghmc|collector|rdo|tahsildar|minister|mla|mp|mlc|cm|chief\s*minister|governor|cabinet|budget|assembly|parliament|election|polls|by\s*election|vote|evm|inc|congress|brs|trs|bjp|aimim|mim|revanth|revanth\s*reddy|bhatti|bhatti\s*vikramarka|kcr|chandrashekar\s*rao|ktr|rama\s*rao|harish\s*rao|owaisi|asaduddin\s*owaisi|water|power|electricity|road|transport|metro|bus|rtc|drainage|flood|rain|weather|pollution|health|hospital|school|college|education|university|jobs|employment|student|farmer|agriculture)\b/i;
 
-        // Telangana signals: state + Hyderabad + major districts/areas.
-        const locRegex = /\b(telangana|hyderabad|hydera?bad|hyd|secunderabad|cyberabad|hitech\s*city|gachibowli|madhapur|kukatpally|uppal|lb\s*nagar|charminar|old\s*city|warangal|hanamkonda|nizamabad|karimnagar|khammam|nalgonda|suryapet|mahabubnagar|mahbubnagar|nagarkurnool|medak|siddipet|sangareddy|adilabad|mancherial|nirmal|jagtial|peddapalli|bhupalpally|mulugu|kothagudem|bhadradri|rajanna|sircilla|vikarabad|yadadri|bhongir|mahabubabad|jangaon|wanaparthy|narayanpet|komaram\s*bheem|asifabad|kamareddy|ranga\s*reddy|rangareddy|medchal|malkajgiri)\b/i;
+        // Telangana signals: state + major cities/districts/areas.
+        const locRegex = /\b(telangana|hyderabad|secunderabad|warangal|hanamkonda|karimnagar|nizamabad|khammam|nalgonda|mahabubnagar|mahbubnagar|adilabad|siddipet|sangareddy|rangareddy|ranga\s*reddy|medak|kodangal|madhira|gajwel|sircilla|rajanna\s*sircilla|suryapet|nagarkurnool|vikarabad|bhadrachalam|bhadradri|yadadri|bhuvanagiri|jagtial|jangaon|kamareddy|mancherial|nirmal|peddapalli|wanaparthy|jogulamba|gadwal|kumuram\s*bheem|asifabad|kaleshwaram|musi\s*river|old\s*city|charminar|golconda)\b/i;
         let docs = Array.isArray(docsRaw) ? docsRaw : [];
         const scoped = docs
             .filter(d => locRegex.test(d.text || '') || locRegex.test(d.scraped_content || '') || locRegex.test(d.author_handle || '') || locRegex.test(d.content_url || ''))

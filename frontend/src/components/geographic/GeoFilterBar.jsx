@@ -7,6 +7,7 @@ const PLATFORM_OPTIONS = [
   { value: 'facebook', label: 'Facebook' },
   { value: 'instagram', label: 'Instagram' },
   { value: 'youtube', label: 'YouTube' },
+  { value: 'whatsapp', label: 'WhatsApp' },
 ];
 
 const SENTIMENT_OPTIONS = [
@@ -109,11 +110,16 @@ const DateRangePicker = ({ from, to, onApply }) => {
   // Sync draft when external from/to changes (e.g., clear button)
   useEffect(() => { setDraft({ from: from || '', to: to || '' }); }, [from, to]);
 
-  // Close on outside click
+  // Close on outside click or Escape
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const keyHandler = (e) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    document.addEventListener('keydown', keyHandler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('keydown', keyHandler);
+    };
   }, []);
 
   const triggerLabel = getTriggerLabel(from, to);
@@ -160,6 +166,8 @@ const DateRangePicker = ({ from, to, onApply }) => {
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-slate-700 hover:text-slate-900 select-none"
         aria-label="Open date range picker"
+        aria-haspopup="dialog"
+        aria-expanded={open}
       >
         <CalendarDays className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
         <span className={triggerLabel ? 'font-semibold text-slate-800' : 'text-slate-400'}>
@@ -207,8 +215,9 @@ const DateRangePicker = ({ from, to, onApply }) => {
               <div className="px-4 pb-3 space-y-2">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mt-1.5">Custom Date Range</p>
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] w-5 font-semibold text-slate-500">From:</span>
+                  <label htmlFor="geo-filter-date-from" className="text-[10px] w-5 font-semibold text-slate-500">From:</label>
                   <input
+                    id="geo-filter-date-from"
                     type="date"
                     value={draft.from || ''}
                     max={draft.to || undefined}
@@ -217,8 +226,9 @@ const DateRangePicker = ({ from, to, onApply }) => {
                   />
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] w-5 font-semibold text-slate-500">To:</span>
+                  <label htmlFor="geo-filter-date-to" className="text-[10px] w-5 font-semibold text-slate-500">To:</label>
                   <input
+                    id="geo-filter-date-to"
                     type="date"
                     value={draft.to || ''}
                     min={draft.from || undefined}

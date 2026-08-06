@@ -2,7 +2,7 @@
  * MlaProfileSettings
  * ─────────────────────────────────────────────────────────────────────
  * Per-constituency editable configuration that is OPERATIONALLY distinct
- * from the User account (login + RBAC) and from the static ap_mlas.json
+ * from the User account (login + RBAC) and from the static tg_mlas.json
  * reference data (canonical names, party).
  *
  * Super-admin uses this collection to:

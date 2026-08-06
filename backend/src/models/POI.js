@@ -107,6 +107,16 @@ const poiSchema = new mongoose.Schema({
         enum: ['active', 'archived'],
         default: 'active'
     },
+    // RBAC: which AC this POI belongs to. Null = party-wide / state-level.
+    constituency: {
+        type: String,
+        default: null,
+        trim: true
+    },
+    is_party_wide: {
+        type: Boolean,
+        default: false
+    },
     createdBy: {
         type: String,
         default: 'system'

@@ -4,16 +4,6 @@ const AlertThreshold = require('../models/AlertThreshold');
 const Settings = require('../models/Settings');
 const { sendAlertEmail } = require('./emailService');
 
-const REVANTH_TARGET_REGEX = /\b(revanth\s*reddy|revanth|a\.?\s*revanth\s*reddy|cm\s*revanth|chief\s*minister\s*revanth)\b/i;
-
-const isNegativeRevanthTargetPost = (content = {}) => {
-    const sentiment = String(content?.sentiment || '').toLowerCase().trim();
-    if (sentiment !== 'negative') return false;
-    const text = String(content?.text || '').trim();
-    if (!text) return false;
-    return REVANTH_TARGET_REGEX.test(text);
-};
-
 /**
  * Pure function to check velocity metrics without creating alerts
  */
@@ -78,6 +68,10 @@ const checkVelocity = async (content, settings) => {
 const checkAndCreateVelocityAlerts = async (content, settings) => {
     try {
         if (!settings.velocity_alerts_enabled) return;
+        // An admin deleted a previous alert for this exact post — don't
+        // silently recreate it just because it's still inside the velocity
+        // window.
+        if (content.alert_suppressed) return;
 
         // REMOVED CHECK: User requested viral alerts for ALL posts, not just risky ones.
         // const riskLevel = String(content.risk_level || '').toLowerCase();
@@ -147,7 +141,8 @@ const checkAndCreateVelocityAlerts = async (content, settings) => {
                     { id: existingAlert.id },
                     {
                         priority: highestPriority.priority,
-                        risk_level: highestPriority.priority === 'HIGH' ? 'high' : 'medium',
+                        // risk_level intentionally left untouched here — it reflects
+                        // the AI content analysis, not viral engagement velocity.
                         title: `🔥 VIRAL: ${metricsDisplay} in ${Math.round(postAgeMinutes)} min`,
                         description: `Post crossed ${highestPriority.priority} threshold (${highestPriority.thresholdTriggered.toLocaleString()}) within ${threshold.time_window_minutes} minutes of posting`,
                         velocity_data: {
@@ -194,24 +189,17 @@ const checkAndCreateVelocityAlerts = async (content, settings) => {
             triggered_metrics: triggeredMetrics
         };
 
-        // Determine Final Risk Score (Velocity Override)
-        // If content is benign (0%), but Viral is High/Medium, we must show a score reflecting that risk.
-        let velocityRiskScore = 0;
-        if (highestPriority.priority === 'HIGH') velocityRiskScore = 80; // High Risk Base
-        if (highestPriority.priority === 'MEDIUM') velocityRiskScore = 45; // Medium Risk Base
-        if (highestPriority.priority === 'LOW') velocityRiskScore = 15;
-
-        // Take the HIGHER of AI Score or Velocity Score
-        const finalRiskScore = Math.max(Number(content.risk_score) || 0, velocityRiskScore);
+        // risk_level/risk_score reflect the AI content analysis only. Virality
+        // is still surfaced via `priority` and the "VIRAL" title/alert itself —
+        // it just no longer inflates the risk bucket for benign viral posts.
+        const finalRiskScore = Number(content.risk_score) || 0;
 
         const alertData = {
             content_id: content.id,
             alert_type: 'velocity',
             priority: highestPriority.priority,
-            // If content is High Risk (AI), keep it High. If Viral is High, upgrade to High.
-            risk_level: (content.risk_level === 'high' || content.risk_level === 'critical' || highestPriority.priority === 'HIGH')
-                ? 'high'
-                : (highestPriority.priority === 'MEDIUM' ? 'medium' : 'low'),
+            published_at: content.published_at || null,
+            risk_level: content.risk_level || 'low',
             title: `🔥 VIRAL: ${metricsDisplay} (${aiReasons.length > 0 ? 'Risk Detected' : 'Trending'})`,
             description: `Post crossed ${highestPriority.priority} threshold within ${threshold.time_window_minutes}min.`,
             content_url: content.content_url,
@@ -247,6 +235,7 @@ const checkAndCreateVelocityAlerts = async (content, settings) => {
 const createNewPostAlert = async (content, settings) => {
     try {
         if (!settings.alert_for_every_post) return;
+        if (content.alert_suppressed) return; // admin deleted the alert for this post
 
         // Check for existing HIGH/AI risk alert (Deduplication)
         // If an AI risk or Keyword risk alert exists, we DON'T need a duplicate "New Post" notification
@@ -301,6 +290,7 @@ const createNewPostAlert = async (content, settings) => {
             alert_type: 'new_post',
             priority: 'LOW',
             risk_level: riskLevel, // Inherit or default to low
+            published_at: content.published_at || null,
             title: `New Post: ${content.author}`,
             description: `New content detected from ${content.author} on ${content.platform}`,
             content_url: content.content_url,

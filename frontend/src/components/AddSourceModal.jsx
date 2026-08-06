@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from './ui/dialog';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -6,7 +6,7 @@ import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Switch } from './ui/switch';
 import { Separator } from './ui/separator';
-import { Youtube, Twitter, Instagram, Facebook, Globe, FileText, Sparkles, CheckCircle, ChevronDown, ChevronUp, MinusCircle, PlusCircle, XCircle, MessageCircle, AlertTriangle } from 'lucide-react';
+import { Youtube, Twitter, Instagram, Facebook, Sparkles, CheckCircle, ChevronDown, ChevronUp, MinusCircle, PlusCircle, XCircle, MessageCircle, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../lib/api';
 
@@ -27,7 +27,7 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
         briefSummary: '',
         whatsappNumbers: [],
         socialMedia: [],
-        previouslyDeletedProfiles: { x: [], facebook: [], instagram: [], youtube: [], dark_web: [], web_articles: [], whatsapp: [] },
+        previouslyDeletedProfiles: { x: [], facebook: [], instagram: [], youtube: [], whatsapp: [] },
         escalatedToIntermediariesCount: ''
     };
 
@@ -43,28 +43,47 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
     const [loading, setLoading] = useState(false);
     const [initialState, setInitialState] = useState(null);
     const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+    const [identityLookupState, setIdentityLookupState] = useState({});
+    const identityTimerRef = useRef({});
+    const identitySeqRef = useRef({});
 
     useEffect(() => {
         if (open) {
-            const data = initialData ? {
-                platform: initialData.platform || 'youtube',
-                identifier: initialData.identifier || '',
-                display_name: initialData.display_name || '',
-                category: initialData.category || 'others',
-                is_active: initialData.is_active !== undefined ? initialData.is_active : true,
-                priority: initialData.priority || 'medium',
-                poiData: { ...emptyPoiData, ...(initialData.poiData || {}) }
-            } : {
-                platform: 'youtube',
-                identifier: '',
-                display_name: '',
-                category: 'others',
-                is_active: true,
-                priority: 'medium',
-                poiData: emptyPoiData
-            };
-            setFormData(data);
-            setInitialState(data);
+            if (initialData) {
+                // Editing an existing source — normalize POI socialMedia
+                const rawSM = initialData.poiData?.socialMedia || [];
+                const normalizedSM = rawSM.map(sm => ({
+                    ...sm,
+                    isActive: sm.isActive !== undefined ? sm.isActive : (sm.is_active !== undefined ? sm.is_active : true)
+                }));
+                const autoSocialMedia = (initialData.platform && initialData.identifier && !normalizedSM.length)
+                    ? [{ platform: initialData.platform, handle: initialData.identifier, displayName: initialData.display_name || initialData.identifier, category: initialData.category || 'others', priority: initialData.priority || 'medium', isActive: initialData.is_active !== undefined ? initialData.is_active : true, _isPrimary: true }]
+                    : normalizedSM;
+                const data = {
+                    platform: initialData.platform || 'youtube',
+                    identifier: initialData.identifier || '',
+                    display_name: initialData.display_name || '',
+                    category: initialData.category || 'others',
+                    is_active: initialData.is_active !== undefined ? initialData.is_active : true,
+                    priority: initialData.priority || 'medium',
+                    poiData: { ...emptyPoiData, ...(initialData.poiData || {}), socialMedia: autoSocialMedia }
+                };
+                setFormData(data);
+                setInitialState(data);
+            } else {
+                // Adding a new source — use clean defaults
+                const data = {
+                    platform: 'youtube',
+                    identifier: '',
+                    display_name: '',
+                    category: 'others',
+                    is_active: true,
+                    priority: 'medium',
+                    poiData: emptyPoiData
+                };
+                setFormData(data);
+                setInitialState(data);
+            }
         }
     }, [initialData, open]);
 
@@ -78,6 +97,14 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
             onDirtyChange(hasUnsavedChanges());
         }
     }, [formData, initialState, onDirtyChange]);
+
+    useEffect(() => {
+        return () => {
+            Object.values(identityTimerRef.current).forEach((timerId) => {
+                if (timerId) clearTimeout(timerId);
+            });
+        };
+    }, []);
 
     const handleCloseAttempt = (isOpen) => {
         // Only trigger discard check if the dialog is being CLOSED (isOpen === false)
@@ -178,6 +205,66 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
         }));
     };
 
+    const getIdentityStateKey = (platform, index) => `${platform}:${index}`;
+
+    const triggerIdentityLookup = (platform, index, rawHandle, updateSM) => {
+        const key = getIdentityStateKey(platform, index);
+        const handle = String(rawHandle || '').trim();
+
+        if (identityTimerRef.current[key]) {
+            clearTimeout(identityTimerRef.current[key]);
+        }
+
+        if (!handle) {
+            updateSM(index, 'platformUserId', '');
+            setIdentityLookupState(prev => ({ ...prev, [key]: { loading: false, error: '' } }));
+            return;
+        }
+
+        const seq = (identitySeqRef.current[key] || 0) + 1;
+        identitySeqRef.current[key] = seq;
+        setIdentityLookupState(prev => ({ ...prev, [key]: { loading: true, error: '' } }));
+
+        identityTimerRef.current[key] = setTimeout(async () => {
+            try {
+                const res = await api.post('/sources/resolve-identity', {
+                    platform,
+                    identifier: handle
+                });
+
+                if (identitySeqRef.current[key] !== seq) return;
+
+                const fetchedUserId = String(res?.data?.platformUserId || '');
+                updateSM(index, 'platformUserId', fetchedUserId);
+                setIdentityLookupState(prev => ({ ...prev, [key]: { loading: false, error: '' } }));
+            } catch (err) {
+                if (identitySeqRef.current[key] !== seq) return;
+                updateSM(index, 'platformUserId', '');
+                setIdentityLookupState(prev => ({
+                    ...prev,
+                    [key]: {
+                        loading: false,
+                        error: err?.response?.data?.message || 'Unable to fetch user ID'
+                    }
+                }));
+            }
+        }, 500);
+    };
+
+    const handlePrimaryCategoryChange = (value) => {
+        setFormData(prev => ({
+            ...prev,
+            category: value,
+            poiData: {
+                ...prev.poiData,
+                socialMedia: (prev.poiData.socialMedia || []).map(sm => ({
+                    ...sm,
+                    category: value
+                }))
+            }
+        }));
+    };
+
     const XIcon = <svg viewBox="0 0 24 24" className="w-4 h-4 text-slate-900" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" /></svg>;
 
     const renderSocialTable = (platform, icon, label, color) => {
@@ -185,21 +272,41 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
         const entries = allSM.map((s, i) => ({ ...s, _i: i })).filter(s => s.platform === platform);
 
         const updateSM = (gi, field, value) => {
-            const arr = [...allSM];
-            arr[gi] = { ...arr[gi], [field]: value };
-            handlePoiChange('socialMedia', arr);
+            setFormData(prev => {
+                const arr = [...(prev.poiData.socialMedia || [])];
+                if (!arr[gi]) return prev;
+                arr[gi] = { ...arr[gi], [field]: value };
+                return { ...prev, poiData: { ...prev.poiData, socialMedia: arr } };
+            });
         };
-        const removeRow = (gi) => handlePoiChange('socialMedia', allSM.filter((_, i) => i !== gi));
-        const addRow = () => handlePoiChange('socialMedia', [...allSM, {
-            platform,
-            handle: '',
-            displayName: f.realName || '',
-            category: 'others',
-            priority: 'medium',
-            isActive: true,
-            followerCount: '',
-            createdDate: ''
-        }]);
+        const removeRow = (gi) => {
+            setFormData(prev => {
+                const arr = (prev.poiData.socialMedia || []).filter((_, i) => i !== gi);
+                return { ...prev, poiData: { ...prev.poiData, socialMedia: arr } };
+            });
+        };
+        const addRow = () => {
+            setFormData(prev => ({
+                ...prev,
+                poiData: {
+                    ...prev.poiData,
+                    socialMedia: [
+                        ...(prev.poiData.socialMedia || []),
+                        {
+                            platform,
+                            handle: '',
+                            platformUserId: '',
+                            displayName: prev.poiData.realName || '',
+                            category: prev.category || 'others',
+                            priority: 'medium',
+                            isActive: true,
+                            followerCount: '',
+                            createdDate: ''
+                        }
+                    ]
+                }
+            }));
+        };
 
         return (
             <div className="space-y-2 pb-2">
@@ -217,11 +324,30 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
                                 <div className="grid grid-cols-2 gap-3 mt-2">
                                     <div className="space-y-1">
                                         <Label className="text-[11px] text-slate-500">Identifier / Handle <span className="text-red-500">*</span></Label>
-                                        <Input value={h.handle || ''} onChange={e => updateSM(h._i, 'handle', e.target.value)} className="h-7 text-xs" placeholder="@handle" />
+                                        <Input
+                                            value={h.handle || ''}
+                                            onChange={e => {
+                                                const nextValue = e.target.value;
+                                                updateSM(h._i, 'handle', nextValue);
+                                                triggerIdentityLookup(platform, h._i, nextValue, updateSM);
+                                            }}
+                                            className="h-7 text-xs"
+                                            placeholder="@handle"
+                                        />
                                     </div>
                                     <div className="space-y-1">
                                         <Label className="text-[11px] text-slate-500">Display Name <span className="text-red-500">*</span></Label>
                                         <Input value={h.displayName || ''} onChange={e => updateSM(h._i, 'displayName', e.target.value)} className="h-7 text-xs" placeholder="Recognizable Name" />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <Label className="text-[11px] text-slate-500">User ID (Auto)</Label>
+                                        <Input value={h.platformUserId || ''} readOnly className="h-7 text-xs bg-slate-50" placeholder="Auto fetched" />
+                                        {identityLookupState[getIdentityStateKey(platform, h._i)]?.loading && (
+                                            <p className="text-[10px] text-blue-600">Fetching user ID...</p>
+                                        )}
+                                        {!!identityLookupState[getIdentityStateKey(platform, h._i)]?.error && (
+                                            <p className="text-[10px] text-amber-600">{identityLookupState[getIdentityStateKey(platform, h._i)]?.error}</p>
+                                        )}
                                     </div>
                                     <div className="space-y-1">
                                         <Label className="text-[11px] text-slate-500">Category</Label>
@@ -279,6 +405,18 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
             return;
         }
 
+        const invalidRowIndex = allSM.findIndex((sm) => {
+            const smPlatform = String(sm?.platform || '').trim();
+            const smHandle = String(sm?.handle || '').trim();
+            const smDisplayName = String(sm?.displayName || sm?.display_name || '').trim();
+            return !smPlatform || !smHandle || !smDisplayName;
+        });
+
+        if (invalidRowIndex !== -1) {
+            toast.error(`Profile #${invalidRowIndex + 1} is missing mandatory fields (platform, handle, display name)`);
+            return;
+        }
+
         const isEdit = initialData && (initialData.id || initialData._id);
         setLoading(true);
         try {
@@ -286,14 +424,18 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
             const submissionData = {
                 ...formData,
                 platform: firstSM.platform,
-                identifier: firstSM.handle,
-                display_name: firstSM.displayName || firstSM.handle,
+                identifier: String(firstSM.handle || '').trim(),
+                display_name: String(firstSM.displayName || firstSM.handle || '').trim(),
                 category: (firstSM.category || 'others').toLowerCase(),
                 priority: firstSM.priority || 'medium',
-                is_active: firstSM.isActive !== false,
+                is_active: (firstSM.isActive !== undefined ? firstSM.isActive : firstSM.is_active) !== false,
                 poiData: {
                     ...formData.poiData,
-                    socialMedia: allSM.map((sm, idx) => idx === 0 ? { ...sm, _isPrimary: true } : sm)
+                    socialMedia: allSM.map((sm, idx) => ({
+                        ...sm,
+                        is_active: (sm.isActive !== undefined ? sm.isActive : sm.is_active) !== false,
+                        ...(idx === 0 ? { _isPrimary: true } : {})
+                    }))
                 }
             };
 
@@ -367,8 +509,6 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
         { value: 'x', label: 'X (Twitter)', icon: Twitter },
         { value: 'instagram', label: 'Instagram', icon: Instagram },
         { value: 'facebook', label: 'Facebook', icon: Facebook },
-        { value: 'dark_web', label: 'Dark Web Search Link', icon: Globe },
-        { value: 'web_articles', label: 'Web Articles', icon: FileText },
     ];
 
     const categories = [
@@ -389,10 +529,10 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
                 <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col p-0 overflow-hidden">
                     <DialogHeader className="px-6 py-4 border-b border-border bg-muted/20 shrink-0">
                         <DialogTitle className="text-xl font-semibold">
-                            {initialData ? 'Edit Profile & Sources' : 'Add Profile & Sources'}
+                            {initialData ? 'Edit Profile' : 'Add Profile'}
                         </DialogTitle>
                         <DialogDescription>
-                            {initialData ? 'Update POI profile and linked social media handles.' : 'Create a POI profile and link social media handles to monitor them together.'}
+                            {initialData ? 'Update POI profile and linked social media handles.' : 'Create a Profile and link social media handles to monitor.'}
                         </DialogDescription>
                     </DialogHeader>
 
@@ -422,6 +562,27 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
                                                 </div>
                                             ))}
                                             <button type="button" onClick={() => addPoiArrayItem('aliasNames')} className="flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-700 mt-1"><PlusCircle className="w-3.5 h-3.5" /> Add Alias</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="h-px bg-slate-100" />
+
+                                {/* Category */}
+                                <div className="flex items-center min-h-[36px]">
+                                    <div className="w-1/3 shrink-0"><span className="text-[13px] font-semibold text-slate-500">Category</span></div>
+                                    <div className="w-2/3 flex items-center">
+                                        <span className="text-[13px] text-slate-400 mr-2">:</span>
+                                        <div className="w-full pb-0.5 border-b border-slate-200">
+                                            <Select value={formData.category || 'others'} onValueChange={handlePrimaryCategoryChange}>
+                                                <SelectTrigger className="h-7 text-[13px] text-slate-700 border-0 bg-transparent shadow-none px-0 focus:ring-0 focus:ring-offset-0">
+                                                    <SelectValue placeholder="Select category" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {categories.map(c => (
+                                                        <SelectItem key={c.value} value={c.value} className="text-xs">{c.label}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
                                         </div>
                                     </div>
                                 </div>
@@ -519,7 +680,7 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
 
                                 {/* Total FIRs Against */}
                                 <div className="flex items-center min-h-[36px]">
-                                    <div className="w-1/3 shrink-0"><span className="text-[13px] font-semibold text-slate-500">Total FIRs Against</span></div>
+                                    <div className="w-1/3 shrink-0"><span className="text-[13px] font-semibold text-slate-500">FIRs(if any)</span></div>
                                     <div className="w-2/3 flex items-center">
                                         <span className="text-[13px] text-slate-400 mr-2">:</span>
                                         <input type="number" min="0" value={(f.firDetails || []).length || ''} onChange={e => handleFirCountChange(e.target.value)} className="w-20 bg-transparent border-b border-slate-200 text-[14px] font-semibold text-slate-700 focus:border-blue-500 outline-none pb-0.5" />
@@ -595,8 +756,6 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
                                     {renderSocialTable('facebook', <Facebook className="w-4 h-4 text-blue-600" />, 'Facebook Profile', 'text-blue-600')}
                                     {renderSocialTable('instagram', <Instagram className="w-4 h-4 text-pink-500" />, 'Instagram Profile', 'text-pink-600')}
                                     {renderSocialTable('youtube', <Youtube className="w-4 h-4 text-red-500" />, 'YouTube Profile', 'text-red-600')}
-                                    {renderSocialTable('dark_web', <Globe className="w-4 h-4 text-violet-600" />, 'Dark Web Search Link', 'text-violet-600')}
-                                    {renderSocialTable('web_articles', <FileText className="w-4 h-4 text-emerald-600" />, 'Web Articles', 'text-emerald-600')}
                                 </div>
                                 <div className="h-px bg-slate-100 mt-4 mb-2" />
 
@@ -629,8 +788,6 @@ const AddSourceModal = ({ open, onClose, onSuccess, initialData = null, onDirtyC
                                         { key: 'facebook', label: 'Face Book' },
                                         { key: 'instagram', label: 'Instagram' },
                                         { key: 'youtube', label: 'Youtube' },
-                                        { key: 'dark_web', label: 'Dark Web Search Link' },
-                                        { key: 'web_articles', label: 'Web Articles' },
                                         { key: 'whatsapp', label: 'Whatsapp' }
                                     ].map(({ key, label }) => {
                                         const profiles = f.previouslyDeletedProfiles?.[key] || [];

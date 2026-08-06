@@ -182,29 +182,6 @@ const isHlsUrl = (url) => {
 };
 
 /**
- * Extract a numeric X status ID from known inputs.
- * Returns null when only an internal UUID/content identifier is available.
- */
-const extractTweetStatusId = (...candidates) => {
-  const all = candidates.filter(Boolean).map((v) => String(v));
-
-  for (const raw of all) {
-    // Direct numeric ID
-    if (/^\d{5,25}$/.test(raw)) return raw;
-
-    // Composite keys such as "<id>_quoted_<handle>"
-    const head = raw.split('_')[0];
-    if (/^\d{5,25}$/.test(head)) return head;
-
-    // URLs such as /status/<id> or /i/status/<id>
-    const m = raw.match(/\/(?:i\/)?status\/(\d{5,25})/i);
-    if (m?.[1]) return m[1];
-  }
-
-  return null;
-};
-
-/**
  * Minimum size (in bytes) for a valid video file.
  * HLS playlist files are typically 0.7-1.5 KB.
  * Real videos are at least 10 KB.
@@ -228,9 +205,6 @@ const archiveMediaItem = async (mediaUrl, contentId, mediaType = 'photo', index 
     const isVideo = mediaType === 'video' || mediaType === 'reel' || mediaType === 'animated_gif';
 
     if (isVideo) {
-      const tweetId = extractTweetStatusId(contentId, options.postUrl, mediaUrl);
-      const postUrl = options.postUrl || (tweetId ? `https://x.com/i/status/${tweetId}` : undefined);
-
       // ── Strategy 1: Direct download ONLY for confirmed direct MP4 URLs ──
       // (e.g. video.twimg.com/ext_tw_video/...mp4 – NOT .m3u8 playlists)
       if (!isThumbnailUrl(mediaUrl) && !isHlsUrl(mediaUrl) && /\.(mp4|webm)(\?|$)/i.test(mediaUrl)) {
@@ -244,7 +218,9 @@ const archiveMediaItem = async (mediaUrl, contentId, mediaType = 'photo', index 
 
       // ── Strategy 2: Use Python media-download service (handles HLS, cookies, yt-dlp) ──
       // Build the best URL for the service: prefer tweet/post page URL
-      if (!dl && postUrl) {
+      if (!dl) {
+        const tweetId = String(contentId).split('_')[0];
+        const postUrl = options.postUrl || `https://x.com/i/status/${tweetId}`;
         console.log(`[ContentS3] 🎬 Using Python service for video: ${postUrl.substring(0, 80)}`);
         dl = await downloadViaPythonService(postUrl);
         // Validate: reject tiny files
@@ -252,12 +228,11 @@ const archiveMediaItem = async (mediaUrl, contentId, mediaType = 'photo', index 
           console.warn(`[ContentS3] ⚠️ Python service returned too small (${dl.buffer.length} bytes), discarding`);
           dl = null;
         }
-      } else if (!dl && !postUrl) {
-        console.warn(`[ContentS3] ⚠️ Skipping Python video download: no valid X status URL for contentId=${contentId}`);
       }
 
       // ── Strategy 3: Syndication API to get direct MP4 URL ──
-      if (!dl && mediaUrl.includes('twimg.com') && tweetId) {
+      if (!dl && mediaUrl.includes('twimg.com')) {
+        const tweetId = String(contentId).split('_')[0];
         console.log(`[ContentS3] 🔍 Trying syndication API for tweet ${tweetId}`);
         const realVideoUrl = await fetchTwitterVideoUrl(tweetId);
         if (realVideoUrl && !isHlsUrl(realVideoUrl)) {
@@ -268,8 +243,6 @@ const archiveMediaItem = async (mediaUrl, contentId, mediaType = 'photo', index 
             dl = null;
           }
         }
-      } else if (!dl && mediaUrl.includes('twimg.com') && !tweetId) {
-        console.warn(`[ContentS3] ⚠️ Skipping syndication lookup: invalid tweet id for contentId=${contentId}`);
       }
     }
 

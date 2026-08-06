@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');
+const { loadScope } = require('../middleware/scopeMiddleware');
 const {
   loadUserPermissions,
   hasPageAccess,
@@ -26,7 +27,7 @@ const requireInstagramMonitorAccess = (req, res, next) => {
   return denyPageAccess(res, ['/alerts', '/instagram-monitor', '/monitors']);
 };
 
-router.use(protect, loadUserPermissions, requireInstagramMonitorAccess);
+router.use(protect, loadScope, loadUserPermissions, requireInstagramMonitorAccess);
 
 router.get('/', getStories);
 router.get('/stats', getStoryStats);

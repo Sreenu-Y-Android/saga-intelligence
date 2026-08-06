@@ -1,7 +1,7 @@
 /**
  * AP Political Intelligence Dashboard Controller
  * -----------------------------------------------
- * Powers the Telangana command-centre executive dashboard (/telangana-map).
+ * Powers the revamped /andhra-pradesh-map executive dashboard.
  * All endpoints are date-range and filter aware; results are cached.
  */
 
@@ -10,7 +10,7 @@ const Alert = require('../models/Alert');
 const Content = require('../models/Content');
 const Source = require('../models/Source');
 const cacheService = require('../services/cacheService');
-const { isStateLocation, STATE_DISTRICTS } = require('../config/stateLocations');
+const { isStateLocation, STATE_DISTRICTS: AP_DISTRICTS } = require('../config/stateLocations');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -890,7 +890,7 @@ ALERTS: ${alertRows} alerts generated in this period.
           model: 'gpt-4o-mini',
           messages: [{
             role: 'system',
-            content: 'You are a political intelligence analyst for Telangana, India. Analyze the provided data and generate 5 specific, actionable insights. Each insight must be based directly on the numbers provided. Be concise (1-2 sentences each). Focus on trends, anomalies, and opportunities for the Congress (INC) state leadership. Output as a JSON array of strings.'
+            content: 'You are a political intelligence analyst for Telangana, India. Analyze the provided data and generate 5 specific, actionable insights. Each insight must be based directly on the numbers provided. Be concise (1-2 sentences each). Focus on trends, anomalies, and opportunities for the client leadership. Output as a JSON array of strings.'
           }, {
             role: 'user',
             content: `${analyticsContext}\n\nGenerate 5 specific political intelligence insights based on this data. Return only a JSON array of 5 insight strings.`
@@ -914,7 +914,7 @@ ALERTS: ${alertRows} alerts generated in this period.
         const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
         const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
         const result = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: `${analyticsContext}\n\nYou are a political intelligence analyst for Telangana, India. Generate exactly 5 specific, data-driven insights based on the analytics above. Each insight must reference actual numbers. Focus on trends, anomalies, and implications for the Congress (INC) state leadership. Return ONLY a valid JSON object: {"insights": ["insight1", "insight2", "insight3", "insight4", "insight5"]}` }] }]
+          contents: [{ role: 'user', parts: [{ text: `${analyticsContext}\n\nYou are a political intelligence analyst for Telangana, India. Generate exactly 5 specific, data-driven insights based on the analytics above. Each insight must reference actual numbers. Focus on trends, anomalies, and implications for the client leadership. Return ONLY a valid JSON object: {"insights": ["insight1", "insight2", "insight3", "insight4", "insight5"]}` }] }]
         });
         const text = result.response.text();
         const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -1037,7 +1037,7 @@ const exportAPDashboardPdf = async (req, res) => {
     // Build authenticated dashboard URL
     const token = req.headers.authorization?.replace('Bearer ', '') || '';
     const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const targetUrl = dashboardUrl || `${baseUrl}/telangana-map?from=${from || ''}&to=${to || ''}&export=1&token=${encodeURIComponent(token)}`;
+    const targetUrl = dashboardUrl || `${baseUrl}/andhra-pradesh-map?from=${from || ''}&to=${to || ''}&export=1&token=${encodeURIComponent(token)}`;
 
     const browser = await puppeteer.launch({
       headless: 'new',

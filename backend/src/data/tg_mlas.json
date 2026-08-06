@@ -104,8 +104,8 @@
     "source": "directory"
   },
   {
-    "constituency": "ARMOOR",
-    "key": "armoor",
+    "constituency": "ARMUR",
+    "key": "armur",
     "reservation": null,
     "mla": "Paidi Rakesh Reddy",
     "shortName": "Paidi Rakesh Reddy",
@@ -206,8 +206,8 @@
     "source": "directory"
   },
   {
-    "constituency": "BELLAMPALLI (SC)",
-    "key": "bellampalli",
+    "constituency": "BELLAMPALLE (SC)",
+    "key": "bellampalle",
     "reservation": "SC",
     "mla": "Gaddam Vinod",
     "shortName": "Gaddam Vinod",
@@ -393,7 +393,7 @@
     "source": "directory"
   },
   {
-    "constituency": "DEVARAKADRA",
+    "constituency": "DEVARKADRA",
     "key": "devarkadra",
     "reservation": null,
     "mla": "Gavinolla Madhusudan Reddy (GMR)",
@@ -514,9 +514,9 @@
     "source": "directory"
   },
   {
-    "constituency": "GHANPUR",
-    "key": "ghanpur",
-    "reservation": null,
+    "constituency": "GHANPUR (STATION) (SC)",
+    "key": "ghanpurstation",
+    "reservation": "SC",
     "mla": "Kadiyam Srihari",
     "shortName": "Kadiyam Srihari",
     "party": "BRS",
@@ -637,8 +637,8 @@
     "source": "directory"
   },
   {
-    "constituency": "JAGITIAL",
-    "key": "jagitial",
+    "constituency": "JAGTIAL",
+    "key": "jagtial",
     "reservation": null,
     "mla": "DR. Sanjay",
     "shortName": "DR. Sanjay",
@@ -654,8 +654,8 @@
     "source": "directory"
   },
   {
-    "constituency": "JANGAON",
-    "key": "jangaon",
+    "constituency": "JANGOAN",
+    "key": "jangoan",
     "reservation": null,
     "mla": "Palla Rajeshwar Reddy",
     "shortName": "Palla Rajeshwar Reddy",
@@ -916,8 +916,8 @@
     "source": "directory"
   },
   {
-    "constituency": "KUKATPALLY",
-    "key": "kukatpally",
+    "constituency": "KUKATPALLE",
+    "key": "kukatpalle",
     "reservation": null,
     "mla": "Madhavaram Krishna Rao",
     "shortName": "Madhavaram Krishna Rao",
@@ -986,8 +986,8 @@
     "source": "directory"
   },
   {
-    "constituency": "MAHESHWARAM",
-    "key": "maheshwaram",
+    "constituency": "MAHESWARAM",
+    "key": "maheswaram",
     "reservation": null,
     "mla": "Patlolla Sabitha Indra Reddy",
     "shortName": "Patlolla Sabitha Indra Reddy",
@@ -1318,21 +1318,21 @@
     "source": "directory"
   },
   {
-    "constituency": "NARASAMPET",
-    "key": "narasampet",
+    "constituency": "MAHBUBNAGAR",
+    "key": "mahbubnagar",
     "reservation": null,
-    "mla": "Donthi Madhava Reddy",
-    "shortName": "Madhava Reddy",
+    "mla": "Yennam Srinivas Reddy",
+    "shortName": "Srinivas Reddy",
     "party": "INC",
     "alliance": "INDIA",
     "role": "MLA",
-    "district": "Warangal",
-    "districtKey": "WARANGAL",
+    "district": "Mahabubnagar",
+    "districtKey": "MAHABUBNAGAR",
     "department": "",
-    "image": "/MLA_Images/INC/SRI  DONTHI MADHAVA REDDY.jpg",
-    "profileId": "madhava-narsampet",
+    "image": "",
+    "profileId": "srinivas-reddy-mahbubnagar",
     "handles": [],
-    "source": "directory"
+    "source": "roster"
   },
   {
     "constituency": "NARAYANKHED",
@@ -1377,13 +1377,13 @@
     "party": "INC",
     "alliance": "INDIA",
     "role": "MLA",
-    "district": "Warangal",
-    "districtKey": "WARANGAL",
+    "district": "Mahabubabad",
+    "districtKey": "MAHABUBABAD",
     "department": "",
-    "image": "",
+    "image": "/MLA_Images/INC/SRI  DONTHI MADHAVA REDDY.jpg",
     "profileId": "madhava-narsampet",
     "handles": [],
-    "source": "roster"
+    "source": "directory"
   },
   {
     "constituency": "NARSAPUR",
@@ -1576,7 +1576,7 @@
   },
   {
     "constituency": "QUTHBULLAPUR",
-    "key": "qutbullapur",
+    "key": "quthbullapur",
     "reservation": null,
     "mla": "K.P. Vivekanand",
     "shortName": "K.P. Vivekanand",
@@ -1694,8 +1694,8 @@
     "source": "directory"
   },
   {
-    "constituency": "SECUNDERABAD CANTONMENT (SC)",
-    "key": "secunderabadcantonment",
+    "constituency": "SECUNDERABAD CANTT. (SC)",
+    "key": "secunderabadcantt",
     "reservation": "SC",
     "mla": "Sriganesh",
     "shortName": "Sriganesh",
@@ -1830,8 +1830,8 @@
     "source": "directory"
   },
   {
-    "constituency": "THUNGATHURTHY (SC)",
-    "key": "thungathurthy",
+    "constituency": "THUNGATHURTHI (SC)",
+    "key": "thungathurthi",
     "reservation": "SC",
     "mla": "Mandula Samel",
     "shortName": "Mandula Samel",
@@ -1881,8 +1881,8 @@
     "source": "directory"
   },
   {
-    "constituency": "VIKARABAD (SC)",
-    "key": "vikarabad",
+    "constituency": "VICARABAD (SC)",
+    "key": "vicarabad",
     "reservation": "SC",
     "mla": "Gaddam Prasad Kumar",
     "shortName": "Gaddam Prasad",
@@ -1953,8 +1953,8 @@
     "source": "directory"
   },
   {
-    "constituency": "WARDHANNAPET (SC)",
-    "key": "wardhannapet",
+    "constituency": "WARADHANAPET (SC)",
+    "key": "waradhanapet",
     "reservation": "SC",
     "mla": "K.R. Nagaraj",
     "shortName": "K.R. Nagaraj",

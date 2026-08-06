@@ -51,15 +51,18 @@ const GeoLeaderboardTable = ({ rows = [], loading, levelLabel = 'District', onRo
             {rows.map((row, idx) => (
               <tr
                 key={row.key}
-                role="button"
-                tabIndex={0}
                 onClick={() => onRowClick?.(row)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onRowClick?.(row); }}
                 className={`border-b border-slate-50 last:border-0 hover:bg-slate-50/80 cursor-pointer transition-colors group ${selectedKey === row.key ? 'bg-yellow-50/60' : ''}`}
               >
                 <td className="px-4 py-3 text-xs font-semibold text-slate-400">{idx + 1}</td>
                 <td className="px-3 py-3">
-                  <div className="text-sm font-semibold text-slate-800">{formatGeoName(row.name)}</div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onRowClick?.(row); }}
+                    className="text-sm font-semibold text-slate-800 hover:text-yellow-800 focus-visible:text-yellow-800 outline-none text-left"
+                  >
+                    {formatGeoName(row.name)}
+                  </button>
                   {row.total_news > 0 && (
                     <div className="text-[10px] text-slate-400">{row.total_social.toLocaleString()} social · {row.total_news.toLocaleString()} news</div>
                   )}

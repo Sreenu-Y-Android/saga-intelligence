@@ -1,7 +1,7 @@
 /**
  * ConstituencyMaster
  * ─────────────────────────────────────────────────────────────────────
- * Canonical hierarchical master for every Telangana assembly constituency.
+ * Canonical hierarchical master for every AP assembly constituency.
  *
  *   AC ─►  District + Lok Sabha + MLA + MP
  *     ├── Mandals  (with aliases)

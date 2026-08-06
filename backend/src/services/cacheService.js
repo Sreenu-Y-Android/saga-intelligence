@@ -80,6 +80,41 @@ const del = async (key) => {
   }
 };
 
+// ─── Versioned namespaces ──────────────────────────────────────────
+// Plain TTL invalidation has a race: if a GET is already in flight when a
+// DELETE fires, the GET can finish (and call `set`) AFTER invalidation runs,
+// silently re-populating the cache with pre-delete data for the rest of the
+// TTL — the deleted item then reappears on the next refresh within that
+// window. Embedding a version number in the cache key closes this: bumping
+// the version on mutation makes every in-flight read's cache key stale, so
+// its write lands in a slot nothing will ever read again.
+const versions = new Map();
+
+const getVersion = async (namespace) => {
+  try {
+    const client = await getRedisClient();
+    if (client && redisReady) {
+      const v = await client.get(`cachever:${namespace}`);
+      if (v !== null && v !== undefined) return parseInt(v, 10) || 0;
+    }
+  } catch (_) {
+    redisReady = false;
+  }
+  return versions.get(namespace) || 0;
+};
+
+const bumpVersion = async (namespace) => {
+  const next = (versions.get(namespace) || 0) + 1;
+  versions.set(namespace, next);
+  try {
+    const client = await getRedisClient();
+    if (client && redisReady) await client.set(`cachever:${namespace}`, String(next));
+  } catch (_) {
+    redisReady = false;
+  }
+  return next;
+};
+
 const invalidatePrefix = async (prefix) => {
   const keys = Array.from(localCache.keys());
   keys.forEach((key) => {
@@ -104,5 +139,7 @@ module.exports = {
   get,
   set,
   del,
-  invalidatePrefix
+  invalidatePrefix,
+  getVersion,
+  bumpVersion
 };

@@ -3,19 +3,28 @@ const moment = require('moment');
 
 class YouTubeService {
     constructor() {
-        this.youtube = google.youtube({
-            version: 'v3',
-            auth: process.env.YOUTUBE_API_KEY
-        });
         this.quotaUsed = 0;
         this.quotaLimit = 10000; // Default daily limit
+    }
+
+    getClient() {
+        const apiKey = String(process.env.YOUTUBE_API_KEY || '').trim();
+        if (!apiKey) {
+            throw new Error('YOUTUBE_API_KEY is not configured');
+        }
+
+        return google.youtube({
+            version: 'v3',
+            auth: apiKey
+        });
     }
 
     // --- Channel Methods ---
 
     async getChannelDetails(channelId) {
         try {
-            const response = await this.youtube.channels.list({
+            const youtube = this.getClient();
+            const response = await youtube.channels.list({
                 part: ['snippet', 'statistics', 'brandingSettings', 'contentDetails'],
                 id: [channelId]
             });
@@ -53,7 +62,8 @@ class YouTubeService {
 
     async searchChannels(query) {
         try {
-            const response = await this.youtube.search.list({
+            const youtube = this.getClient();
+            const response = await youtube.search.list({
                 part: ['snippet'],
                 q: query,
                 type: 'channel',
@@ -75,11 +85,13 @@ class YouTubeService {
 
     async searchVideos(query) {
         try {
-            const response = await this.youtube.search.list({
+            const youtube = this.getClient();
+            const ytMax = Math.max(1, Math.min(50, parseInt(process.env.YT_SEARCH_PAGE_SIZE || '50', 10)));
+            const response = await youtube.search.list({
                 part: ['snippet'],
                 q: query,
                 type: 'video',
-                maxResults: 20
+                maxResults: ytMax
             });
 
             const videoIds = response.data.items.map(item => item.id.videoId);
@@ -94,7 +106,8 @@ class YouTubeService {
 
     async getVideosFromPlaylist(playlistId, maxResults = 50) {
         try {
-            const response = await this.youtube.playlistItems.list({
+            const youtube = this.getClient();
+            const response = await youtube.playlistItems.list({
                 part: ['snippet', 'contentDetails'],
                 playlistId: playlistId,
                 maxResults: maxResults
@@ -110,6 +123,8 @@ class YouTubeService {
 
 
     async getVideoDetails(videoIds) {
+        const youtube = this.getClient();
+
         // Process in chunks of 50
         const chunks = [];
         for (let i = 0; i < videoIds.length; i += 50) {
@@ -119,7 +134,7 @@ class YouTubeService {
         let allVideos = [];
         for (const chunk of chunks) {
             try {
-                const response = await this.youtube.videos.list({
+                const response = await youtube.videos.list({
                     part: ['snippet', 'contentDetails', 'statistics'],
                     id: chunk
                 });
@@ -152,7 +167,8 @@ class YouTubeService {
 
     async getVideoComments(videoId, maxResults = 100) {
         try {
-            const response = await this.youtube.commentThreads.list({
+            const youtube = this.getClient();
+            const response = await youtube.commentThreads.list({
                 part: ['snippet', 'replies'],
                 videoId: videoId,
                 maxResults: maxResults, // Note: max is 100 for this endpoint

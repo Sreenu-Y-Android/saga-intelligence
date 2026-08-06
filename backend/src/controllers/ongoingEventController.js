@@ -1,4 +1,8 @@
 const OngoingEvent = require('../models/OngoingEvent');
+const cacheService = require('../services/cacheService');
+
+const EVENTS_CACHE_PREFIX = 'ongoing-events:v1';
+const invalidateEventsCache = () => cacheService.invalidatePrefix(EVENTS_CACHE_PREFIX);
 
 // @desc    Get all ongoing events
 // @route   GET /api/ongoing-events
@@ -6,6 +10,13 @@ const OngoingEvent = require('../models/OngoingEvent');
 const getEvents = async (req, res) => {
     try {
         const { bucket, date } = req.query;
+        const cacheKey = `${EVENTS_CACHE_PREFIX}:${bucket || ''}:${date || ''}`;
+        const cached = await cacheService.get(cacheKey);
+        if (cached) {
+            res.set('Cache-Control', 'private, max-age=15');
+            return res.status(200).json(cached);
+        }
+
         const query = {};
         
         if (bucket) {
@@ -30,6 +41,8 @@ const getEvents = async (req, res) => {
         }
 
         const events = await OngoingEvent.find(query).sort({ createdAt: -1 });
+        await cacheService.set(cacheKey, events, 30);
+        res.set('Cache-Control', 'private, max-age=15');
         res.status(200).json(events);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -53,6 +66,7 @@ const createEvent = async (req, res) => {
             bucket: bucket || 'ONGOING'
         });
 
+        await invalidateEventsCache();
         res.status(201).json(event);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -78,6 +92,7 @@ const updateEvent = async (req, res) => {
         event.bucket = bucket || event.bucket;
         await event.save();
 
+        await invalidateEventsCache();
         res.status(200).json(event);
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -98,6 +113,7 @@ const deleteEvent = async (req, res) => {
 
         await OngoingEvent.deleteOne({ id });
 
+        await invalidateEventsCache();
         res.status(200).json({ message: 'Event deleted' });
     } catch (error) {
         res.status(500).json({ message: error.message });

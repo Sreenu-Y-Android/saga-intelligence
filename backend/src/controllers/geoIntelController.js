@@ -25,6 +25,16 @@
 const Grievance = require('../models/Grievance');
 const NewsArticle = require('../models/NewsArticle');
 const cacheService = require('../services/cacheService');
+const { hasFeatureAccess } = require('../middleware/rbacMiddleware');
+
+const GEO_PAGE_PATH = '/geographic-intelligence';
+const VALID_PLATFORMS = new Set(['x', 'facebook', 'whatsapp', 'instagram', 'youtube']);
+const VALID_SENTIMENTS = new Set(['positive', 'negative', 'moderate']);
+
+/** Whitelists platform/sentiment query params against the schema's own enums before they ever reach a Mongo $match — an unvalidated value (e.g. an injected `{ $ne: 'x' }` object via bracket-notation query parsing) silently collapses to "all" instead of being passed through. */
+const sanitizePlatform = (v) => (typeof v === 'string' && (v === 'all' || VALID_PLATFORMS.has(v)) ? v : 'all');
+const sanitizeSentiment = (v) => (typeof v === 'string' && (v === 'all' || VALID_SENTIMENTS.has(v)) ? v : 'all');
+const sanitizeTopic = (v) => (typeof v === 'string' && v ? v : 'all');
 
 const DEFAULT_WINDOW_DAYS = 30;
 const VOLUME_CAP = 200; // mentions at which "attention volume" confidence maxes out
@@ -157,6 +167,23 @@ const geoKeyExpr = (path) => ({
 const normalizeKeyJS = (v) => String(v || '').toLowerCase().replace(/[\s.\-',/()]/g, '');
 
 const geoKeyEquals = (path, targetKey) => ({ $expr: { $eq: [geoKeyExpr(path), targetKey] } });
+const geoKeyIn = (path, targetKeys) => ({ $expr: { $in: [geoKeyExpr(path), targetKeys] } });
+
+/**
+ * District-scope match fragment for aggregations that don't already go
+ * through computeLeaderboard (which is scope-filtered after the fact by its
+ * callers). Empty for canSeeAll callers; otherwise restricts the pipeline to
+ * the caller's allowed districts *before* aggregating, so a scoped user's
+ * unauthorized districts are never computed, cached, or returned.
+ */
+const geoScopeMatch = (geoScope, path = 'detected_location.district') => (
+  geoScope && !geoScope.canSeeAll ? geoKeyIn(path, [...geoScope.districtKeys]) : {}
+);
+
+/** Stable per-request scope identity for cache keys — two requests with different geo scopes must never share a cache slot. */
+const scopeCacheKey = (geoScope) => (
+  geoScope && !geoScope.canSeeAll ? `d:${[...geoScope.districtKeys].sort().join(',')}` : 'all'
+);
 
 /** Match fragment for the optional Category/Topic filter — reuses the same $ifNull(grievance_type, category) topic definition as computeTopicAnalytics. */
 const buildTopicMatch = (topic) => (
@@ -164,6 +191,30 @@ const buildTopicMatch = (topic) => (
     ? { $or: [{ 'analysis.grievance_type': topic }, { 'analysis.category': topic }] }
     : {}
 );
+
+/** Match fragment for the platform/sentiment filters — shared by every sub-panel query (topics, trend, recent activity, influencers, posts) so they honor the same filters as the KPI stats next to them. */
+const buildFilterMatch = (platform, sentiment) => {
+  const m = {};
+  if (platform && platform !== 'all') m.platform = platform;
+  if (sentiment && sentiment !== 'all') m['analysis.sentiment'] = sentiment;
+  return m;
+};
+
+/** Largest-remainder rounding so a set of percentages that should sum to 100 actually does, instead of each being rounded independently. */
+const reconcilePercentages = (counts, total) => {
+  if (!total) return counts.map(() => 0);
+  const raw = counts.map((n) => (n / total) * 100);
+  const floors = raw.map(Math.floor);
+  let remainder = 100 - floors.reduce((s, n) => s + n, 0);
+  const order = raw
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac);
+  const result = [...floors];
+  for (let k = 0; k < order.length && remainder > 0; k += 1, remainder -= 1) {
+    result[order[k].i] += 1;
+  }
+  return result;
+};
 
 /**
  * Core district/city leaderboard aggregation. Geography-agnostic: `path` is
@@ -403,6 +454,7 @@ const computeTopicAnalytics = async ({ extraMatch, from, to, prevFrom, prevTo, l
       negative: r.negative,
       neutral: r.neutral,
       risk: Math.round(r.avg_risk || 0),
+      risk_level: riskLevelFromScore(Math.round(r.avg_risk || 0)),
       trend: growth >= 0.2 ? 'rising' : growth <= -0.2 ? 'falling' : 'stable',
       trend_change_pct: Math.round(growth * 100),
       velocity_score: velocityScore,
@@ -481,6 +533,11 @@ const computeTopPosts = async ({ extraMatch, from, to, limit = 12 }) => {
   }));
 };
 
+/** True when from/to was supplied but couldn't be parsed — distinguishes "bad input" from "omitted, use the default window" so callers can 400 instead of silently substituting the default. */
+const hasInvalidDateParams = (query) => (
+  (query.from && !parseFrom(query.from)) || (query.to && !parseTo(query.to))
+);
+
 /** Resolves the from/to/prevFrom/prevTo window from query params, defaulting to 30d. */
 const resolveWindow = (query) => {
   const to = parseTo(query.to) || endOfDay(new Date());
@@ -495,6 +552,43 @@ const resolveWindow = (query) => {
 const canAccessDistrict = (geoScope, districtKey) => (
   !geoScope || geoScope.canSeeAll || geoScope.districtKeys.has(districtKey)
 );
+
+/**
+ * Redacts risk-score / city-level fields from a district-detail payload for
+ * callers whose role has those `/geographic-intelligence` features disabled
+ * (rbacConfig declares `risk_score`/`city_view` as feature toggles, but
+ * nothing previously enforced them server-side). Applied on every response
+ * — including cache hits — rather than baked into the cached payload, so one
+ * cached entry serves every feature-permission combination correctly.
+ */
+const applySummaryAccess = (req, payload) => {
+  if (hasFeatureAccess(req, GEO_PAGE_PATH, 'risk_score')) return payload;
+  return {
+    ...payload,
+    high_risk_district_count: undefined,
+    high_risk_districts: undefined,
+    emerging_topic: payload.emerging_topic ? (({ risk, risk_level, ...t }) => t)(payload.emerging_topic) : null,
+    emerging_topics: (payload.emerging_topics || []).map(({ risk, risk_level, ...t }) => t),
+    top_issues_by_volume: (payload.top_issues_by_volume || []).map(({ risk, risk_level, ...t }) => t),
+  };
+};
+
+const applyDistrictDetailAccess = (req, payload) => {
+  const canSeeRisk = hasFeatureAccess(req, GEO_PAGE_PATH, 'risk_score');
+  const canSeeCities = hasFeatureAccess(req, GEO_PAGE_PATH, 'city_view');
+  let out = payload;
+  if (!canSeeRisk && out.stats) {
+    const { avg_risk_score, risk_level, risk_index, top_topics, ...restStats } = out.stats;
+    out = { ...out, stats: { ...restStats, top_topics: (top_topics || []).map(({ risk, ...t }) => t) } };
+  }
+  if (!canSeeRisk && Array.isArray(out.top_topics)) {
+    out = { ...out, top_topics: out.top_topics.map(({ risk, ...t }) => t) };
+  }
+  if (!canSeeCities) {
+    out = { ...out, cities_preview: [] };
+  }
+  return out;
+};
 
 // ─── GET /api/geo-intel/scope ──────────────────────────────────────────────
 const getScope = async (req, res) => {
@@ -517,7 +611,13 @@ const getScope = async (req, res) => {
 // ?from=&to=&platform=&sentiment=&sort=total|positive|negative|risk&order=&limit=)
 const getDistricts = async (req, res) => {
   try {
-    const { platform, sentiment, topic, sort = 'total', order = 'desc', limit } = req.query;
+    if (hasInvalidDateParams(req.query)) {
+      return res.status(400).json({ success: false, message: 'Invalid from/to date' });
+    }
+    const platform = sanitizePlatform(req.query.platform);
+    const sentiment = sanitizeSentiment(req.query.sentiment);
+    const topic = sanitizeTopic(req.query.topic);
+    const { sort = 'total', order = 'desc', limit } = req.query;
     const { from, to, prevFrom, prevTo } = resolveWindow(req.query);
 
     const cacheKey = `geo:districts:v1:${from.toISOString()}:${to.toISOString()}:${platform || ''}:${sentiment || ''}:${topic || ''}`;
@@ -537,6 +637,10 @@ const getDistricts = async (req, res) => {
     const shaped = scoped.map((r) => ({ ...r, district_key: r.key, district_name: r.name }));
 
     const dir = order === 'asc' ? 1 : -1;
+    // Note on naming: `negative` sorts by risk_index (the weighted negativity+risk+
+    // growth+volume composite, not a raw negative count/pct), and `risk` sorts by
+    // the narrower avg_risk_score (the raw AI model average). See the file header
+    // for what each score means.
     const sorters = {
       total: (a, b) => a.total_mentions - b.total_mentions,
       positive: (a, b) => a.positive_score - b.positive_score,
@@ -551,14 +655,20 @@ const getDistricts = async (req, res) => {
 
     const rankable = shaped.filter((r) => r.total_mentions >= MIN_SAMPLE_FOR_RANKING);
 
+    const canSeeRisk = hasFeatureAccess(req, GEO_PAGE_PATH, 'risk_score');
+    const redact = (r) => (canSeeRisk ? r : (() => {
+      const { avg_risk_score, risk_level, risk_index, top_topics, ...rest } = r;
+      return { ...rest, top_topics: (top_topics || []).map(({ risk, ...t }) => t) };
+    })());
+
     res.json({
       success: true,
       window: { from: from.toISOString(), to: to.toISOString() },
       scope: { level: req.geoScope.level, can_see_all: req.geoScope.canSeeAll },
       count: limited.length,
-      districts: limited,
-      top_positive: [...rankable].sort((a, b) => b.positive_score - a.positive_score).slice(0, 5),
-      top_negative: [...rankable].sort((a, b) => b.risk_index - a.risk_index).slice(0, 5),
+      districts: limited.map(redact),
+      top_positive: [...rankable].sort((a, b) => b.positive_score - a.positive_score).slice(0, 5).map(redact),
+      top_negative: [...rankable].sort((a, b) => b.risk_index - a.risk_index).slice(0, 5).map(redact),
     });
   } catch (err) {
     console.error('[geoIntel] getDistricts error:', err.message);
@@ -575,13 +685,25 @@ const getDistrictDetail = async (req, res) => {
       return res.status(403).json({ success: false, code: 'DISTRICT_FORBIDDEN', message: 'You are not authorized to view this district' });
     }
 
-    const { platform, sentiment, topic } = req.query;
+    if (hasInvalidDateParams(req.query)) {
+      return res.status(400).json({ success: false, message: 'Invalid from/to date' });
+    }
+    const platform = sanitizePlatform(req.query.platform);
+    const sentiment = sanitizeSentiment(req.query.sentiment);
+    const topic = sanitizeTopic(req.query.topic);
     const { from, to, prevFrom, prevTo } = resolveWindow(req.query);
     const districtMatch = geoKeyEquals('detected_location.district', districtKey);
+    // Sub-panels below (topics, trend, recent activity, influencers, posts) don't
+    // go through computeLeaderboard, so they need the platform/sentiment/topic
+    // filters folded in explicitly to stay consistent with the KPI stats above.
+    const filterMatch = { ...districtMatch, ...buildFilterMatch(platform, sentiment), ...buildTopicMatch(topic) };
 
-    const cacheKey = `geo:district:v1:${districtKey}:${from.toISOString()}:${to.toISOString()}:${platform || ''}:${sentiment || ''}:${topic || ''}`;
+    // v2: payload now includes top_topics (previously computed but silently
+    // dropped from the response) — versioned so any cache entry from before
+    // that fix can't be served stale.
+    const cacheKey = `geo:district:v2:${districtKey}:${from.toISOString()}:${to.toISOString()}:${platform || ''}:${sentiment || ''}:${topic || ''}`;
     const cached = await cacheService.get(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) return res.json(applyDistrictDetailAccess(req, cached));
 
     const [districtRows, cityRows, topics, trendSeries, recentActivity, topInfluencers, topPosts] = await Promise.all([
       computeLeaderboard({
@@ -590,9 +712,9 @@ const getDistrictDetail = async (req, res) => {
       computeLeaderboard({
         path: 'detected_location.city', from, to, prevFrom, prevTo, platform, sentiment, topic, extraMatch: districtMatch,
       }),
-      computeTopicAnalytics({ extraMatch: districtMatch, from, to, prevFrom, prevTo, limit: 8 }),
+      computeTopicAnalytics({ extraMatch: filterMatch, from, to, prevFrom, prevTo, limit: 8 }),
       Grievance.aggregate([
-        { $match: { is_active: true, ...districtMatch, post_date: { $gte: from, $lte: to } } },
+        { $match: { is_active: true, ...filterMatch, post_date: { $gte: from, $lte: to } } },
         {
           $group: {
             _id: { $dateToString: { format: '%Y-%m-%d', date: '$post_date' } },
@@ -604,13 +726,13 @@ const getDistrictDetail = async (req, res) => {
         },
         { $sort: { _id: 1 } },
       ]),
-      Grievance.find({ is_active: true, ...districtMatch, post_date: { $gte: from, $lte: to } })
+      Grievance.find({ is_active: true, ...filterMatch, post_date: { $gte: from, $lte: to } })
         .select('content.text analysis.sentiment analysis.risk_level platform post_date tweet_id posted_by.handle posted_by.display_name detected_location.city')
         .sort({ post_date: -1 })
         .limit(12)
         .lean(),
-      computeTopInfluencers({ extraMatch: districtMatch, from, to, limit: 6 }),
-      computeTopPosts({ extraMatch: districtMatch, from, to, limit: 12 }),
+      computeTopInfluencers({ extraMatch: filterMatch, from, to, limit: 6 }),
+      computeTopPosts({ extraMatch: filterMatch, from, to, limit: 12 }),
     ]);
 
     if (!districtRows.length) {
@@ -641,6 +763,7 @@ const getDistrictDetail = async (req, res) => {
       stats: withNews,
       cities_preview: cities.slice(0, 8).map((c) => ({ ...c, city_key: c.key, city_name: c.name })),
       city_count: cities.length,
+      top_topics: topics,
       sentiment_trend: padTrendSeries(trendSeries, from, to),
       recent_activity: recentActivity.map((g) => ({
         id: g.tweet_id,
@@ -658,7 +781,7 @@ const getDistrictDetail = async (req, res) => {
     };
 
     await cacheService.set(cacheKey, payload, DETAIL_CACHE_TTL);
-    res.json(payload);
+    res.json(applyDistrictDetailAccess(req, payload));
   } catch (err) {
     console.error('[geoIntel] getDistrictDetail error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to build district detail' });
@@ -673,8 +796,17 @@ const getCities = async (req, res) => {
     if (!canAccessDistrict(req.geoScope, districtKey)) {
       return res.status(403).json({ success: false, code: 'DISTRICT_FORBIDDEN', message: 'You are not authorized to view this district' });
     }
+    if (!hasFeatureAccess(req, GEO_PAGE_PATH, 'city_view')) {
+      return res.status(403).json({ success: false, code: 'CITY_VIEW_FORBIDDEN', message: 'You are not authorized to view city-level data' });
+    }
+    if (hasInvalidDateParams(req.query)) {
+      return res.status(400).json({ success: false, message: 'Invalid from/to date' });
+    }
 
-    const { platform, sentiment, topic, sort = 'total', order = 'desc', limit } = req.query;
+    const platform = sanitizePlatform(req.query.platform);
+    const sentiment = sanitizeSentiment(req.query.sentiment);
+    const topic = sanitizeTopic(req.query.topic);
+    const { sort = 'total', order = 'desc', limit } = req.query;
     const { from, to, prevFrom, prevTo } = resolveWindow(req.query);
     const districtMatch = geoKeyEquals('detected_location.district', districtKey);
 
@@ -698,15 +830,25 @@ const getCities = async (req, res) => {
     };
     const sorter = sorters[sort] || sorters.total;
     const sorted = [...shaped].sort((a, b) => sorter(a, b) * dir);
-    const max = Number(limit);
-    const limited = Number.isFinite(max) && max > 0 ? sorted.slice(0, max) : sorted;
+    // Default/max cap — "view all cities" was previously unbounded when no
+    // limit was supplied, which doesn't scale if location detection ever
+    // produces many distinct city-name variants for one district.
+    const requested = Number(limit);
+    const cap = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 500) : 100;
+    const limited = sorted.slice(0, cap);
+
+    const canSeeRisk = hasFeatureAccess(req, GEO_PAGE_PATH, 'risk_score');
+    const redact = (r) => (canSeeRisk ? r : (() => {
+      const { avg_risk_score, risk_level, risk_index, top_topics, ...rest } = r;
+      return { ...rest, top_topics: (top_topics || []).map(({ risk, ...t }) => t) };
+    })());
 
     res.json({
       success: true,
       district_key: districtKey,
       window: { from: from.toISOString(), to: to.toISOString() },
       count: limited.length,
-      cities: limited,
+      cities: limited.map(redact),
     });
   } catch (err) {
     console.error('[geoIntel] getCities error:', err.message);
@@ -723,23 +865,33 @@ const getTopics = async (req, res) => {
       return res.status(403).json({ success: false, code: 'DISTRICT_FORBIDDEN', message: 'You are not authorized to view this district' });
     }
 
+    if (hasInvalidDateParams(req.query)) {
+      return res.status(400).json({ success: false, message: 'Invalid from/to date' });
+    }
+    const platform = sanitizePlatform(req.query.platform);
+    const sentiment = sanitizeSentiment(req.query.sentiment);
+    const topic = sanitizeTopic(req.query.topic);
     const limit = Math.min(parseInt(req.query.limit, 10) || 20, 50);
     const { from, to, prevFrom, prevTo } = resolveWindow(req.query);
     const districtMatch = geoKeyEquals('detected_location.district', districtKey);
+    const filterMatch = { ...districtMatch, ...buildFilterMatch(platform, sentiment), ...buildTopicMatch(topic) };
 
-    const cacheKey = `geo:topics:v1:${districtKey}:${from.toISOString()}:${to.toISOString()}:${limit}`;
+    const cacheKey = `geo:topics:v1:${districtKey}:${from.toISOString()}:${to.toISOString()}:${platform}:${sentiment}:${topic}:${limit}`;
     const cached = await cacheService.get(cacheKey);
     if (cached) return res.json(cached);
 
-    const topics = await computeTopicAnalytics({ extraMatch: districtMatch, from, to, prevFrom, prevTo, limit });
+    const topics = await computeTopicAnalytics({ extraMatch: filterMatch, from, to, prevFrom, prevTo, limit });
+
+    const canSeeRisk = hasFeatureAccess(req, GEO_PAGE_PATH, 'risk_score');
+    const shapedTopics = canSeeRisk ? topics : topics.map(({ risk, risk_level, ...t }) => t);
 
     const payload = {
       success: true,
       district_key: districtKey,
       window: { from: from.toISOString(), to: to.toISOString() },
-      count: topics.length,
-      topics,
-      rising: topics.filter((t) => t.trend === 'rising'),
+      count: shapedTopics.length,
+      topics: shapedTopics,
+      rising: shapedTopics.filter((t) => t.trend === 'rising'),
     };
     await cacheService.set(cacheKey, payload, DETAIL_CACHE_TTL);
     res.json(payload);
@@ -756,17 +908,31 @@ const getTopics = async (req, res) => {
 // no aggregation logic is duplicated for the state-wide rollup.
 const getSummary = async (req, res) => {
   try {
-    const { platform, sentiment, topic } = req.query;
+    if (hasInvalidDateParams(req.query)) {
+      return res.status(400).json({ success: false, message: 'Invalid from/to date' });
+    }
+    const platform = sanitizePlatform(req.query.platform);
+    const sentiment = sanitizeSentiment(req.query.sentiment);
+    const topic = sanitizeTopic(req.query.topic);
     const { from, to, prevFrom, prevTo } = resolveWindow(req.query);
 
-    const cacheKey = `geo:summary:v1:${from.toISOString()}:${to.toISOString()}:${platform || ''}:${sentiment || ''}:${topic || ''}`;
+    // Scope identity is part of the cache key — this payload is already
+    // scope-filtered below, so two callers with different geo scopes must
+    // never be served each other's cached response.
+    const cacheKey = `geo:summary:v2:${scopeCacheKey(req.geoScope)}:${from.toISOString()}:${to.toISOString()}:${platform}:${sentiment}:${topic}`;
     const cached = await cacheService.get(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) return res.json(applySummaryAccess(req, cached));
 
-    const dateMatch = { is_active: true, post_date: { $gte: from, $lte: to }, ...buildTopicMatch(topic) };
+    // Every sibling aggregation below (trend/topics/platform-mix/prev-period)
+    // must apply the same district-scope restriction as the leaderboard, or a
+    // scoped user's trend chart / top-issues panel / platform mix silently
+    // shows state-wide data they aren't authorized to see.
+    const scope = geoScopeMatch(req.geoScope);
+    const dateMatch = { is_active: true, post_date: { $gte: from, $lte: to }, ...scope, ...buildTopicMatch(topic) };
     if (platform && platform !== 'all') dateMatch.platform = platform;
     if (sentiment && sentiment !== 'all') dateMatch['analysis.sentiment'] = sentiment;
     const prevDateMatch = { ...dateMatch, post_date: { $gte: prevFrom, $lt: from } };
+    const topicExtraMatch = { ...scope, ...buildFilterMatch(platform, sentiment) };
 
     const sentimentTotals = {
       total: { $sum: 1 },
@@ -782,7 +948,7 @@ const getSummary = async (req, res) => {
         { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$post_date' } }, ...sentimentTotals } },
         { $sort: { _id: 1 } },
       ]),
-      computeTopicAnalytics({ extraMatch: {}, from, to, prevFrom, prevTo, limit: 12 }),
+      computeTopicAnalytics({ extraMatch: topicExtraMatch, from, to, prevFrom, prevTo, limit: 12 }),
       Grievance.aggregate([
         { $match: dateMatch },
         { $group: { _id: '$platform', count: { $sum: 1 } } },
@@ -793,6 +959,9 @@ const getSummary = async (req, res) => {
       ]),
     ]);
 
+    // districtRows still needs its own post-filter: computeLeaderboard doesn't
+    // take a scope match, and this is also how the district-level rows (not
+    // just the sibling aggregations above) stay scoped.
     const scoped = req.geoScope.canSeeAll
       ? districtRows
       : districtRows.filter((r) => req.geoScope.districtKeys.has(r.key));
@@ -825,9 +994,12 @@ const getSummary = async (req, res) => {
     // over the already-resolved previous window — additive to the response,
     // no change to any other endpoint's contract.
     const prevTotalsRow = prevTotalsRows[0] || { total: 0, positive: 0, negative: 0, neutral: 0 };
-    const positivePct = pct(totalPositive, totalMentions);
-    const negativePct = pct(totalNegative, totalMentions);
-    const neutralPct = pct(totalNeutral, totalMentions);
+    // Largest-remainder rounding so positive/neutral/negative always sum to
+    // exactly 100 — independently-rounded percentages can be off by a point
+    // and the donut legend shows all three side by side, inviting a sum check.
+    const [positivePct, neutralPct, negativePct] = reconcilePercentages(
+      [totalPositive, totalNeutral, totalNegative], totalMentions,
+    );
     const totalMentionsChangePct = prevTotalsRow.total > 0
       ? Math.round(((totalMentions - prevTotalsRow.total) / prevTotalsRow.total) * 100)
       : (totalMentions > 0 ? 100 : 0);
@@ -849,6 +1021,9 @@ const getSummary = async (req, res) => {
         neutral_pct_change: neutralPct - pct(prevTotalsRow.neutral, prevTotalsRow.total),
       },
       total_mentions: totalMentions,
+      // Districts with at least one mention in this window — not the caller's
+      // full assigned-district count, which can differ for a scoped user
+      // whose assignment includes a district with zero activity right now.
       district_count: scoped.length,
       negative_district_count: negativeDistricts.length,
       high_risk_district_count: highRiskDistricts.length,
@@ -861,7 +1036,7 @@ const getSummary = async (req, res) => {
     };
 
     await cacheService.set(cacheKey, payload, LEADERBOARD_CACHE_TTL);
-    res.json(payload);
+    res.json(applySummaryAccess(req, payload));
   } catch (err) {
     console.error('[geoIntel] getSummary error:', err.message);
     res.status(500).json({ success: false, message: 'Failed to build state summary' });
@@ -877,24 +1052,42 @@ const MAX_PLAYBACK_DAYS = 120;
 
 const getPlayback = async (req, res) => {
   try {
-    const { platform, sentiment } = req.query;
+    if (hasInvalidDateParams(req.query)) {
+      return res.status(400).json({ success: false, message: 'Invalid from/to date' });
+    }
+    const platform = sanitizePlatform(req.query.platform);
+    const sentiment = sanitizeSentiment(req.query.sentiment);
+    const topic = sanitizeTopic(req.query.topic);
     let { from, to } = resolveWindow(req.query);
     const maxSpanMs = MAX_PLAYBACK_DAYS * 86400000;
     if (to.getTime() - from.getTime() > maxSpanMs) {
       from = new Date(to.getTime() - maxSpanMs);
     }
 
-    const cacheKey = `geo:playback:v1:${from.toISOString()}:${to.toISOString()}:${platform || ''}:${sentiment || ''}`;
+    // Scope identity is part of the cache key for the same reason as
+    // getSummary — this payload is scope-filtered below and must never be
+    // shared across callers with different geo scopes.
+    const cacheKey = `geo:playback:v2:${scopeCacheKey(req.geoScope)}:${from.toISOString()}:${to.toISOString()}:${platform}:${sentiment}:${topic}`;
     const cached = await cacheService.get(cacheKey);
     if (cached) return res.json(cached);
 
+    // District scope is pushed into the $match itself (not applied after the
+    // fact) so a scoped user's unauthorized districts are never aggregated,
+    // cached, or returned — and the platform-mix aggregation gets the same
+    // restriction, which it was previously missing entirely.
+    const scope = geoScopeMatch(req.geoScope);
     const match = {
       is_active: true,
       'detected_location.district': { $exists: true, $nin: [null, ''] },
       post_date: { $gte: from, $lte: to },
+      ...scope,
+      ...buildTopicMatch(topic),
     };
     if (platform && platform !== 'all') match.platform = platform;
     if (sentiment && sentiment !== 'all') match['analysis.sentiment'] = sentiment;
+    const platformMatch = { is_active: true, post_date: { $gte: from, $lte: to }, ...scope, ...buildTopicMatch(topic) };
+    if (platform && platform !== 'all') platformMatch.platform = platform;
+    if (sentiment && sentiment !== 'all') platformMatch['analysis.sentiment'] = sentiment;
 
     const keyExpr = geoKeyExpr('detected_location.district');
 
@@ -914,7 +1107,7 @@ const getPlayback = async (req, res) => {
         { $sort: { '_id.date': 1 } },
       ]),
       Grievance.aggregate([
-        { $match: { is_active: true, post_date: { $gte: from, $lte: to } } },
+        { $match: platformMatch },
         {
           $group: {
             _id: { date: { $dateToString: { format: '%Y-%m-%d', date: '$post_date' } }, platform: '$platform' },
@@ -925,11 +1118,8 @@ const getPlayback = async (req, res) => {
       ]),
     ]);
 
-    const allowedKeys = req.geoScope.canSeeAll ? null : req.geoScope.districtKeys;
-
     const byDate = new Map();
     for (const r of rows) {
-      if (allowedKeys && !allowedKeys.has(r._id.district)) continue;
       const date = r._id.date;
       if (!byDate.has(date)) byDate.set(date, []);
       byDate.get(date).push({
@@ -950,7 +1140,21 @@ const getPlayback = async (req, res) => {
       platformByDate.get(date)[r._id.platform || 'unknown'] = r.count;
     }
 
-    const dates = [...new Set([...byDate.keys(), ...platformByDate.keys()])].sort();
+    // Every calendar day in the window gets a frame, even with zero activity
+    // — previously only days that actually had data were included, which
+    // desynced the scrubber's frame index from real dates and made the
+    // sharp-swing detector compare non-adjacent days.
+    const dates = [];
+    {
+      const curr = new Date(from);
+      const end = new Date(to);
+      curr.setUTCHours(0, 0, 0, 0);
+      end.setUTCHours(0, 0, 0, 0);
+      while (curr <= end) {
+        dates.push(toYMD(curr));
+        curr.setUTCDate(curr.getUTCDate() + 1);
+      }
+    }
     const frames = dates.map((date) => ({
       date,
       districts: byDate.get(date) || [],

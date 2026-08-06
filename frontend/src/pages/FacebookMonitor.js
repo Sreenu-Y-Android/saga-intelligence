@@ -100,33 +100,6 @@ const FilterChip = ({ label, onClear }) => (
     </Badge>
 );
 
-const normalizeListPayload = (payload, preferredKeys = []) => {
-    if (Array.isArray(payload)) return payload;
-    if (!payload || typeof payload !== 'object') return [];
-
-    const keyCandidates = [
-        ...preferredKeys,
-        'content',
-        'items',
-        'results',
-        'posts',
-        'sources',
-        'data'
-    ];
-
-    for (const key of keyCandidates) {
-        if (Array.isArray(payload[key])) return payload[key];
-    }
-
-    if (payload.data && typeof payload.data === 'object') {
-        for (const key of keyCandidates) {
-            if (Array.isArray(payload.data[key])) return payload.data[key];
-        }
-    }
-
-    return [];
-};
-
 const FacebookMonitor = () => {
     const [activeTab, setActiveTab] = useState('overview');
     const [loading, setLoading] = useState(false);
@@ -337,20 +310,16 @@ const FacebookMonitor = () => {
         fetchData();
     }, []);
 
-    const fetchData = async () => {
+    const fetchData = async (showToast = false) => {
         setLoading(true);
         try {
             const [srcRes, postsRes] = await Promise.all([
                 api.get('/sources?platform=facebook'),
                 api.get('/content?platform=facebook')
             ]);
-
-            const normalizedSources = normalizeListPayload(srcRes.data, ['sources']);
-            const normalizedPosts = normalizeListPayload(postsRes.data, ['content', 'posts']);
-
-            setSources(normalizedSources);
-            setPosts(normalizedPosts);
-            if (!selectedSource) toast.success('Facebook data refreshed');
+            setSources(srcRes.data);
+            setPosts(Array.isArray(postsRes.data) ? postsRes.data : (postsRes.data?.items || []));
+            if (showToast) toast.success('Facebook data refreshed');
         } catch (error) {
             console.error('Error fetching Facebook data:', error);
             toast.error('Failed to load Facebook data');
@@ -654,7 +623,7 @@ const FacebookMonitor = () => {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                    <QuickAction icon={RefreshCw} label="Refresh" onClick={fetchData} disabled={loading} className={loading ? "animate-pulse" : ""} />
+                    <QuickAction icon={RefreshCw} label="Refresh" onClick={() => fetchData(true)} disabled={loading} className={loading ? "animate-pulse" : ""} />
                     {selectedSource && (
                         <QuickAction
                             icon={Zap}

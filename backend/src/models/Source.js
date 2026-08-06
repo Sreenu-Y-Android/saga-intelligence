@@ -9,7 +9,7 @@ const sourceSchema = new mongoose.Schema({
   },
   platform: {
     type: String,
-    enum: ['youtube', 'x', 'instagram', 'facebook', 'dark_web', 'web_articles'],
+    enum: ['youtube', 'x', 'instagram', 'facebook'],
     required: true
   },
   identifier: {
@@ -26,6 +26,17 @@ const sourceSchema = new mongoose.Schema({
   category: {
     type: String,
     default: 'unknown'
+  },
+  // RBAC scope: which AC owns this tracked account. Null = party-wide
+  // (visible to super admin and all scoped users).
+  constituency: {
+    type: String,
+    default: null,
+    trim: true
+  },
+  is_party_wide: {
+    type: Boolean,
+    default: false
   },
   priority: {
     type: String,
@@ -91,5 +102,9 @@ const sourceSchema = new mongoose.Schema({
 sourceSchema.index({ platform: 1, identifier: 1 }, { unique: true });
 sourceSchema.index({ id: 1 }); // Used by alert $lookup pipelines
 sourceSchema.index({ category: 1 }); // Used by source category filter
+sourceSchema.index({ created_at: -1 }); // Default sort for getSources
+sourceSchema.index({ is_active: 1, created_at: -1 }); // is_active filter + default sort
+sourceSchema.index({ platform: 1, created_at: -1 }); // platform filter + default sort
+sourceSchema.index({ constituency: 1 }, { sparse: true }); // scope filter
 
 module.exports = mongoose.model('Source', sourceSchema);

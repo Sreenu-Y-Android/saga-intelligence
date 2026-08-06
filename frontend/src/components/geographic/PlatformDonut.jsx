@@ -1,16 +1,6 @@
 import React from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-
-const PLATFORM_META = {
-  x: { label: 'X (Twitter)', color: '#1d9bf0' },
-  twitter: { label: 'X (Twitter)', color: '#1d9bf0' },
-  facebook: { label: 'Facebook', color: '#1877f2' },
-  instagram: { label: 'Instagram', color: '#e1306c' },
-  youtube: { label: 'YouTube', color: '#ff0000' },
-  whatsapp: { label: 'WhatsApp', color: '#25d366' },
-  news: { label: 'News', color: '#8b5cf6' },
-  unknown: { label: 'Other', color: '#94a3b8' },
-};
+import { PLATFORM_META } from './platformScale';
 
 /** "Data Source Distribution" donut — state-wide platform mix. */
 const PlatformDonut = ({ distribution = [], loading }) => {

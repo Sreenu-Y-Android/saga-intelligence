@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -8,23 +8,47 @@ import {
   FileText,
   LayoutPanelTop,
   RefreshCw,
-  Zap
+  Zap,
+  Twitter
 } from 'lucide-react';
 import api from '../lib/api';
 import { Button } from '../components/ui/button';
-import ReportsContent from '../components/ReportsContent';
-import GrievanceWorkflowReports from '../components/grievances/GrievanceWorkflowReports';
-import SuggestionReports from '../components/grievances/SuggestionReports';
-import CriticismReports from '../components/grievances/CriticismReports';
-import UnifiedReportWindow from '../components/reports/UnifiedReportWindow';
-import UnifiedReportsAnalyticsPanel from '../components/reports/UnifiedReportsAnalyticsPanel';
 import { cn } from '../lib/utils';
+
+const ReportsContent = lazy(() => import('../components/ReportsContent'));
+const GrievanceWorkflowReports = lazy(() => import('../components/grievances/GrievanceWorkflowReports'));
+const SuggestionReports = lazy(() => import('../components/grievances/SuggestionReports'));
+const CriticismReports = lazy(() => import('../components/grievances/CriticismReports'));
+const XBulkActions = lazy(() => import('../components/reports/XBulkActions'));
+const UnifiedReportWindow = lazy(() => import('../components/reports/UnifiedReportWindow'));
+const UnifiedReportsAnalyticsPanel = lazy(() => import('../components/reports/UnifiedReportsAnalyticsPanel'));
+
+const PanelSkeleton = () => (
+  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+    <div className="h-6 w-48 animate-pulse rounded bg-slate-100" />
+    <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className="h-20 animate-pulse rounded-xl bg-slate-100" />
+      ))}
+    </div>
+    <div className="mt-4 h-64 animate-pulse rounded-xl bg-slate-100" />
+  </div>
+);
+
+const SectionSkeleton = () => (
+  <div className="space-y-3 p-4">
+    {[0, 1, 2, 3].map((i) => (
+      <div key={i} className="h-20 animate-pulse rounded-xl bg-slate-100" />
+    ))}
+  </div>
+);
 
 const INITIAL_COUNTS = {
   alerts: null,
   grievance: null,
   suggestion: null,
-  criticism: null
+  criticism: null,
+  xactions: null
 };
 
 const SECTIONS = [
@@ -55,6 +79,13 @@ const SECTIONS = [
     description: 'Critical grievance report records',
     icon: Zap,
     tone: 'red'
+  },
+  {
+    key: 'xactions',
+    label: 'X Bulk Actions',
+    description: 'Bulk reply, comment & retweet on X posts',
+    icon: Twitter,
+    tone: 'sky'
   }
 ];
 
@@ -88,7 +119,13 @@ const toneClasses = {
     count: 'text-teal-700 bg-teal-50 border-teal-100',
     active: 'ring-teal-400 border-teal-300 bg-teal-50/40',
     borderAccent: 'group-hover:border-teal-300'
-  } // retained for future use
+  },
+  sky: {
+    iconWrap: 'bg-sky-50 text-sky-700 border-sky-100',
+    count: 'text-sky-700 bg-sky-50 border-sky-100',
+    active: 'ring-sky-400 border-sky-300 bg-sky-50/40',
+    borderAccent: 'group-hover:border-sky-300'
+  }
 };
 
 const parseCount = (value) => {
@@ -149,6 +186,14 @@ const UnifiedReports = () => {
       nextCounts.criticism = parseCount(data?.pagination?.total);
     } else {
       failures.push('criticism');
+    }
+
+    // X Bulk Actions: show connected accounts count as the badge number
+    try {
+      const { data } = await api.get('/x/actions/accounts');
+      nextCounts.xactions = parseCount((data?.accounts || []).length);
+    } catch {
+      nextCounts.xactions = 0;
     }
 
     setCounts(nextCounts);
@@ -219,6 +264,8 @@ const UnifiedReports = () => {
         return <SuggestionReports />;
       case 'criticism':
         return <CriticismReports />;
+      case 'xactions':
+        return <XBulkActions />;
       default:
         return <ReportsContent />;
     }
@@ -242,21 +289,23 @@ const UnifiedReports = () => {
 
       <div className="relative mx-auto max-w-7xl space-y-6">
 
-        <UnifiedReportsAnalyticsPanel
-          data={analyticsData}
-          loading={analyticsLoading}
-          selectedWindow={selectedWindow}
-          onWindowChange={setSelectedWindow}
-          onOpenSection={handleOpenSection}
-          onRefresh={fetchAnalytics}
-          customRange={{ from: customFrom, to: customTo }}
-          onCustomRangeChange={({ from, to }) => {
-            if (typeof from === 'string') setCustomFrom(from);
-            if (typeof to === 'string') setCustomTo(to);
-          }}
-          onApplyCustomRange={handleApplyCustomRange}
-          onClearCustomRange={handleClearCustomRange}
-        />
+        <Suspense fallback={<PanelSkeleton />}>
+          <UnifiedReportsAnalyticsPanel
+            data={analyticsData}
+            loading={analyticsLoading}
+            selectedWindow={selectedWindow}
+            onWindowChange={setSelectedWindow}
+            onOpenSection={handleOpenSection}
+            onRefresh={fetchAnalytics}
+            customRange={{ from: customFrom, to: customTo }}
+            onCustomRangeChange={({ from, to }) => {
+              if (typeof from === 'string') setCustomFrom(from);
+              if (typeof to === 'string') setCustomTo(to);
+            }}
+            onApplyCustomRange={handleApplyCustomRange}
+            onClearCustomRange={handleClearCustomRange}
+          />
+        </Suspense>
 
         {analyticsError ? (
           <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm">
@@ -310,7 +359,7 @@ const UnifiedReports = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
             {SECTIONS.map((section) => {
               const Icon = section.icon;
               const tone = toneClasses[section.tone] || toneClasses.blue;
@@ -349,14 +398,20 @@ const UnifiedReports = () => {
           </div>
         </div>
 
-        <UnifiedReportWindow
-          open={windowOpen}
-          onClose={() => setWindowOpen(false)}
-          title={activeMeta.label}
-          subtitle={activeMeta.description}
-        >
-          {renderSectionContent()}
-        </UnifiedReportWindow>
+        {windowOpen ? (
+          <Suspense fallback={null}>
+            <UnifiedReportWindow
+              open={windowOpen}
+              onClose={() => setWindowOpen(false)}
+              title={activeMeta.label}
+              subtitle={activeMeta.description}
+            >
+              <Suspense fallback={<SectionSkeleton />}>
+                {renderSectionContent()}
+              </Suspense>
+            </UnifiedReportWindow>
+          </Suspense>
+        ) : null}
       </div>
 
     </div>

@@ -1,6 +1,7 @@
 const Report = require('../models/Report');
 const Alert = require('../models/Alert');
 const Content = require('../models/Content');
+const Source = require('../models/Source');
 const Analysis = require('../models/Analysis');
 const cacheService = require('./cacheService');
 
@@ -97,7 +98,7 @@ const createReportFromAlert = async (alertId) => {
  * Get all reports with filtering and pagination.
  */
 const getAllReports = async (filters = {}) => {
-    const { platform, status, search, startDate, endDate, page = 1, limit = 50, keyword, alert_type, risk_level, category } = filters;
+    const { platform, status, search, startDate, endDate, page = 1, limit = 50, keyword, alert_type, risk_level, category, viewMode } = filters;
     const query = {};
 
     if (platform && platform !== 'all') query.platform = platform;
@@ -122,57 +123,176 @@ const getAllReports = async (filters = {}) => {
         alert_type && alert_type !== 'all' ||
         (search && search.includes(' ')); // complex search might hit content text
 
-    let pipeline = [];
+    // SPECIAL MODE: If viewMode is 'profiles_only', return pre-computed top profiles (cached for 1 hour)
+    if (viewMode === 'profiles_only') {
+        // Use a SINGLE cache key for all profiles (no query-specific caching)
+        // This means all filters use the SAME cached profile list
+        const profileCacheKey = 'profiles:all:grouped:v1';
 
-    if (!needsJoinsForFiltering) {
-        // Optimized path: Sort and Paginate Report collection FIRST
-        pipeline.push({ $match: query });
+        try {
+            const cached = await cacheService.get(profileCacheKey);
+            if (cached) {
+                // Return paginated results from cache
+                return cached.slice(skip, skip + limitNum);
+            }
+        } catch (cacheErr) {
+            // Cache miss, proceed to compute
+        }
 
-        // Target handle-based search directly on Report model if simple search
-        if (search) {
-            const searchTerms = search.split(',').map(s => s.trim()).filter(Boolean);
-            if (searchTerms.length > 0) {
-                pipeline.push({
-                    $match: {
-                        $or: [
-                            { serial_number: { $regex: search, $options: 'i' } },
-                            { 'target_user_details.name': { $regex: search, $options: 'i' } },
-                            { 'target_user_details.handle': { $regex: search, $options: 'i' } }
-                        ]
-                    }
-                });
+        // Get all gated alert IDs
+        const gatedAlertsCacheKey = 'gated:alert:ids:v1';
+        let gatedAlertIdSet = null;
+        try {
+            const cached = await cacheService.get(gatedAlertsCacheKey);
+            if (cached) gatedAlertIdSet = new Set(cached);
+        } catch (cacheErr) {
+            // ignore
+        }
+
+        if (!gatedAlertIdSet) {
+            const gatedAlertIds = await Alert.find({ matched_keywords: { $exists: true, $ne: [] } }, { id: 1 }).lean().exec();
+            gatedAlertIdSet = new Set(gatedAlertIds.map(a => a.id));
+            try {
+                await cacheService.set(gatedAlertsCacheKey, Array.from(gatedAlertIdSet), 300);
+            } catch (cacheErr) {
+                // ignore
             }
         }
 
-        pipeline.push({ $sort: { generated_at: -1 } });
-        pipeline.push({ $skip: skip });
-        pipeline.push({ $limit: limitNum });
+        if (gatedAlertIdSet.size === 0) return [];
 
-        // Now add the lookups for only the returned page
-        pipeline.push(
-            {
-                $lookup: {
-                    from: 'alerts',
-                    localField: 'alert_id',
-                    foreignField: 'id',
-                    as: 'alert_data'
-                }
-            },
-            { $unwind: { path: '$alert_data', preserveNullAndEmptyArrays: true } },
-            {
-                $lookup: {
-                    from: 'contents',
-                    localField: 'alert_data.content_id',
-                    foreignField: 'id',
-                    as: 'content_data'
-                }
-            },
-            { $unwind: { path: '$content_data', preserveNullAndEmptyArrays: true } }
-        );
+        // Get ALL reports with gated alert IDs (no additional filters for profiles view)
+        const allReports = await Report.find({
+            alert_id: { $in: Array.from(gatedAlertIdSet) }
+        }).lean().exec();
+
+        if (!allReports || allReports.length === 0) return [];
+
+        // Group by handle in JavaScript
+        const profileMap = new Map();
+        allReports.forEach(report => {
+            const handle = report.target_user_details?.handle;
+            if (!handle) return;
+
+            if (!profileMap.has(handle)) {
+                profileMap.set(handle, {
+                    handle,
+                    name: report.target_user_details?.name,
+                    avatar_url: report.target_user_details?.avatar_url,
+                    alertCount: 0,
+                    latestAlert: report.generated_at
+                });
+            }
+            const profile = profileMap.get(handle);
+            profile.alertCount++;
+            if (new Date(report.generated_at) > new Date(profile.latestAlert)) {
+                profile.latestAlert = report.generated_at;
+            }
+        });
+
+        // Sort by alert count
+        const sortedProfiles = Array.from(profileMap.values())
+            .sort((a, b) => b.alertCount - a.alertCount || new Date(b.latestAlert) - new Date(a.latestAlert));
+
+        // Cache for 1 HOUR (60 minutes) - pre-computed so instant on subsequent requests
+        try {
+            await cacheService.set(profileCacheKey, sortedProfiles, 60);
+        } catch (cacheErr) {
+            // ignore
+        }
+
+        // Return paginated slice
+        return sortedProfiles.slice(skip, skip + limitNum);
+    }
+
+    let pipeline = [];
+
+    // PRE-FETCH: Get alert IDs with matched_keywords for gate filter (with caching to avoid repeated queries)
+    const gatedAlertsCacheKey = 'gated:alert:ids:v1';
+    let gatedAlertIdSet = null;
+    try {
+        const cached = await cacheService.get(gatedAlertsCacheKey);
+        if (cached) {
+            gatedAlertIdSet = new Set(cached);
+        }
+    } catch (cacheErr) {
+        // Cache miss, will query DB
+    }
+
+    if (!gatedAlertIdSet) {
+        const gatedAlertIds = await Alert.find({ matched_keywords: { $exists: true, $ne: [] } }, { id: 1 }).lean();
+        gatedAlertIdSet = new Set(gatedAlertIds.map(a => a.id));
+        // Cache for 5 minutes
+        try {
+            await cacheService.set(gatedAlertsCacheKey, Array.from(gatedAlertIdSet), 300);
+        } catch (cacheErr) {
+            // Cache write failed, continue without caching
+        }
+    }
+
+    if (!needsJoinsForFiltering) {
+        // OPTIMIZED PATH: Simple find + sort + paginate (fastest)
+        if (gatedAlertIdSet.size === 0) return [];
+
+        // Build query object
+        const finalQuery = {
+            ...query,
+            alert_id: { $in: Array.from(gatedAlertIdSet) }
+        };
+
+        // Add search filter if provided
+        if (search) {
+            finalQuery.$or = [
+                { serial_number: { $regex: search, $options: 'i' } },
+                { 'target_user_details.name': { $regex: search, $options: 'i' } },
+                { 'target_user_details.handle': { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        // Direct find query with indexes - FASTEST
+        const reports = await Report.find(finalQuery)
+            .sort({ generated_at: -1 })
+            .skip(skip)
+            .limit(limitNum)
+            .lean()
+            .exec();
+
+        if (!reports || reports.length === 0) return [];
+
+        // Batch load related data AFTER pagination
+        const alertIds = [...new Set(reports.map(r => r.alert_id))];
+        const alertMap = new Map();
+        const contentMap = new Map();
+
+        if (alertIds.length > 0) {
+            const alerts = await Alert.find({ id: { $in: alertIds } }).lean().exec();
+            alerts.forEach(a => alertMap.set(a.id, a));
+
+            const contentIds = [...new Set(alerts.map(a => a.content_id).filter(Boolean))];
+            if (contentIds.length > 0) {
+                const contents = await Content.find({ id: { $in: contentIds } }).lean().exec();
+                contents.forEach(c => contentMap.set(c.id, c));
+            }
+        }
+
+        // Enrich with related data
+        return reports.map(report => ({
+            ...report,
+            alert_data: alertMap.get(report.alert_id) || null,
+            content_data: alertMap.get(report.alert_id) ? contentMap.get(alertMap.get(report.alert_id).content_id) : null
+        }));
     } else {
-        // Legacy path: Joins must happen before filtering
-        pipeline = [
-            { $match: query },
+        // LEGACY PATH: Complex filters with aggregation (must use $lookup for filtering)
+        if (gatedAlertIdSet.size === 0) return [];
+
+        const baseQuery = {
+            ...query,
+            alert_id: { $in: Array.from(gatedAlertIdSet) }
+        };
+
+        // Use aggregation pipeline for complex filtering WITH pagination BEFORE final enrichment
+        const pipeline = [
+            { $match: baseQuery },
             {
                 $lookup: {
                     from: 'alerts',
@@ -181,20 +301,34 @@ const getAllReports = async (filters = {}) => {
                     as: 'alert_data'
                 }
             },
-            { $unwind: { path: '$alert_data', preserveNullAndEmptyArrays: true } },
-            {
-                $lookup: {
-                    from: 'contents',
-                    localField: 'alert_data.content_id',
-                    foreignField: 'id',
-                    as: 'content_data'
-                }
-            },
-            { $unwind: { path: '$content_data', preserveNullAndEmptyArrays: true } }
+            { $unwind: { path: '$alert_data', preserveNullAndEmptyArrays: true } }
         ];
 
+        // Add filters that use alert data
+        if (risk_level && risk_level !== 'all') {
+            pipeline.push({ $match: { 'alert_data.risk_level': risk_level } });
+        }
+
+        if (alert_type && alert_type !== 'all') {
+            if (alert_type === 'risk') {
+                pipeline.push({ $match: { 'alert_data.alert_type': { $in: ['keyword_risk', 'ai_risk', null] } } });
+            } else {
+                pipeline.push({ $match: { 'alert_data.alert_type': alert_type } });
+            }
+        }
+
+        // Add content lookup if needed for filtering
         if (category && category !== 'all') {
             pipeline.push(
+                {
+                    $lookup: {
+                        from: 'contents',
+                        localField: 'alert_data.content_id',
+                        foreignField: 'id',
+                        as: 'content_data'
+                    }
+                },
+                { $unwind: { path: '$content_data', preserveNullAndEmptyArrays: true } },
                 {
                     $lookup: {
                         from: 'sources',
@@ -209,32 +343,36 @@ const getAllReports = async (filters = {}) => {
         }
 
         if (keyword && keyword !== 'all') {
-            pipeline.push({
-                $match: {
-                    'content_data.risk_factors.keyword': { $regex: `^${keyword}`, $options: 'i' }
-                }
-            });
-        }
-
-        if (risk_level && risk_level !== 'all') {
-            pipeline.push({
-                $match: { 'alert_data.risk_level': risk_level }
-            });
-        }
-
-        if (alert_type && alert_type !== 'all') {
-            if (alert_type === 'risk') {
-                pipeline.push({
-                    $match: { 'alert_data.alert_type': { $in: ['keyword_risk', 'ai_risk', null] } }
-                });
-            } else {
-                pipeline.push({
-                    $match: { 'alert_data.alert_type': alert_type }
-                });
+            if (!category) {
+                pipeline.push(
+                    {
+                        $lookup: {
+                            from: 'contents',
+                            localField: 'alert_data.content_id',
+                            foreignField: 'id',
+                            as: 'content_data'
+                        }
+                    },
+                    { $unwind: { path: '$content_data', preserveNullAndEmptyArrays: true } }
+                );
             }
+            pipeline.push({ $match: { 'content_data.risk_factors.keyword': { $regex: `^${keyword}`, $options: 'i' } } });
         }
 
         if (search) {
+            if (!category && !keyword) {
+                pipeline.push(
+                    {
+                        $lookup: {
+                            from: 'contents',
+                            localField: 'alert_data.content_id',
+                            foreignField: 'id',
+                            as: 'content_data'
+                        }
+                    },
+                    { $unwind: { path: '$content_data', preserveNullAndEmptyArrays: true } }
+                );
+            }
             pipeline.push({
                 $match: {
                     $or: [
@@ -247,23 +385,30 @@ const getAllReports = async (filters = {}) => {
             });
         }
 
+        // CRITICAL: Sort and paginate BEFORE final lookups (only load 50 results max)
         pipeline.push(
             { $sort: { generated_at: -1 } },
             { $skip: skip },
             { $limit: limitNum }
         );
-    }
 
-    pipeline.push(
-        {
-            $addFields: {
-                id: '$_id',
-                joined_content_url: '$alert_data.content_url'
-            }
+        // Final content lookup if not already done
+        if (!category && !keyword && !search) {
+            pipeline.push(
+                {
+                    $lookup: {
+                        from: 'contents',
+                        localField: 'alert_data.content_id',
+                        foreignField: 'id',
+                        as: 'content_data'
+                    }
+                },
+                { $unwind: { path: '$content_data', preserveNullAndEmptyArrays: true } }
+            );
         }
-    );
 
-    return await Report.aggregate(pipeline);
+        return await Report.aggregate(pipeline).exec();
+    }
 };
 const updateReport = async (alertId, updateData) => {
     const report = await Report.findOneAndUpdate(
@@ -284,7 +429,36 @@ const getReportStats = async () => {
     const cached = await cacheService.get(cacheKey);
     if (cached) return cached;
 
+    // Pre-fetch gated alert IDs for fast filtering (with caching to avoid repeated queries)
+    const gatedAlertsCacheKey = 'gated:alert:ids:v1';
+    let gatedAlertIdSet = null;
+    try {
+        const cached = await cacheService.get(gatedAlertsCacheKey);
+        if (cached) {
+            gatedAlertIdSet = new Set(cached);
+        }
+    } catch (cacheErr) {
+        // Cache miss, will query DB
+    }
+
+    if (!gatedAlertIdSet) {
+        const gatedAlertIds = await Alert.find({ matched_keywords: { $exists: true, $ne: [] } }, { id: 1 }).lean();
+        gatedAlertIdSet = new Set(gatedAlertIds.map(a => a.id));
+        // Cache for 5 minutes
+        try {
+            await cacheService.set(gatedAlertsCacheKey, Array.from(gatedAlertIdSet), 300);
+        } catch (cacheErr) {
+            // Cache write failed, continue without caching
+        }
+    }
+
     const grouped = await Report.aggregate([
+        // Gate filter using pre-fetched alert IDs (fast $match with $in)
+        {
+            $match: {
+                alert_id: { $in: Array.from(gatedAlertIdSet) }
+            }
+        },
         {
             $group: {
                 _id: { platform: '$platform', status: '$status' },

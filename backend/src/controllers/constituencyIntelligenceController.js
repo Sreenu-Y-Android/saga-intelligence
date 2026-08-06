@@ -20,10 +20,20 @@ const {
   getAllMlas,
   getMlaByConstituency,
   normalizeConstituencyKey,
-  classifyIssues,
-  ISSUE_CATEGORIES,
 } = require('../services/mlaReferenceService');
 const { getVoterProfileByConstituency } = require('../services/voterProfileService');
+const cacheService = require('../services/cacheService');
+
+const CONST_CACHE_TTL = 60;
+const VALID_PLATFORMS = new Set(['x', 'facebook', 'whatsapp', 'instagram', 'youtube']);
+const VALID_SENTIMENTS = new Set(['positive', 'negative', 'moderate']);
+/** Whitelists platform/sentiment against the schema's own enums before they reach a Mongo $match — matches the guard geoIntelController applies for the same class of query-param-injection risk. */
+const sanitizePlatform = (v) => (typeof v === 'string' && VALID_PLATFORMS.has(v) ? v : undefined);
+const sanitizeSentiment = (v) => (typeof v === 'string' && VALID_SENTIMENTS.has(v) ? v : undefined);
+/** Scope identity for cache keys — a scoped caller's row-filtered leaderboard must never be served from a superadmin's cached full roster, or vice versa. */
+const scopeCacheKey = (scope) => (
+  scope && !scope.canSeeAll ? `s:${[...(scope.constituencyKeys || [])].sort().join(',')}` : 'all'
+);
 
 /* RBAC helper: clamp a constituency list to the caller's allowed scope. */
 const scopeMlaList = (mlas, scope) => {
@@ -39,18 +49,38 @@ const isInScope = (constituency, scope) => {
 
 /* ─── helpers ─────────────────────────────────────────────────────── */
 
-const buildBaseMatch = (days) => {
+const buildBaseMatch = (queryOpts) => {
+  const opts = typeof queryOpts === 'object' && queryOpts !== null ? queryOpts : { days: queryOpts };
+  const { days, from, to, topic } = opts;
+  const platform = sanitizePlatform(opts.platform);
+  const sentiment = sanitizeSentiment(opts.sentiment);
+
   const match = {
     is_active: true,
     'detected_location.constituency': { $exists: true, $nin: [null, ''] },
   };
-  const windowDays = Number(days);
-  if (Number.isFinite(windowDays) && windowDays > 0) {
-    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
-    match.post_date = { $gte: since };
+
+  if (from && to) {
+    const since = new Date(from);
+    const toDate = new Date(to);
+    toDate.setHours(23, 59, 59, 999);
+    match.post_date = { $gte: since, $lte: toDate };
+  } else {
+    const windowDays = Number(days);
+    if (Number.isFinite(windowDays) && windowDays > 0) {
+      const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+      match.post_date = { $gte: since };
+    }
   }
+
+  if (platform) match.platform = platform;
+  if (sentiment) match['analysis.sentiment'] = sentiment;
+  if (topic && topic !== 'all' && typeof topic === 'string') match.$or = [{ 'analysis.grievance_type': topic }, { 'analysis.category': topic }];
+
   return match;
 };
+
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Sentiment index in [-100, 100]: net positivity share.
 const sentimentIndex = (pos, neg, total) =>
@@ -64,35 +94,99 @@ const SENTIMENT_BUCKET = (idx, total) => {
   return 'positive';
 };
 
+/**
+ * Merges an existence-check $or into a match that may already carry its own
+ * $or (e.g. from an active Category filter in buildBaseMatch) — combining
+ * via $and rather than overwriting, same pattern used elsewhere in the app
+ * (grievanceController's addLocationOrFilter, scopeMiddleware's mergeFilter)
+ * for exactly this "two independent $or conditions" situation.
+ */
+const mergeExistsOr = (match, existsOr) => {
+  if (match.$or) {
+    const { $or, ...rest } = match;
+    return { ...rest, $and: [...(match.$and || []), { $or }, { $or: existsOr }] };
+  }
+  return { ...match, $or: existsOr };
+};
+
+/**
+ * Top issues for a match scope, aggregated from the REAL AI-classified
+ * category fields (analysis.grievance_type / analysis.category) — not a
+ * local keyword lexicon. A keyword scan of raw text produces counts that
+ * don't correspond to any value actually stored in the database, so a "Top
+ * Issue" tag built from it can never reliably filter the Grievances page by
+ * that same category; this aggregates the literal field the Grievances page
+ * itself filters on, so a tag's topic value is guaranteed to exist there.
+ */
+const computeTopIssues = async (match, limit = 8) => {
+  const scopedMatch = mergeExistsOr(match, [
+    { 'analysis.grievance_type': { $exists: true, $nin: [null, ''] } },
+    { 'analysis.category': { $exists: true, $nin: [null, ''] } },
+  ]);
+  const rows = await Grievance.aggregate([
+    { $match: scopedMatch },
+    { $project: { topic: { $ifNull: ['$analysis.grievance_type', '$analysis.category'] } } },
+    { $match: { topic: { $nin: [null, ''] } } },
+    { $group: { _id: '$topic', count: { $sum: 1 } } },
+    { $sort: { count: -1 } },
+    { $limit: limit },
+  ]);
+  return rows.map((r) => ({ issue: r._id, count: r.count }));
+};
+
 /* ─── GET /api/constituency-intel/leaderboard ─────────────────────────
  * Ranked list of every constituency with sentiment + grievance pressure.
- * Query: ?party=INC&alliance=INDIA&district=NALGONDA&sort=negative|volume|index
+ * Query: ?party=INC&alliance=Government&district=HYDERABAD&sort=negative|volume|index
  *        &order=asc|desc&days=30&limit=200
  */
 const getLeaderboard = async (req, res) => {
   try {
-    const { party, alliance, district, sort = 'negative', order, days, limit } = req.query;
+    const { party, alliance, district, sort = 'negative', order, days, limit, from, to, platform, sentiment, topic } = req.query;
 
-    const agg = await Grievance.aggregate([
-      { $match: buildBaseMatch(days) },
-      {
-        $group: {
-          _id: '$detected_location.constituency',
-          total: { $sum: 1 },
-          positive: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'positive'] }, 1, 0] } },
-          negative: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'negative'] }, 1, 0] } },
-          neutral: { $sum: { $cond: [{ $in: ['$analysis.sentiment', ['neutral', 'moderate']] }, 1, 0] } },
-          high_priority: {
-            $sum: { $cond: [{ $in: ['$complaint.priority', ['high', 'critical']] }, 1, 0] },
+    // Cached WITHOUT scope in the key — the aggregation itself carries no
+    // per-user restriction (it's unscoped raw stats keyed only by the date/
+    // platform/sentiment/topic window), and scope is applied fresh on every
+    // request via `scopeMlaList` below, so one cache entry safely serves
+    // every caller's scope.
+    const cacheKey = `cintel:leaderboard:v1:${days || ''}:${from || ''}:${to || ''}:${platform || ''}:${sentiment || ''}:${topic || ''}`;
+    let agg = await cacheService.get(cacheKey);
+    if (!agg) {
+      agg = await Grievance.aggregate([
+        { $match: buildBaseMatch(req.query) },
+        {
+          $group: {
+            _id: '$detected_location.constituency',
+            total: { $sum: 1 },
+            positive: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'positive'] }, 1, 0] } },
+            negative: { $sum: { $cond: [{ $eq: ['$analysis.sentiment', 'negative'] }, 1, 0] } },
+            neutral: { $sum: { $cond: [{ $in: ['$analysis.sentiment', ['neutral', 'moderate']] }, 1, 0] } },
+            high_priority: {
+              $sum: { $cond: [{ $in: ['$complaint.priority', ['high', 'critical']] }, 1, 0] },
+            },
           },
         },
-      },
-    ]);
+      ]);
+      await cacheService.set(cacheKey, agg, CONST_CACHE_TTL);
+    }
 
-    // Index aggregation results by normalized constituency key.
+    // Index aggregation results by normalized constituency key, SUMMING
+    // (not overwriting) when two raw casing/whitespace variants of the same
+    // seat normalize to the same key — the Mongo $group above groups on the
+    // raw, unnormalized string, so two variants produce two separate rows
+    // here; a plain Map.set() would silently drop one variant's grievances.
     const statsByKey = new Map();
     for (const row of agg) {
-      statsByKey.set(normalizeConstituencyKey(row._id), row);
+      const key = normalizeConstituencyKey(row._id);
+      const existing = statsByKey.get(key);
+      if (!existing) {
+        statsByKey.set(key, { ...row });
+      } else {
+        existing.total += row.total;
+        existing.positive += row.positive;
+        existing.negative += row.negative;
+        existing.neutral += row.neutral;
+        existing.high_priority += row.high_priority;
+      }
     }
 
     // Start from the full MLA roster so every seat appears, even with 0 data.
@@ -160,7 +254,7 @@ const getSummary = async (req, res) => {
     const { days } = req.query;
     const baseMatch = buildBaseMatch(days);
 
-    const [byParty, totals, recentNeg] = await Promise.all([
+    const [byParty, totals, topIssues] = await Promise.all([
       // Party-wise sentiment via constituency join done in JS below.
       Grievance.aggregate([
         { $match: baseMatch },
@@ -185,12 +279,9 @@ const getSummary = async (req, res) => {
           },
         },
       ]),
-      // Sample of recent negative grievance text for statewide issue trends.
-      Grievance.find({ ...baseMatch, 'analysis.sentiment': 'negative' })
-        .select('content.text analysis.category')
-        .sort({ post_date: -1 })
-        .limit(1500)
-        .lean(),
+      // Statewide top issues among negative grievances, from the real
+      // AI-classified category fields (see computeTopIssues doc comment).
+      computeTopIssues({ ...baseMatch, 'analysis.sentiment': 'negative' }, 10),
     ]);
 
     // Party-wise rollup (join constituency → party).
@@ -211,16 +302,6 @@ const getSummary = async (req, res) => {
       ...p,
       sentiment_index: sentimentIndex(p.positive, p.negative, p.grievances),
     })).sort((a, b) => b.grievances - a.grievances);
-
-    // Statewide top issues from recent negative sample.
-    const issueCounts = Object.fromEntries(ISSUE_CATEGORIES.map((c) => [c, 0]));
-    for (const g of recentNeg) {
-      for (const cat of classifyIssues(g?.content?.text)) issueCounts[cat] += 1;
-    }
-    const topIssues = Object.entries(issueCounts)
-      .filter(([, n]) => n > 0)
-      .map(([issue, count]) => ({ issue, count }))
-      .sort((a, b) => b.count - a.count);
 
     const t = totals[0] || { total: 0, positive: 0, negative: 0, neutral: 0 };
 
@@ -263,11 +344,31 @@ const getConstituencyDetail = async (req, res) => {
     }
 
     const baseMatch = {
-      ...buildBaseMatch(days),
-      'detected_location.constituency': mla ? new RegExp(`^${mla.constituency}$`, 'i') : decoded,
+      // buildBaseMatch(req.query) — not buildBaseMatch(days) — so from/to/
+      // platform/sentiment/topic (everything the shared filter bar sends)
+      // actually apply; previously only `days` was read, and since the
+      // frontend never sends it, no date bound applied at all and this
+      // endpoint silently aggregated all-time history.
+      ...buildBaseMatch(req.query),
+      // Reserved seats store literal parentheses in their name, e.g.
+      // "AMALAPURAM (SC)" — escape regex metacharacters before compiling,
+      // or "(SC)" is parsed as a capture group and the pattern never matches
+      // the real stored value, silently returning zero data for every
+      // SC/ST seat.
+      'detected_location.constituency': mla ? new RegExp(`^${escapeRegex(mla.constituency)}$`, 'i') : decoded,
     };
 
-    const [counts, recent] = await Promise.all([
+    // Cache is safe without a scope segment — the isInScope 403 guard above
+    // already runs before this point, so only a caller already authorized
+    // for this exact seat can ever reach (or benefit from) the cached entry.
+    // v2: top_issues now comes from the real AI-classified category fields
+    // instead of a keyword lexicon — versioned so a cached v1 entry (with the
+    // old, unfilterable issue labels) can't be served stale.
+    const cacheKey = `cintel:detail:v2:${normalizeConstituencyKey(decoded)}:${JSON.stringify(req.query)}`;
+    const cached = await cacheService.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [counts, recent, topIssues] = await Promise.all([
       Grievance.aggregate([
         { $match: baseMatch },
         {
@@ -286,19 +387,12 @@ const getConstituencyDetail = async (req, res) => {
         .sort({ post_date: -1 })
         .limit(400)
         .lean(),
+      // From the real AI-classified category fields, not a keyword scan —
+      // see computeTopIssues doc comment.
+      computeTopIssues(baseMatch, 8),
     ]);
 
     const c = counts[0] || { total: 0, positive: 0, negative: 0, neutral: 0, high_priority: 0 };
-
-    // Top issues from this seat's grievance text.
-    const issueCounts = Object.fromEntries(ISSUE_CATEGORIES.map((cat) => [cat, 0]));
-    for (const g of recent) {
-      for (const cat of classifyIssues(g?.content?.text)) issueCounts[cat] += 1;
-    }
-    const topIssues = Object.entries(issueCounts)
-      .filter(([, n]) => n > 0)
-      .map(([issue, count]) => ({ issue, count }))
-      .sort((a, b) => b.count - a.count);
 
     const recentNegative = recent
       .filter((g) => g?.analysis?.sentiment === 'negative')
@@ -312,7 +406,7 @@ const getConstituencyDetail = async (req, res) => {
         tweet_id: g.tweet_id,
       }));
 
-    return res.json({
+    const payload = {
       success: true,
       window_days: Number(days) || null,
       mla: mla || { constituency: decoded },
@@ -323,7 +417,9 @@ const getConstituencyDetail = async (req, res) => {
       },
       top_issues: topIssues,
       recent_negative: recentNegative,
-    });
+    };
+    await cacheService.set(cacheKey, payload, CONST_CACHE_TTL);
+    return res.json(payload);
   } catch (err) {
     console.error('[constituencyIntel] detail error:', err.message);
     return res.status(500).json({ success: false, message: 'Failed to build constituency detail' });
@@ -340,20 +436,64 @@ const getConstituencyDetail = async (req, res) => {
 const getConstituencyNarrative = async (req, res) => {
   try {
     const { constituency } = req.params;
-    const { days } = req.query;
+    const decodedForScope = decodeURIComponent(constituency || '');
+    // RBAC: same guard getConstituencyDetail applies — without this, a
+    // seat-scoped MLA/MP could pull narrative intelligence for ANY
+    // constituency, not just their own, by hitting this endpoint directly.
+    if (!isInScope(decodedForScope, req.scope)) {
+      return res.status(403).json({
+        success: false,
+        code: 'CONSTITUENCY_FORBIDDEN',
+        message: 'You are not authorized to view this constituency',
+      });
+    }
+
+    const { days, from, to, platform, sentiment, topic } = req.query;
+    let windowDays = Number(days) > 0 ? Number(days) : 30;
+    // `since`/`toDate` must be scoped to this request — without `let`, an
+    // assignment to an undeclared identifier creates an implicit global in
+    // this non-strict CommonJS module, so a concurrent request that takes
+    // the other branch could silently read a stale value left behind by a
+    // completely unrelated prior request.
+    let since;
+    let toDate;
+    if (from && to) {
+      since = new Date(from);
+      toDate = new Date(to);
+      toDate.setHours(23, 59, 59, 999);
+      windowDays = Math.round((toDate.getTime() - since.getTime()) / 86400000);
+    } else {
+      since = new Date(Date.now() - windowDays * 86400000);
+    }
+    const prevSince = new Date(since.getTime() - (toDate ? (toDate.getTime() - since.getTime()) : 30 * 86400000));
+
     const decoded = decodeURIComponent(constituency || '');
     const mla = getMlaByConstituency(decoded);
 
-    if (!isInScope(decoded, req.scope)) {
-      return res.status(403).json({ success: false, code: 'CONSTITUENCY_FORBIDDEN', message: 'Not authorized to view this constituency' });
-    }
+    // Safe without a scope segment for the same reason as getConstituencyDetail
+    // — the isInScope 403 guard above already runs first.
+    const narrativeCacheKey = `cintel:narrative:v1:${normalizeConstituencyKey(decoded)}:${JSON.stringify(req.query)}`;
+    const cachedNarrative = await cacheService.get(narrativeCacheKey);
+    if (cachedNarrative) return res.json(cachedNarrative);
 
-    const windowDays = Number(days) > 0 ? Number(days) : 30;
-    const since = new Date(Date.now() - windowDays * 86400000);
-    const prevSince = new Date(Date.now() - 2 * windowDays * 86400000);
-    const constFilter = mla ? new RegExp(`^${mla.constituency}$`, 'i') : decoded;
+    const targetConst = mla ? mla.constituency : decoded;
+    const constFilter = {
+      $in: [
+        targetConst,
+        targetConst.toUpperCase(),
+        targetConst.toLowerCase(),
+        targetConst.charAt(0).toUpperCase() + targetConst.slice(1).toLowerCase(),
+      ]
+    };
 
     const baseMatch = { is_active: true, 'detected_location.constituency': constFilter, post_date: { $gte: since } };
+    if (toDate) baseMatch.post_date.$lte = toDate;
+    const safePlatform = sanitizePlatform(platform);
+    const safeSentiment = sanitizeSentiment(sentiment);
+    if (safePlatform) baseMatch.platform = safePlatform;
+    if (safeSentiment) baseMatch['analysis.sentiment'] = safeSentiment;
+    if (topic && topic !== 'all' && typeof topic === 'string') baseMatch.$or = [{ 'analysis.grievance_type': topic }, { 'analysis.category': topic }];
+
     const prevMatch = { is_active: true, 'detected_location.constituency': constFilter, post_date: { $gte: prevSince, $lt: since } };
 
     const sentimentGroup = {
@@ -458,7 +598,7 @@ const getConstituencyNarrative = async (req, res) => {
     if (negTop && pct(cur.negative, cur.total) >= 25) insights.push(`Elevated negative sentiment — “${negTop.name}” is the main driver; consider a response.`);
     if (cur.total === 0) insights.push('No social mentions detected for this constituency in the selected window.');
 
-    return res.json({
+    const narrativePayload = {
       success: true,
       constituency: mla ? mla.constituency : decoded,
       mla: mla ? { name: mla.mla, party: mla.party, alliance: mla.alliance } : null,
@@ -497,7 +637,9 @@ const getConstituencyNarrative = async (req, res) => {
         reach: i.reach || 0,
       })),
       ai_insights: insights,
-    });
+    };
+    await cacheService.set(narrativeCacheKey, narrativePayload, CONST_CACHE_TTL);
+    return res.json(narrativePayload);
   } catch (err) {
     console.error('[constituencyIntel] narrative error:', err.message);
     return res.status(500).json({ success: false, message: 'Failed to build narrative intelligence' });
@@ -510,17 +652,49 @@ const getConstituencyNarrative = async (req, res) => {
  * endpoint can fetch two seats in one request. Every figure is derived
  * live from the Grievance collection — nothing illustrative.
  */
-const analyzeSeat = async (rawConstituency, days) => {
+const analyzeSeat = async (rawConstituency, queryOpts) => {
   const decoded = decodeURIComponent(rawConstituency || '');
   const mla = getMlaByConstituency(decoded);
   const constName = mla ? mla.constituency : decoded;
 
-  const windowDays = Number(days) > 0 ? Number(days) : 90;
-  const since = new Date(Date.now() - windowDays * 86400000);
-  const prevSince = new Date(Date.now() - 2 * windowDays * 86400000);
-  const constFilter = mla ? new RegExp(`^${mla.constituency}$`, 'i') : decoded;
+  const opts = typeof queryOpts === 'object' && queryOpts !== null ? queryOpts : { days: queryOpts };
+  const { days, from, to, platform, sentiment, topic } = opts;
+  let since, toDate;
+  // `windowDays` must be declared in the function's outer scope, not inside
+  // the `else` branch — it's read in the return value below regardless of
+  // which branch ran. Previously this was only ever called with a bare
+  // `days` number (never from/to), so the `if` branch was unreachable and
+  // this bug was latent; threading from/to through (to fix the Comparative
+  // sub-tab's filters) exposed it as a ReferenceError.
+  let windowDays = Number(days) > 0 ? Number(days) : 90;
+  if (from && to) {
+    since = new Date(from);
+    toDate = new Date(to);
+    toDate.setHours(23, 59, 59, 999);
+    windowDays = Math.round((toDate.getTime() - since.getTime()) / 86400000);
+  } else {
+    since = new Date(Date.now() - windowDays * 86400000);
+  }
+  const prevSince = new Date(since.getTime() - (toDate ? (toDate.getTime() - since.getTime()) : 90 * 86400000));
+
+  const targetConst = mla ? mla.constituency : decoded;
+  const constFilter = {
+    $in: [
+      targetConst,
+      targetConst.toUpperCase(),
+      targetConst.toLowerCase(),
+      targetConst.charAt(0).toUpperCase() + targetConst.slice(1).toLowerCase(),
+    ]
+  };
 
   const baseMatch = { is_active: true, 'detected_location.constituency': constFilter, post_date: { $gte: since } };
+  if (toDate) baseMatch.post_date.$lte = toDate;
+  const safePlatform = sanitizePlatform(platform);
+  const safeSentiment = sanitizeSentiment(sentiment);
+  if (safePlatform) baseMatch.platform = safePlatform;
+  if (safeSentiment) baseMatch['analysis.sentiment'] = safeSentiment;
+  if (topic && topic !== 'all' && typeof topic === 'string') baseMatch.$or = [{ 'analysis.grievance_type': topic }, { 'analysis.category': topic }];
+
   const prevMatch = { is_active: true, 'detected_location.constituency': constFilter, post_date: { $gte: prevSince, $lt: since } };
 
   const countsGroup = {
@@ -533,7 +707,7 @@ const analyzeSeat = async (rawConstituency, days) => {
     reach: { $sum: '$engagement.views' },
   };
 
-  const [curAgg, prevAgg, volume, platforms, influencers, recent] = await Promise.all([
+  const [curAgg, prevAgg, volume, platforms, influencers, recent, topIssues] = await Promise.all([
     Grievance.aggregate([{ $match: baseMatch }, { $group: countsGroup }]),
     Grievance.aggregate([{ $match: prevMatch }, { $group: countsGroup }]),
     Grievance.aggregate([
@@ -574,6 +748,9 @@ const analyzeSeat = async (rawConstituency, days) => {
       .sort({ post_date: -1 })
       .limit(600)
       .lean(),
+    // From the real AI-classified category fields, not a keyword scan —
+    // see computeTopIssues doc comment.
+    computeTopIssues(baseMatch, 8),
   ]);
 
   const cur = curAgg[0] || { total: 0, positive: 0, negative: 0, neutral: 0, high_priority: 0, reach: 0 };
@@ -585,13 +762,14 @@ const analyzeSeat = async (rawConstituency, days) => {
   const curScore = scoreOf(cur);
   const prevScore = scoreOf(prev);
 
-  // Top civic issues from this seat's grievance text.
-  const issueCounts = Object.fromEntries(ISSUE_CATEGORIES.map((c) => [c, 0]));
+  // Trending topics/hashtags from this seat's grievance text — already
+  // sourced from the real analysis.grievance_type/category fields (unlike
+  // top_issues before this fix, this loop was never using the keyword
+  // lexicon), so it's left as-is.
   const topicCounts = {};
   const hashtagCounts = {};
   const HASHTAG_RE = /#[\wऀ-ॿఀ-౿]+/g;
   for (const g of recent) {
-    for (const cat of classifyIssues(g?.content?.text)) issueCounts[cat] += 1;
     const cat = g?.analysis?.grievance_type || g?.analysis?.category;
     if (cat) topicCounts[cat] = (topicCounts[cat] || 0) + 1;
     const tags = (g?.content?.text || '').match(HASHTAG_RE) || [];
@@ -604,10 +782,6 @@ const analyzeSeat = async (rawConstituency, days) => {
     .map(([k, v]) => ({ name: k, count: v }))
     .sort((a, b) => b.count - a.count)
     .slice(0, n);
-  const topIssues = Object.entries(issueCounts)
-    .filter(([, n]) => n > 0)
-    .map(([issue, count]) => ({ issue, count }))
-    .sort((a, b) => b.count - a.count);
 
   const PLATFORM_LABELS = { x: 'X (Twitter)', twitter: 'X (Twitter)', facebook: 'Facebook', youtube: 'YouTube', instagram: 'Instagram', whatsapp: 'WhatsApp' };
   const platformMix = platforms.map((p) => ({
@@ -680,13 +854,13 @@ const analyzeSeat = async (rawConstituency, days) => {
 
 /* ─── GET /api/constituency-intel/compare ─────────────────────────────
  * Head-to-head comparison of two constituencies/candidates.
- * Query: ?a=Kodangal&b=Gajwel&days=90
+ * Query: ?a=Mangalagiri&b=Kuppam&days=90
  * Returns each seat's full analytics bundle plus a computed, per-metric
  * "who's ahead" head-to-head and an overall verdict.
  */
 const getComparison = async (req, res) => {
   try {
-    const { a, b, days } = req.query;
+    const { a, b, days, from, to, platform, sentiment, topic } = req.query;
     if (!a || !b) {
       return res.status(400).json({ success: false, message: 'Both ?a and ?b constituencies are required' });
     }
@@ -702,9 +876,13 @@ const getComparison = async (req, res) => {
     // sentiment/issues/narrative for the two seats (the same class of figures
     // shown on the profile), never row-level grievances or restricted data,
     // so it does not widen access to sensitive per-record content.
+    // Forward the full filter set (not just `days`) so Comparative honors the
+    // same date range/platform/sentiment/topic filters as every other tab —
+    // previously only `days` reached analyzeSeat and the rest were dropped.
+    const opts = { days, from, to, platform, sentiment, topic };
     const [seatA, seatB] = await Promise.all([
-      analyzeSeat(decodedA, days),
-      analyzeSeat(decodedB, days),
+      analyzeSeat(decodedA, opts),
+      analyzeSeat(decodedB, opts),
     ]);
 
     // Per-metric head-to-head. dir = 'higher' means a bigger value wins.

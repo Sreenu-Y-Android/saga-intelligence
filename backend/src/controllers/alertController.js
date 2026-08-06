@@ -1,6 +1,7 @@
 const axios = require('axios');
 const Alert = require('../models/Alert');
 const Content = require('../models/Content');
+const Keyword = require('../models/Keyword');
 const { createAuditLog } = require('../services/auditService');
 const { fetchTweetDetail } = require('../services/rapidApiXService');
 const YouTubeService = require('../services/youtube.service');
@@ -11,9 +12,123 @@ const cacheService = require('../services/cacheService');
 const translationService = require('../services/translationService');
 const cheerio = require('cheerio');
 const { v4: uuidv4 } = require('uuid');
-const { isSpecialUser } = require('../config/specialAccess');
 
 const escapeRegex = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const ALERT_STATUS_VALUES = ['active', 'false_positive', 'acknowledged', 'escalated'];
+
+// Raw `llm_analysis.grievance_type` values that get merged and displayed
+// under one canonical topic label (see normalizeTopicName in
+// getTopicClassificationCounts, which this must stay in sync with). The
+// stored value is NEVER literally "General Complaint" — it's always one of
+// these — so any query filtering by the canonical label must match all of
+// its aliases, not the label itself, or it returns zero rows.
+const TOPIC_ALIASES = {
+  'General Complaint': ['General Complaint', 'Government Praise', 'Govt Praise', 'General Praise'],
+};
+
+// Builds the `llm_analysis.grievance_type` query fragment for a topic filter,
+// expanding to every raw alias when the requested topic is a canonical label.
+const buildTopicClassificationQuery = (topicClassification) => {
+  const aliases = TOPIC_ALIASES[topicClassification];
+  if (aliases) {
+    return { $in: aliases.map((a) => new RegExp(`^${escapeRegex(a)}$`, 'i')) };
+  }
+  return { $regex: `^${escapeRegex(topicClassification)}$`, $options: 'i' };
+};
+
+// Negative/Moderate/Positive filtering must reflect stance RELATIVE TO the client leadership
+// (llm_analysis.target_sentiment) — NOT risk_level, which is shared with
+// non-political alert types (velocity/viral spikes) that never ran through
+// the political-sentiment pipeline. An alert only lands in a bucket once its
+// target_sentiment is confirmed; alerts with no stored target_sentiment match none
+// of these three filters. 'neutral' is a legacy alias for 'moderate'.
+const TARGET_SENTIMENT_QUERY_VALUES = {
+  negative: ['negative'],
+  moderate: ['moderate', 'neutral'],
+  positive: ['positive'],
+};
+const applyTargetSentimentFilter = (query, sentiment) => {
+  const values = TARGET_SENTIMENT_QUERY_VALUES[sentiment];
+  if (values) query['llm_analysis.target_sentiment'] = { $in: values };
+};
+const parseDateBoundary = (value, { end = false } = {}) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  if (end) parsed.setHours(23, 59, 59, 999);
+  else parsed.setHours(0, 0, 0, 0);
+  return parsed;
+};
+
+// Match content against configured keywords and return matched keyword objects
+const matchConfiguredKeywords = async (contentText = '') => {
+  try {
+    if (!contentText || typeof contentText !== 'string') return [];
+
+    // Fetch all active keywords from the database
+    const keywords = await Keyword.find({ is_active: true }).lean();
+    if (!keywords || keywords.length === 0) return [];
+
+    const matched = [];
+    const matchedKeywordIds = new Set(); // Track matched keywords to avoid duplicates
+
+    // Check each keyword for a match
+    for (const kw of keywords) {
+      if (matchedKeywordIds.has(kw.id)) continue; // Skip if already matched
+
+      const keyword = String(kw.keyword).trim();
+      // Check for non-Latin scripts: Devanagari (Hindi), Telugu, Tamil, Kannada, Malayalam
+      const isNonLatin = /[ऀ-ॿఀ-౿஀-௿ಀ-೿ഀ-ൿ]/.test(keyword);
+
+      let isMatch = false;
+
+      if (isNonLatin) {
+        // For non-Latin scripts (Telugu, Hindi, etc.), use simple substring matching
+        // as word boundaries don't work reliably
+        isMatch = contentText.includes(keyword);
+      } else {
+        // For Latin scripts, use word-boundary matching
+        const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const patterns = [
+          new RegExp(`\\b${escapedKeyword}\\b`, 'i'),        // Whole word match
+          new RegExp(`#${escapedKeyword}`, 'i'),             // Hashtag
+          new RegExp(`@${escapedKeyword}`, 'i')              // @mention
+        ];
+        isMatch = patterns.some(p => p.test(contentText));
+      }
+
+      if (isMatch) {
+        matched.push({
+          keyword_id: kw.id,
+          keyword: kw.keyword,
+          category: kw.category,
+          language: kw.language,
+          weight: kw.weight
+        });
+        matchedKeywordIds.add(kw.id);
+      }
+    }
+
+    return matched;
+  } catch (error) {
+    console.error('[Alerts] Keyword matching error:', error.message);
+    return [];
+  }
+};
+
+const getAllowedAlertStatuses = (req) => {
+  if (req?.rbac?.isSuperAdmin) return ALERT_STATUS_VALUES;
+
+  const features = req?.rbac?.permissions?.['/alerts']?.features;
+  if (!Array.isArray(features)) {
+    // If no specific features configured but user has page access, default to 'active'
+    return ['active'];
+  }
+
+  const filtered = ALERT_STATUS_VALUES.filter((status) => features.includes(status));
+  // If user has features but they don't match any status, default to 'active'
+  return filtered.length > 0 ? filtered : ['active'];
+};
 
 const normalizeIdentifier = (platform, identifier) => {
   if (!identifier) return '';
@@ -56,17 +171,14 @@ const archiveAlertMediaForContent = async (contentDetails = {}) => {
 
     if (platform === 'x') {
       if (mediaHasS3Gaps(media)) {
-        patch.media = await archiveTwitterMedia(media, contentDetails.content_id || contentId, {
-          postUrl: contentDetails.content_url
-        });
+        patch.media = await archiveTwitterMedia(media, contentDetails.content_id || contentId);
       }
       if (mediaHasS3Gaps(quotedMedia)) {
         patch.quoted_content = {
           ...(contentDetails.quoted_content || {}),
           media: await archiveTwitterMedia(
             quotedMedia,
-            `${contentDetails.content_id || contentId}_quoted_${contentDetails?.quoted_content?.author_handle || 'unknown'}`,
-            { postUrl: contentDetails.content_url }
+            `${contentDetails.content_id || contentId}_quoted_${contentDetails?.quoted_content?.author_handle || 'unknown'}`
           )
         };
       }
@@ -117,9 +229,15 @@ const writeCache = async (key, value, ttl = 20) => cacheService.set(key, value, 
 const clearAlertCache = async () => {
   await cacheService.invalidatePrefix('alerts:list:v2');
   await cacheService.invalidatePrefix('alerts:stats:v2');
+  await cacheService.invalidatePrefix('alerts:topic-counts:v1');
   await cacheService.invalidatePrefix('dashboard:v2');
   await cacheService.invalidatePrefix('alert_summary');
   await cacheService.invalidatePrefix('unread_count');
+  // Bump the list-cache version so a GET already in flight when this ran
+  // (e.g. the background checkForNewAlerts poll overlapping a delete) can't
+  // write stale pre-delete data back into the cache after invalidatePrefix
+  // already cleared it above.
+  await cacheService.bumpVersion('alerts:list');
 };
 
 // @desc    Get alerts
@@ -130,6 +248,7 @@ const getAlerts = async (req, res) => {
     const {
       status,
       risk_level,
+      sentiment,
       search,
       platform,
       startDate,
@@ -137,18 +256,50 @@ const getAlerts = async (req, res) => {
       alert_type,
       keyword,
       category,
+      topic_classification,
       page = 1,
       limit = 20
     } = req.query;
 
     const query = {};
 
-    // Status Filter
+    // RBAC row-level scope: a scoped MLA / MP / NL user can only see alerts
+    // whose title / description / matched keywords reference their seat. We
+    // intersect that text against the existing search and status filters.
+    if (req.scope && !req.scope.canSeeAll) {
+      const allowedSeats = req.scope.constituencies || [];
+      if (allowedSeats.length === 0) {
+        return res.status(200).json({ alerts: [], total: 0, page: 1, hasMore: false });
+      }
+      const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const seatRegex = new RegExp(allowedSeats.map(escapeRx).join('|'), 'i');
+      const scopeOr = [
+        { title: seatRegex },
+        { description: seatRegex },
+        { matched_keywords_normalized: seatRegex },
+      ];
+      query.$and = (query.$and || []).concat([{ $or: scopeOr }]);
+    }
+
+    const allowedStatuses = getAllowedAlertStatuses(req);
+
+    // Gate filter: only apply for scoped (non-admin) users. Superadmin / party
+    // leadership see every alert in the collection regardless of whether the
+    // matched_keywords array has been populated yet.
+    if (req.scope && !req.scope.canSeeAll) {
+      query.$and = (query.$and || []).concat([{
+        $or: [
+          { matched_keywords: { $exists: true, $ne: [] } },
+          { matched_keywords_normalized: { $exists: true, $ne: [] } },
+        ],
+      }]);
+    }
+
+    // Status Filter - only apply if a specific status is requested
     if (status && status !== 'all') {
       query.status = status;
-    } else if (!status) {
-      query.status = 'active';
     }
+    // For status='all' or no status, don't filter by status to show all alerts
 
     // Source ID Filter (for POI specific alerts)
     if (req.query.source_id) {
@@ -168,6 +319,9 @@ const getAlerts = async (req, res) => {
     // Risk Level Filter
     if (risk_level && risk_level !== 'all') query.risk_level = risk_level;
 
+    // Client-relative Sentiment Filter (Negative/Moderate/Positive pills)
+    if (sentiment && sentiment !== 'all') applyTargetSentimentFilter(query, sentiment);
+
     // Platform Filter
     if (platform && platform !== 'all') query.platform = platform;
 
@@ -180,11 +334,19 @@ const getAlerts = async (req, res) => {
       }
     }
 
-    // Date Range Filter
+    // Topic Classification Filter (from llm_analysis.grievance_type)
+    if (topic_classification && topic_classification !== 'all') {
+      query['llm_analysis.grievance_type'] = buildTopicClassificationQuery(topic_classification);
+    }
+
+    // Date Range Filter — filter by content publish date (actual post date on platform)
     if (startDate || endDate) {
-      query.created_at = {};
-      if (startDate) query.created_at.$gte = new Date(startDate);
-      if (endDate) query.created_at.$lte = new Date(endDate);
+      query.published_at = {};
+      const start = parseDateBoundary(startDate);
+      const end = parseDateBoundary(endDate, { end: true });
+      if (start) query.published_at.$gte = start;
+      if (end) query.published_at.$lte = end;
+      if (Object.keys(query.published_at).length === 0) delete query.published_at;
     }
 
     const includeStats = String(req.query.includeStats || '').toLowerCase() === 'true';
@@ -207,10 +369,12 @@ const getAlerts = async (req, res) => {
     // to avoid expensive $lookup pipelines that blow the 32 MB sort memory limit.
     const Source = require('../models/Source');
 
+    const listCacheVersion = await cacheService.getVersion('alerts:list');
     const cacheKey = getCacheKey('alerts:list:v2', {
       ...req.query,
       includeStats,
-      cursor: cursor || ''
+      cursor: cursor || '',
+      _v: listCacheVersion
     });
     const cachedResponse = await readCache(cacheKey);
     if (cachedResponse) return res.status(200).json(cachedResponse);
@@ -305,7 +469,8 @@ const getAlerts = async (req, res) => {
     let total;
 
     if (needsLookup) {
-      // Lightweight aggregation: only $lookup content for text search, no source lookup
+      // Search across alert fields plus joined content/source metadata so
+      // operators can find an alert by any visible detail on the card.
       const pipeline = [{ $match: { ...query } }];
 
       pipeline.push(
@@ -314,42 +479,78 @@ const getAlerts = async (req, res) => {
             from: 'contents',
             localField: 'content_id',
             foreignField: 'id',
-            pipeline: [{ $project: { id: 1, text: 1, translated_text: 1, scraped_content: 1 } }],
+            pipeline: [{
+              $project: {
+                id: 1,
+                text: 1,
+                translated_text: 1,
+                scraped_content: 1,
+                content_url: 1,
+                author_handle: 1,
+                original_author_name: 1,
+                source_id: 1
+              }
+            }],
             as: 'content_data'
           }
         },
-        { $unwind: { path: '$content_data', preserveNullAndEmptyArrays: true } }
+        { $unwind: { path: '$content_data', preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: 'sources',
+            localField: 'content_data.source_id',
+            foreignField: 'id',
+            pipeline: [{ $project: { id: 1, display_name: 1, identifier: 1, category: 1 } }],
+            as: 'source_data'
+          }
+        },
+        { $unwind: { path: '$source_data', preserveNullAndEmptyArrays: true } }
       );
 
-      const terms = search.trim().split(/[\s,]+/).filter(Boolean);
+      const cleanSearch = search.trim().startsWith('@') ? search.trim().substring(1) : search.trim();
+      const terms = search.trim().split(/[\s,]+/).filter(Boolean).map(t => t.startsWith('@') ? t.substring(1) : t);
       const searchRegex = terms.length > 0
         ? { $regex: terms.map(t => escapeRegex(t)).join('|'), $options: 'i' }
-        : { $regex: escapeRegex(search), $options: 'i' };
+        : { $regex: escapeRegex(cleanSearch), $options: 'i' };
       pipeline.push({
         $match: {
           $or: [
+            { id: searchRegex },
             { title: searchRegex },
             { description: searchRegex },
             { author: searchRegex },
+            { author_handle: searchRegex },
+            { platform: searchRegex },
+            { status: searchRegex },
+            { risk_level: searchRegex },
+            { source_category: searchRegex },
+            { alert_type: searchRegex },
+            { 'llm_analysis.grievance_type': searchRegex },
             { 'content_data.text': searchRegex },
             { 'content_data.translated_text': searchRegex },
-            { 'content_data.scraped_content': searchRegex }
+            { 'content_data.scraped_content': searchRegex },
+            { 'content_data.content_url': searchRegex },
+            { 'content_data.author_handle': searchRegex },
+            { 'content_data.original_author_name': searchRegex },
+            { 'source_data.display_name': searchRegex },
+            { 'source_data.identifier': searchRegex },
+            { 'source_data.category': searchRegex }
           ]
         }
       });
 
-      // Strip the heavy content_data before sort to save memory
-      pipeline.push({ $project: { content_data: 0 } });
+      // Strip the joined search-only fields before sort to save memory.
+      pipeline.push({ $project: { content_data: 0, source_data: 0 } });
 
       // Count via a separate query-style: use two pipelines
       // Pipeline 1: count
       const countPipeline = [...pipeline, { $count: 'total' }];
-      // Pipeline 2: paginated data
-      const dataPipeline = [...pipeline, { $sort: { created_at: -1, id: -1 } }, { $skip: skip }, { $limit: limitNum }];
+      // Pipeline 2: paginated data — sort by platform post time (published_at)
+      const dataPipeline = [...pipeline, { $sort: { published_at: -1, id: -1 } }, { $skip: skip }, { $limit: limitNum }];
 
       const [countResult, dataResult] = await Promise.all([
-        Alert.aggregate(countPipeline).allowDiskUse(true),
-        Alert.aggregate(dataPipeline).allowDiskUse(true)
+        Alert.aggregate(countPipeline).option({ allowDiskUse: true }),
+        Alert.aggregate(dataPipeline).option({ allowDiskUse: true })
       ]);
 
       alerts = dataResult || [];
@@ -365,8 +566,8 @@ const getAlerts = async (req, res) => {
         if (!isNaN(cursorDate.getTime()) && cursorId) {
           const cursorCondition = {
             $or: [
-              { created_at: { $lt: cursorDate } },
-              { created_at: cursorDate, id: { $lt: cursorId } }
+              { published_at: { $lt: cursorDate } },
+              { published_at: cursorDate, id: { $lt: cursorId } }
             ]
           };
           // Merge without overwriting existing $or/$and from pre-resolved filters
@@ -382,37 +583,51 @@ const getAlerts = async (req, res) => {
 
       const useDateCursor = cursor && !cursor.startsWith('p:');
 
+      // Always count total for accurate pagination (needed for hasMore calculation)
+      const countPromise = Alert.countDocuments(query);
+
       const rows = await Alert.find(query)
-        .sort({ created_at: -1, id: -1 })
+        .sort({ published_at: -1, id: -1 })
         .skip(useDateCursor ? 0 : skip)
         .limit(limitNum + 1)
         .lean();
 
-      hasMore = rows.length > limitNum;
-      alerts = hasMore ? rows.slice(0, limitNum) : rows;
+      total = await countPromise;
+      hasMore = pageNum * limitNum < total;
+      alerts = rows.length > limitNum ? rows.slice(0, limitNum) : rows;
       if (hasMore && alerts.length > 0) {
         const last = alerts[alerts.length - 1];
-        nextCursor = `${new Date(last.created_at).toISOString()}|${last.id}`;
+        const lastTs = last.published_at || last.created_at;
+        nextCursor = `${new Date(lastTs).toISOString()}|${last.id}`;
       }
-      if (!cursor) total = await Alert.countDocuments(query);
     }
 
     // Join content + source for only visible rows
     const contentIds = Array.from(new Set(alerts.map((a) => a.content_id || a.content_ref_id).filter(Boolean)));
+
+    // Kick off stats computation immediately — runs concurrently with joins below
+    const statsPromise = includeStats
+      ? buildAlertStats({ ...req.query, search: hasSearch ? search : '' })
+      : Promise.resolve(null);
+
     const contents = await Content.find({ id: { $in: contentIds } })
       .select('id platform content_type content_url text author_handle published_at engagement media is_deleted deleted_at is_expired expired_at availability_status is_repost original_author original_author_name original_author_avatar quoted_content url_cards thumbnails risk_factors risk_level source_id translated_text scraped_content')
       .lean();
     const contentMap = new Map(contents.map((c) => [c.id, c]));
 
     const sourceIds = Array.from(new Set(contents.map((c) => c.source_id).filter(Boolean)));
-    const sources = await Source.find({ id: { $in: sourceIds } })
-      .select('id profile_image_url is_verified display_name identifier category')
-      .lean();
-    const sourceMap = new Map(sources.map((s) => [s.id, s]));
 
-    // Fetch analysis for all content IDs
+    // Run sources + analyses + stats all in parallel
     const Analysis = require('../models/Analysis');
-    const analyses = await Analysis.find({ content_id: { $in: contentIds } }).lean();
+    const [sources, analyses, resolvedStats] = await Promise.all([
+      Source.find({ id: { $in: sourceIds } })
+        .select('id profile_image_url is_verified display_name identifier category')
+        .lean(),
+      Analysis.find({ content_id: { $in: contentIds } }).lean(),
+      statsPromise,
+    ]);
+
+    const sourceMap = new Map(sources.map((s) => [s.id, s]));
     const analysisMap = new Map();
     // Use a map of content_id -> last analysis (most recent)
     analyses.forEach(a => {
@@ -468,11 +683,8 @@ const getAlerts = async (req, res) => {
       }
     };
 
-    if (includeStats) {
-      responsePayload.stats = await buildAlertStats({
-        ...req.query,
-        search: hasSearch ? search : ''
-      });
+    if (includeStats && resolvedStats) {
+      responsePayload.stats = resolvedStats;
     }
 
     await writeCache(cacheKey, responsePayload, 20);
@@ -489,21 +701,28 @@ const getAlerts = async (req, res) => {
 // @access  Private
 const updateAlert = async (req, res) => {
   try {
-    const { status, notes, source_id } = req.body;
+    const { status, notes, source_id, risk_level } = req.body;
     const alert = await Alert.findOne({ id: req.params.id });
 
     if (!alert) {
       return res.status(404).json({ message: 'Alert not found' });
     }
 
-    const updateDoc = {
-      status,
-      acknowledged_by: req.user.id,
-      acknowledged_at: new Date()
-    };
+    const updateDoc = {};
+
+    if (status) {
+      updateDoc.status = status;
+      updateDoc.acknowledged_by = req.user.id;
+      updateDoc.acknowledged_at = new Date();
+    }
 
     if (notes) updateDoc.notes = notes;
-    if (source_id !== undefined) updateDoc.source_id = source_id; // Allow linking to source
+    if (source_id !== undefined) updateDoc.source_id = source_id;
+
+    // Risk level override support
+    if (risk_level && ['low', 'medium', 'high', 'critical'].includes(risk_level.toLowerCase())) {
+      updateDoc.risk_level = risk_level.toLowerCase();
+    }
 
     const updatedAlert = await Alert.findOneAndUpdate(
       { id: req.params.id },
@@ -525,8 +744,6 @@ const updateAlert = async (req, res) => {
         });
 
         if (content && content.text) {
-          // Pass the alert's actual risk level so feedbackService can
-          // determine the correct training label
           await feedbackService.recordFeedback({
             text: content.text,
             category: alert.category_id || alert.category || 'Normal',
@@ -537,11 +754,10 @@ const updateAlert = async (req, res) => {
         }
       } catch (fbError) {
         console.error('[AlertController] Feedback recording failed:', fbError);
-        // Don't block the response
       }
     }
 
-    await createAuditLog(req.user, 'update', 'alert', req.params.id, { status, source_id });
+    await createAuditLog(req.user, 'update', 'alert', req.params.id, { status, source_id, risk_level: updateDoc.risk_level });
 
     res.status(200).json(updatedAlert);
   } catch (error) {
@@ -549,72 +765,29 @@ const updateAlert = async (req, res) => {
   }
 };
 
-// Maps the 3-way sentiment editor to the field that actually drives the
-// positive/moderate/negative badge shown on alert cards (risk_level).
-const SENTIMENT_TO_RISK_LEVEL = {
-  positive: 'low',
-  neutral: 'medium',
-  negative: 'high'
-};
-
-/**
- * @desc    Directly edit an alert's intention/sentiment classification
- *          (positive/moderate/negative) by setting its risk_level
- * @route   PUT /api/alerts/:id/sentiment
- * @access  Private (restricted to special account)
- */
-const updateAlertSentiment = async (req, res) => {
-  if (!isSpecialUser(req.user)) {
-    return res.status(403).json({ message: 'Not authorized' });
-  }
+// @desc    Delete alert permanently
+// @route   DELETE /api/alerts/:id
+// @access  Private
+const deleteAlert = async (req, res) => {
   try {
-    const { sentiment } = req.body;
-    const riskLevel = SENTIMENT_TO_RISK_LEVEL[sentiment];
-
-    if (!riskLevel) {
-      return res.status(400).json({ message: 'Invalid sentiment value' });
-    }
-
-    const alert = await Alert.findOneAndUpdate(
-      { id: req.params.id },
-      { risk_level: riskLevel },
-      { new: true }
-    );
-
+    const alert = await Alert.findOne({ id: req.params.id });
     if (!alert) {
       return res.status(404).json({ message: 'Alert not found' });
     }
-
-    await clearAlertCache();
-    await createAuditLog(req.user, 'edit_sentiment', 'alert', req.params.id, { sentiment, risk_level: riskLevel });
-
-    res.status(200).json({ id: alert.id, risk_level: alert.risk_level });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-/**
- * @desc    Permanently delete an alert
- * @route   DELETE /api/alerts/:id
- * @access  Private (restricted to special account)
- */
-const deleteAlert = async (req, res) => {
-  if (!isSpecialUser(req.user)) {
-    return res.status(403).json({ message: 'Not authorized' });
-  }
-  try {
-    const deleted = await Alert.findOneAndDelete({ id: req.params.id });
-
-    if (!deleted) {
-      return res.status(404).json({ message: 'Alert not found' });
+    await Alert.deleteOne({ id: req.params.id });
+    // Mark the underlying content as suppressed so the monitor loop,
+    // velocity/viral alerting, and manual rescans don't recreate a fresh
+    // alert for the same post next time they evaluate it — they all dedupe
+    // by checking whether an Alert already exists for the content_id, which
+    // is no longer true the instant we delete it above.
+    if (alert.content_id) {
+      await Content.updateOne({ content_id: alert.content_id }, { $set: { alert_suppressed: true } });
     }
-
     await clearAlertCache();
-    await createAuditLog(req.user, 'delete', 'alert', req.params.id, { deleted: true });
-
-    res.status(200).json({ id: req.params.id, deleted: true });
+    await createAuditLog(req.user, 'delete', 'alert', req.params.id, {});
+    res.status(200).json({ message: 'Alert deleted successfully' });
   } catch (error) {
+    console.error('[deleteAlert]', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -622,20 +795,30 @@ const deleteAlert = async (req, res) => {
 // @desc    Get alert stats
 // @route   GET /api/alerts/stats
 // @access  Private
-const buildAlertStats = async (params = {}) => {
-  const { risk_level, search, platform, startDate, endDate, alert_type, keyword, category } = params;
+const buildAlertStats = async (params = {}, { skipPendingCount = true } = {}) => {
+  const { risk_level, sentiment, search, platform, startDate, endDate, alert_type, keyword, category, topic_classification } = params;
   const query = {};
 
+  // Gate filter: Always show only alerts with matched keywords
+  query.matched_keywords = { $exists: true, $ne: [] };
+
   if (risk_level && risk_level !== 'all') query.risk_level = risk_level;
+  if (sentiment && sentiment !== 'all') applyTargetSentimentFilter(query, sentiment);
   if (platform && platform !== 'all') query.platform = platform;
+  if (topic_classification && topic_classification !== 'all') {
+    query['llm_analysis.grievance_type'] = buildTopicClassificationQuery(topic_classification);
+  }
   if (alert_type && alert_type !== 'all') {
     if (alert_type === 'risk') query.alert_type = { $in: ['keyword_risk', 'ai_risk', null] };
     else query.alert_type = alert_type;
   }
   if (startDate || endDate) {
     query.created_at = {};
-    if (startDate) query.created_at.$gte = new Date(startDate);
-    if (endDate) query.created_at.$lte = new Date(endDate);
+    const start = parseDateBoundary(startDate);
+    const end = parseDateBoundary(endDate, { end: true });
+    if (start) query.created_at.$gte = start;
+    if (end) query.created_at.$lte = end;
+    if (Object.keys(query.created_at).length === 0) delete query.created_at;
   }
   const hasKeyword = keyword && keyword !== 'all';
   const hasCategory = category && category !== 'all';
@@ -717,12 +900,19 @@ const buildAlertStats = async (params = {}) => {
     basePipeline.push({ $project: { content_data: 0 } });
   }
 
-  const [statusResult, pendingResult] = await Promise.all([
-    Alert.aggregate([
-      ...basePipeline,
-      { $group: { _id: '$status', count: { $sum: 1 } } }
-    ]),
-    Alert.aggregate([
+  const stats = { active: 0, acknowledged: 0, escalated: 0, resolved: 0, false_positive: 0, escalated_pending_report: 0 };
+
+  const statusResult = await Alert.aggregate([
+    ...basePipeline,
+    { $group: { _id: '$status', count: { $sum: 1 } } }
+  ]).option({ allowDiskUse: true });
+
+  statusResult.forEach((item) => {
+    if (item._id && Object.prototype.hasOwnProperty.call(stats, item._id)) stats[item._id] = item.count;
+  });
+
+  if (!skipPendingCount) {
+    const pendingResult = await Alert.aggregate([
       ...basePipeline,
       { $match: { status: 'escalated' } },
       {
@@ -738,14 +928,10 @@ const buildAlertStats = async (params = {}) => {
       },
       { $match: { report_exists: { $size: 0 } } },
       { $count: 'count' }
-    ])
-  ]);
+    ]).option({ allowDiskUse: true });
+    stats.escalated_pending_report = pendingResult?.[0]?.count || 0;
+  }
 
-  const stats = { active: 0, acknowledged: 0, escalated: 0, resolved: 0, false_positive: 0, escalated_pending_report: 0 };
-  statusResult.forEach((item) => {
-    if (item._id && Object.prototype.hasOwnProperty.call(stats, item._id)) stats[item._id] = item.count;
-  });
-  stats.escalated_pending_report = pendingResult?.[0]?.count || 0;
   return stats;
 };
 
@@ -755,8 +941,8 @@ const getAlertStats = async (req, res) => {
     const cachedStats = await readCache(statsCacheKey);
     if (cachedStats) return res.status(200).json(cachedStats);
 
-    const stats = await buildAlertStats(req.query || {});
-    await writeCache(statsCacheKey, stats, 20);
+    const stats = await buildAlertStats(req.query || {}, { skipPendingCount: false });
+    await writeCache(statsCacheKey, stats, 60);
     res.status(200).json(stats);
 
   } catch (error) {
@@ -810,16 +996,27 @@ const markAllAsRead = async (req, res) => {
 // @access  Private
 const getAlertById = async (req, res) => {
   try {
-    const alert = await Alert.findOne({ id: req.params.id });
+    const mongoose = require('mongoose');
+    const isValidObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const findQuery = isValidObjectId
+      ? { $or: [{ id: req.params.id }, { _id: req.params.id }] }
+      : { id: req.params.id };
+
+    const alert = await Alert.findOne(findQuery);
 
     if (!alert) {
       return res.status(404).json({ message: 'Alert not found' });
     }
 
+    // Match criteria for aggregation
+    const matchQuery = isValidObjectId
+      ? { $or: [{ id: req.params.id }, { _id: new mongoose.Types.ObjectId(req.params.id) }] }
+      : { id: req.params.id };
+
     // Manual lookup for content details if needed by frontend
     // Alternatively, use an aggregate pipeline like in getAlerts
     const result = await Alert.aggregate([
-      { $match: { id: req.params.id } },
+      { $match: matchQuery },
       {
         $lookup: {
           from: 'contents',
@@ -1163,13 +1360,15 @@ const investigateLink = async (req, res) => {
         content_ref_id: contentRecord?.id || null,
         source_id: existingSource?.id || null, // Link to source if monitored
         source_category: existingSource?.category || null,
+        published_at: contentRecord?.published_at || metadata.published_at || null,
         title: metadata.title || metadata.text?.substring(0, 100) || 'Investigated Post',
         description: metadata.description || metadata.text || '',
         content_url: resolvedUrl,
         platform,
         author: metadata.author || metadata.channelTitle || 'Unknown',
         author_handle: metadata.author_handle || metadata.channelId,
-        matched_keywords_normalized: (analysis?.highlights || []).map((k) => String(k).trim().toLowerCase()).filter(Boolean),
+        matched_keywords: await matchConfiguredKeywords(metadata.description || metadata.text || ''),
+        matched_keywords_normalized: [], // deprecated, use matched_keywords instead
         risk_level: analysis.risk_level || 'low',
         status: 'active',
         alert_type: 'ai_risk',
@@ -1245,9 +1444,10 @@ const getAlertSummary = async (req, res) => {
 
     const [statusCounts, unreadCount] = await Promise.all([
       Alert.aggregate([
+        { $match: { matched_keywords: { $exists: true, $ne: [] } } },
         { $group: { _id: '$status', count: { $sum: 1 } } }
       ]),
-      Alert.countDocuments({ is_read: false })
+      Alert.countDocuments({ is_read: false, matched_keywords: { $exists: true, $ne: [] } })
     ]);
 
     const summary = { active: 0, acknowledged: 0, escalated: 0, resolved: 0, false_positive: 0, unread: unreadCount };
@@ -1298,14 +1498,16 @@ const getDashboardStats = async (req, res) => {
     const statuses = ['active', 'acknowledged', 'escalated', 'false_positive'];
 
     // Single aggregation: group by platform + status
+    const gateFilter = { matched_keywords: { $exists: true, $ne: [] } };
     const [statusByPlatform, pendingReports, velocityByPlatform] = await Promise.all([
       Alert.aggregate([
+        { $match: gateFilter },
         { $group: { _id: { platform: '$platform', status: '$status' }, count: { $sum: 1 } } }
-      ]).allowDiskUse(true),
+      ]).option({ allowDiskUse: true }),
 
       // Escalated alerts without reports
       Alert.aggregate([
-        { $match: { status: 'escalated' } },
+        { $match: { ...gateFilter, status: 'escalated' } },
         {
           $lookup: {
             from: 'reports',
@@ -1324,7 +1526,7 @@ const getDashboardStats = async (req, res) => {
 
       // Velocity/viral alerts by platform
       Alert.aggregate([
-        { $match: { alert_type: 'velocity', status: 'active' } },
+        { $match: { ...gateFilter, alert_type: 'velocity', status: 'active' } },
         { $group: { _id: '$platform', count: { $sum: 1 } } }
       ])
     ]);
@@ -1442,11 +1644,200 @@ const getSimilarEscalatedAlerts = async (req, res) => {
   }
 };
 
+// @desc    Manually override risk level and/or sentiment of an alert.
+//          Risk score is auto-derived from the chosen level using the same
+//          bands as the LLM prompt (low: 20, medium: 50, high: 75).
+//          Updates Alert + linked Analysis + Content so all surfaces stay in sync.
+// @route   PUT /api/alerts/:id/analysis-override
+// @access  Private
+const RISK_LEVEL_SCORE_MAP = { low: 20, medium: 50, high: 75 };
+// Accept legacy 'neutral' alongside the new 'moderate' label during the transition.
+const ALLOWED_SENTIMENTS = ['positive', 'negative', 'moderate', 'neutral'];
+
+const updateAlertAnalysisOverride = async (req, res) => {
+  try {
+    const Analysis = require('../models/Analysis');
+    const { id } = req.params;
+    const rawLevel = req.body?.risk_level ? String(req.body.risk_level).trim().toLowerCase() : null;
+    const rawSentiment = req.body?.sentiment ? String(req.body.sentiment).trim().toLowerCase() : null;
+
+    if (!rawLevel && !rawSentiment) {
+      return res.status(400).json({ message: 'Provide risk_level and/or sentiment to update.' });
+    }
+    if (rawLevel && !RISK_LEVEL_SCORE_MAP.hasOwnProperty(rawLevel)) {
+      return res.status(400).json({ message: `Invalid risk_level. Must be one of: ${Object.keys(RISK_LEVEL_SCORE_MAP).join(', ')}` });
+    }
+    if (rawSentiment && !ALLOWED_SENTIMENTS.includes(rawSentiment)) {
+      return res.status(400).json({ message: `Invalid sentiment. Must be one of: ${ALLOWED_SENTIMENTS.join(', ')}` });
+    }
+
+    const alert = await Alert.findOne({ id });
+    if (!alert) return res.status(404).json({ message: 'Alert not found' });
+
+    const alertSet = {};
+    if (rawLevel) {
+      const newScore = RISK_LEVEL_SCORE_MAP[rawLevel];
+      alertSet.risk_level = rawLevel;
+      alertSet['threat_details.risk_score'] = newScore;
+      if (alert.llm_analysis) {
+        alertSet['llm_analysis.score'] = newScore;
+      }
+    }
+    if (rawSentiment) {
+      if (alert.llm_analysis) alertSet['llm_analysis.sentiment'] = rawSentiment;
+    }
+
+    const updatedAlert = await Alert.findOneAndUpdate({ id }, { $set: alertSet }, { new: true });
+
+    // Mirror onto the linked Analysis record
+    const analysisQuery = alert.analysis_id
+      ? { id: alert.analysis_id }
+      : { content_id: alert.content_id };
+    const analysisSet = {};
+    if (rawLevel) {
+      analysisSet.risk_level = rawLevel;
+      analysisSet.risk_score = RISK_LEVEL_SCORE_MAP[rawLevel];
+    }
+    if (rawSentiment) analysisSet.sentiment = rawSentiment;
+
+    let updatedAnalysis = null;
+    if (Object.keys(analysisSet).length > 0) {
+      // Mirror onto llm_analysis nested too
+      const nestedSet = { ...analysisSet };
+      if (rawLevel) nestedSet['llm_analysis.score'] = RISK_LEVEL_SCORE_MAP[rawLevel];
+      if (rawSentiment) nestedSet['llm_analysis.sentiment'] = rawSentiment;
+      updatedAnalysis = await Analysis.findOneAndUpdate(analysisQuery, { $set: nestedSet }, { new: true });
+    }
+
+    // Mirror onto Content so list views (which read content.risk_level / content.sentiment) reflect the change
+    if (alert.content_id) {
+      const contentSet = {};
+      if (rawLevel) {
+        contentSet.risk_level = rawLevel;
+        contentSet.risk_score = RISK_LEVEL_SCORE_MAP[rawLevel];
+      }
+      if (rawSentiment) contentSet.sentiment = rawSentiment;
+      if (Object.keys(contentSet).length > 0) {
+        await Content.updateOne({ id: alert.content_id }, { $set: contentSet });
+      }
+    }
+
+    await clearAlertCache();
+    await createAuditLog(req.user, 'update_analysis', 'alert', id, {
+      risk_level: rawLevel || undefined,
+      sentiment: rawSentiment || undefined
+    });
+
+    res.status(200).json({
+      message: 'Alert analysis updated',
+      alert: updatedAlert,
+      analysis: updatedAnalysis
+    });
+  } catch (error) {
+    console.error('[updateAlertAnalysisOverride]', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Get topic classification counts for filter pills
+// @route   GET /api/alerts/topic-counts
+// @access  Private
+const getTopicClassificationCounts = async (req, res) => {
+  try {
+    const { status, platform, startDate, endDate, alert_type, risk_level, sentiment, keyword, category } = req.query;
+
+    const topicCacheKey = getCacheKey('alerts:topic-counts:v1', req.query || {});
+    const cached = await readCache(topicCacheKey);
+    if (cached) return res.status(200).json(cached);
+
+    const matchQuery = {};
+
+    // Gate filter: Always show only alerts with matched keywords
+    matchQuery.matched_keywords = { $exists: true, $ne: [] };
+
+    // Only filter by status if a specific status is requested
+    if (status && status !== 'all') {
+      matchQuery.status = status;
+    }
+    // For status='all' or no status, don't filter to show all alerts
+
+    if (risk_level && risk_level !== 'all') matchQuery.risk_level = risk_level;
+    if (sentiment && sentiment !== 'all') applyTargetSentimentFilter(matchQuery, sentiment);
+    if (platform && platform !== 'all') matchQuery.platform = platform;
+    if (alert_type && alert_type !== 'all') {
+      if (alert_type === 'risk') {
+        matchQuery.alert_type = { $in: ['keyword_risk', 'ai_risk', null] };
+      } else {
+        matchQuery.alert_type = alert_type;
+      }
+    }
+    if (startDate || endDate) {
+      matchQuery.created_at = {};
+      const start = parseDateBoundary(startDate);
+      const end = parseDateBoundary(endDate, { end: true });
+      if (start) matchQuery.created_at.$gte = start;
+      if (end) matchQuery.created_at.$lte = end;
+      if (Object.keys(matchQuery.created_at).length === 0) delete matchQuery.created_at;
+    }
+
+    // Only include alerts that have a meaningful topic classification
+    matchQuery['llm_analysis.grievance_type'] = {
+      $exists: true,
+      $nin: [null, '', 'Normal', 'Not a Grievance']
+    };
+
+    const pipeline = [
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: '$llm_analysis.grievance_type',
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { count: -1 } }
+    ];
+
+    const results = await Alert.aggregate(pipeline).option({ allowDiskUse: true });
+
+    // Normalize topic names (matching ReasonModal display logic). Driven by
+    // TOPIC_ALIASES so this can't drift out of sync with
+    // buildTopicClassificationQuery, which is what the click-through filter
+    // on these counts actually uses.
+    const aliasToCanonical = Object.entries(TOPIC_ALIASES).reduce((acc, [canonical, aliases]) => {
+      for (const alias of aliases) acc[alias.toLowerCase()] = canonical;
+      return acc;
+    }, {});
+    const normalizeTopicName = (name) => {
+      const normalized = String(name || '').trim().toLowerCase();
+      return aliasToCanonical[normalized] || String(name || '').trim();
+    };
+
+    // Merge counts for normalized duplicates
+    const mergedMap = {};
+    results
+      .filter(r => r._id && String(r._id).trim())
+      .forEach(r => {
+        const normalized = normalizeTopicName(r._id);
+        mergedMap[normalized] = (mergedMap[normalized] || 0) + r.count;
+      });
+
+    const topicCounts = Object.entries(mergedMap)
+      .map(([topic, count]) => ({ topic, count }))
+      .sort((a, b) => b.count - a.count);
+
+    await writeCache(topicCacheKey, topicCounts, 30);
+    res.status(200).json(topicCounts);
+  } catch (error) {
+    console.error('[getTopicClassificationCounts]', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   getAlerts,
   getAlertById,
   updateAlert,
-  updateAlertSentiment,
+  updateAlertAnalysisOverride,
   deleteAlert,
   getAlertStats,
   getAlertSummary,
@@ -1455,5 +1846,6 @@ module.exports = {
   markAllAsRead,
   investigateLink,
   translateAlertContent,
-  getSimilarEscalatedAlerts
+  getSimilarEscalatedAlerts,
+  getTopicClassificationCounts
 };

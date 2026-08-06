@@ -114,7 +114,7 @@ const APKpiRow = ({ data, loading, compareLabel, fromDate, toDate, district, sen
       format: 'number',
       hideCompare: true,
       tooltip: 'Number of AP constituencies with monitored activity in the selected period',
-      onClick: () => navigate('/command-centre')
+      onClick: () => navigate('/andhra-pradesh-map')
     },
     {
       key: 'totalAlerts',

@@ -70,8 +70,37 @@ export const AuthProvider = ({ children }) => {
     toast.info('Logged out');
   };
 
+  // Derived scope helpers used by route guards / map gating.
+  const role = user?.role;
+  const isSuperAdmin =
+    user?.is_super_admin === true || role === 'superadmin' || role === 'super_admin';
+  const isScoped =
+    user?.is_scoped === true || ['mla', 'mp', 'nara_lokesh'].includes(role);
+  const assignedConstituency = user?.assigned_constituency || null;
+  const extraConstituencies = user?.extra_constituencies || [];
+  const allowedConstituencies = [assignedConstituency, ...extraConstituencies].filter(Boolean);
+  const canAccessConstituency = (name) => {
+    if (isSuperAdmin || !isScoped) return true;
+    const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    return allowedConstituencies.some((c) => norm(c) === norm(name));
+  };
+
   return (
-    <AuthContext.Provider value={{ user, token, login, register, logout, loading }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        login,
+        register,
+        logout,
+        loading,
+        isSuperAdmin,
+        isScoped,
+        assignedConstituency,
+        allowedConstituencies,
+        canAccessConstituency,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

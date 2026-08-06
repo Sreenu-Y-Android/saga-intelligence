@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   getAlertsIntelligence,
   getGrievancesIntelligence,
+  getGrievanceReportsFeed,
   getProfilesIntelligence
 } = require('../controllers/intelligenceDashboardController');
 const { protect } = require('../middleware/authMiddleware');
@@ -12,6 +13,7 @@ router.use(protect, requireAnyPageAccess(['/analytics', '/unified-reports', '/in
 
 router.get('/alerts', getAlertsIntelligence);
 router.get('/grievances', getGrievancesIntelligence);
+router.get('/grievances/reports', getGrievanceReportsFeed);
 router.get('/profiles', getProfilesIntelligence);
 
 module.exports = router;

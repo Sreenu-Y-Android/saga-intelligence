@@ -20,19 +20,22 @@ const analysisSchema = new mongoose.Schema({
   },
   violence_score: {
     type: Number,
-    required: true,
+    required: false,
+    default: 0,
     min: 0,
     max: 1000
   },
   threat_score: {
     type: Number,
-    required: true,
+    required: false,
+    default: 0,
     min: 0,
     max: 1000
   },
   hate_score: {
     type: Number,
-    required: true,
+    required: false,
+    default: 0,
     min: 0,
     max: 1000
   },
@@ -111,6 +114,6 @@ const analysisSchema = new mongoose.Schema({
   }
 });
 
-analysisSchema.index({ content_id: 1 });
+analysisSchema.index({ content_id: 1 }, { unique: true });
 
 module.exports = mongoose.model('Analysis', analysisSchema);

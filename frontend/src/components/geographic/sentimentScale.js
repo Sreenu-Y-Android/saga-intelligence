@@ -30,6 +30,20 @@ import { normalizeDistrict, formatDistrictLabel } from './districtNames';
 export { normalizeDistrict, formatDistrictLabel };
 
 /**
+ * Shared 0-100 risk-score → color scale (critical/high/medium/low, matching
+ * the backend's riskLevelFromScore thresholds of 75/50/25) — used by
+ * RiskGauge and the Risk Distribution Treemap so a district's risk color
+ * doesn't silently drift between the two if the palette is ever tuned.
+ */
+export const RISK_COLORS = { critical: '#ef4444', high: '#f97316', medium: '#f59e0b', low: '#10b981' };
+export const colorForRiskScore = (score) => {
+  if (score >= 75) return RISK_COLORS.critical;
+  if (score >= 50) return RISK_COLORS.high;
+  if (score >= 25) return RISK_COLORS.medium;
+  return RISK_COLORS.low;
+};
+
+/**
  * Display label for a district or constituency coming off the geojson,
  * the API, or a grievance's detected_location.
  *

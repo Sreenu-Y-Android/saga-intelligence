@@ -1,12 +1,13 @@
 import React, { useMemo, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { Map, LayoutGrid, MapPinned, Landmark, History } from 'lucide-react';
 import GeoFilterBar from '../components/geographic/GeoFilterBar';
 import StateOverviewTab from '../components/geographic/tabs/StateOverviewTab';
 import DistrictExplorerTab from '../components/geographic/tabs/DistrictExplorerTab';
 import ConstituencyExplorerTab from '../components/geographic/tabs/ConstituencyExplorerTab';
 import HistoricalPlaybackTab from '../components/geographic/tabs/HistoricalPlaybackTab';
-import { useGeoScope, useStateSummary } from '../hooks/useGeoIntel';
+import { useGeoScope, useStateSummary, useDistrictLeaderboard } from '../hooks/useGeoIntel';
+import { useGeoFilters } from '../hooks/useGeoFilters';
 
 const TABS = [
   ['state', 'State Overview', LayoutGrid],
@@ -22,44 +23,20 @@ const TABS = [
  * and Historical Playback (time-scrubbed heatmap).
  */
 const GeographicIntelligence = () => {
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { scope, loading: scopeLoading } = useGeoScope();
+  const [filters, handleFilterChange] = useGeoFilters(searchParams, setSearchParams);
 
   const activeTab = searchParams.get('tab') || 'state';
-
-  const filters = useMemo(() => {
-    let from = searchParams.get('from') || '';
-    let to = searchParams.get('to') || '';
-    
-    if (!from && !to) {
-      const now = new Date();
-      const start = new Date(now);
-      start.setDate(now.getDate() - 6);
-      
-      const toLocalYMD = (d) => {
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
-        return `${y}-${m}-${day}`;
-      };
-      
-      from = toLocalYMD(start);
-      to = toLocalYMD(now);
-    }
-
-    return {
-      from,
-      to,
-      platform: searchParams.get('platform') || 'all',
-      sentiment: searchParams.get('sentiment') || 'all',
-      topic: searchParams.get('topic') || 'all',
-    };
-  }, [searchParams]);
 
   // Fetched once here (not inside each tab) so the Category filter's options
   // and the State Overview tab's data share a single request.
   const { data: summary, loading: summaryLoading } = useStateSummary(filters);
+  // Also hoisted here — State Overview and District Explorer both need the
+  // same district leaderboard for the same filters; fetching it once at the
+  // page level (matching the useStateSummary pattern above) avoids the two
+  // tabs independently issuing the identical request.
+  const { data: leaderboard, loading: leaderboardLoading, error: leaderboardError } = useDistrictLeaderboard(filters);
   const topicOptions = useMemo(
     () => (summary?.top_issues_by_volume || []).map((t) => t.topic).slice(0, 12),
     [summary],
@@ -68,8 +45,11 @@ const GeographicIntelligence = () => {
   // District-scoped user with exactly one district → land directly on
   // District Explorer with their district preselected, instead of the
   // state-wide leaderboard they don't have visibility into.
+  const singleDistrictRedirectPending = !scopeLoading && scope && !scope.can_see_all_districts
+    && scope.districts?.length === 1 && !searchParams.get('tab');
+
   useEffect(() => {
-    if (!scopeLoading && scope && !scope.can_see_all_districts && scope.districts?.length === 1 && activeTab === 'state' && !searchParams.get('tab')) {
+    if (singleDistrictRedirectPending && activeTab === 'state') {
       const next = new URLSearchParams(searchParams);
       next.set('tab', 'district');
       setSearchParams(next, { replace: true });
@@ -80,16 +60,6 @@ const GeographicIntelligence = () => {
   const setTab = (tab) => {
     const next = new URLSearchParams(searchParams);
     next.set('tab', tab);
-    setSearchParams(next);
-  };
-
-  const handleFilterChange = (nextFilters) => {
-    const next = new URLSearchParams(searchParams);
-    ['from', 'to', 'platform', 'sentiment', 'topic'].forEach((key) => {
-      const value = nextFilters[key];
-      if (value && value !== 'all') next.set(key, value);
-      else next.delete(key);
-    });
     setSearchParams(next);
   };
 
@@ -109,7 +79,7 @@ const GeographicIntelligence = () => {
             </div>
           </div>
         </div>
-        {(activeTab === 'state' || activeTab === 'district') && (
+        {activeTab !== 'playback' && (
           <GeoFilterBar filters={filters} onChange={handleFilterChange} topicOptions={topicOptions} />
         )}
       </div>
@@ -132,11 +102,47 @@ const GeographicIntelligence = () => {
         ))}
       </div>
 
-      <div key={activeTab} className="animate-[fadeIn_0.25s_ease-out]">
-        {activeTab === 'state' && <StateOverviewTab filters={filters} summary={summary} summaryLoading={summaryLoading} />}
-        {activeTab === 'district' && <DistrictExplorerTab filters={filters} initialDistrictKey={initialDistrictKey} />}
-        {activeTab === 'constituency' && <ConstituencyExplorerTab filters={filters} />}
-        {activeTab === 'playback' && <HistoricalPlaybackTab />}
+      {/*
+        All four tabs stay mounted at all times (visibility toggled via CSS,
+        not conditional rendering) so switching tabs preserves each tab's
+        local state — search text, selected district/seat, sub-tab,
+        Playback's scrubber position — instead of resetting it every time.
+        Each tab receives `active` and gates its own data-fetching hooks on
+        it, so a hidden tab doesn't keep polling/fetching in the background;
+        only the page-level `summary`/`leaderboard` fetches (shared by
+        multiple tabs and needed for the filter bar regardless of which tab
+        is showing) stay unconditional.
+      */}
+      {activeTab === 'state' && singleDistrictRedirectPending && (
+        <div className="bg-white rounded-xl border border-slate-200/80 p-10 flex items-center justify-center text-slate-400 text-sm">
+          Loading your district…
+        </div>
+      )}
+      <div className={activeTab === 'state' && !singleDistrictRedirectPending ? 'animate-[fadeIn_0.25s_ease-out]' : 'hidden'}>
+        <StateOverviewTab
+          filters={filters}
+          summary={summary}
+          summaryLoading={summaryLoading}
+          leaderboard={leaderboard}
+          leaderboardLoading={leaderboardLoading}
+          leaderboardError={leaderboardError}
+        />
+      </div>
+      <div className={activeTab === 'district' ? 'animate-[fadeIn_0.25s_ease-out]' : 'hidden'}>
+        <DistrictExplorerTab
+          filters={filters}
+          initialDistrictKey={initialDistrictKey}
+          leaderboard={leaderboard}
+          leaderboardLoading={leaderboardLoading}
+          leaderboardError={leaderboardError}
+          active={activeTab === 'district'}
+        />
+      </div>
+      <div className={activeTab === 'constituency' ? 'animate-[fadeIn_0.25s_ease-out]' : 'hidden'}>
+        <ConstituencyExplorerTab filters={filters} active={activeTab === 'constituency'} />
+      </div>
+      <div className={activeTab === 'playback' ? 'animate-[fadeIn_0.25s_ease-out]' : 'hidden'}>
+        <HistoricalPlaybackTab sharedFilters={filters} active={activeTab === 'playback'} />
       </div>
 
       <style>{'@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}'}</style>

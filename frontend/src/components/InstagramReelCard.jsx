@@ -19,11 +19,9 @@ import {
   Shield
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import api from '../lib/api';
+import api, { BACKEND_URL } from '../lib/api';
 import { toast } from 'sonner';
 import ReasonModal from './ReasonModal';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
 
 const proxyUrl = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return rawUrl;
@@ -565,6 +563,8 @@ const InstagramReelCard = ({ content, source, onRefresh }) => {
         alert={content}
         content={content}
         analysis={content.analysis}
+        onRiskLevelChange={onRiskLevelChange}
+        onSentimentChange={onSentimentChange}
       />
     </div>
   );

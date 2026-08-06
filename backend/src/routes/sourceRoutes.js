@@ -15,6 +15,7 @@ const {
 } = sourceController;
 
 const { protect } = require('../middleware/authMiddleware');
+const { loadScope } = require('../middleware/scopeMiddleware');
 const { requireAnyPageAccess, requirePlatformFeatureAccess } = require('../middleware/rbacMiddleware');
 
 const SOURCE_ALLOWED_PAGES = [
@@ -29,7 +30,7 @@ const SOURCE_ALLOWED_PAGES = [
   '/youtube-monitor'
 ];
 
-router.use(protect, requireAnyPageAccess(SOURCE_ALLOWED_PAGES));
+router.use(protect, loadScope, requireAnyPageAccess(SOURCE_ALLOWED_PAGES));
 
 router.route('/')
   .get(requirePlatformFeatureAccess('/monitors', (req) => req.query.platform), getSources)

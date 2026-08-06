@@ -1209,14 +1209,43 @@ const Dashboard = () => {
 
   const buildDashboardCounts = async () => {
     const platformIds = PLATFORMS.map(p => p.id);
+    const grievancePlatforms = platformIds.filter(p => p !== 'youtube');
 
-    const alertStatsEntries = await Promise.all(
-      platformIds.map(async (platformId) => {
-        const platform = platformId === 'all' ? undefined : getApiPlatform(platformId);
-        const response = await api.get('/alerts/stats', { params: { platform } });
-        return [platformId, response.data || {}];
-      })
-    );
+    // Fire all backend calls in one parallel batch (instead of awaiting each step).
+    // Step 1: per-platform alert stats. Step 2: per-platform viral totals.
+    // Step 3: aggregated reports stats (replaces the old full /reports table fetch).
+    // Step 4: per-platform grievance pending/resolved totals.
+    const [alertStatsEntries, viralEntries, reportsStatsRes, grievanceEntries] = await Promise.all([
+      Promise.all(
+        platformIds.map(async (platformId) => {
+          const platform = platformId === 'all' ? undefined : getApiPlatform(platformId);
+          const response = await api.get('/alerts/stats', { params: { platform } });
+          return [platformId, response.data || {}];
+        })
+      ),
+      Promise.all(
+        platformIds.map(async (platformId) => {
+          const platform = platformId === 'all' ? undefined : getApiPlatform(platformId);
+          const total = await fetchAlertsTotal({
+            status: 'active',
+            alert_type: 'velocity',
+            platform
+          });
+          return [platformId, total];
+        })
+      ),
+      api.get('/reports/stats').catch(() => ({ data: { byPlatform: {} } })),
+      Promise.all(
+        grievancePlatforms.map(async (platformId) => {
+          const platform = platformId === 'all' ? undefined : getApiPlatform(platformId);
+          const [pending, resolved] = await Promise.all([
+            fetchAlertsTotal({ status: 'active', platform, alert_type: 'risk' }),
+            fetchAlertsTotal({ status: 'resolved', platform, alert_type: 'risk' })
+          ]);
+          return [platformId, { total: pending + resolved, pending, resolved }];
+        })
+      )
+    ]);
 
     const alertStatsByPlatform = Object.fromEntries(alertStatsEntries);
 
@@ -1233,18 +1262,6 @@ const Dashboard = () => {
       ])
     );
 
-    const viralEntries = await Promise.all(
-      platformIds.map(async (platformId) => {
-        const platform = platformId === 'all' ? undefined : getApiPlatform(platformId);
-        const total = await fetchAlertsTotal({
-          status: 'active',
-          alert_type: 'velocity',
-          platform
-        });
-        return [platformId, total];
-      })
-    );
-
     nextAlertData.viral = Object.fromEntries(viralEntries);
 
     const pendingReportEntries = platformIds.map((platformId) => [
@@ -1252,42 +1269,23 @@ const Dashboard = () => {
       alertStatsByPlatform?.[platformId]?.escalated_pending_report || 0
     ]);
 
-    const reportsResponse = await api.get('/reports');
-    const reports = reportsResponse.data || [];
     const emptyReportCounts = { total: 0, sent_to_intermediary: 0, awaiting_reply: 0, closed: 0 };
     const reportCounts = Object.fromEntries(
       platformIds.map((platformId) => [platformId, { ...emptyReportCounts }])
     );
 
-    const normalizeReportPlatform = (platform) => {
-      if (!platform) return null;
-      if (platform === 'x') return 'twitter';
-      return platform;
-    };
-
-    reports.forEach((report) => {
-      const platformId = normalizeReportPlatform(report.platform);
-      const targetPlatforms = [platformId, 'all'].filter(Boolean);
-      targetPlatforms.forEach((key) => {
-        if (!reportCounts[key]) return;
-        reportCounts[key].total += 1;
-        if (report.status === 'sent_to_intermediary') reportCounts[key].sent_to_intermediary += 1;
-        if (report.status === 'awaiting_reply') reportCounts[key].awaiting_reply += 1;
-        if (report.status === 'closed' || report.status === 'resolved') reportCounts[key].closed += 1;
-      });
+    // /reports/stats already aggregates counts on the server — just project per-platform.
+    const statsByPlatform = reportsStatsRes?.data?.byPlatform || {};
+    platformIds.forEach((platformId) => {
+      const apiPlatformKey = platformId === 'all' ? 'all' : (platformId === 'twitter' ? 'twitter' : platformId);
+      const src = statsByPlatform[apiPlatformKey] || {};
+      reportCounts[platformId] = {
+        total: src.total || 0,
+        sent_to_intermediary: src.sent_to_intermediary || 0,
+        awaiting_reply: src.awaiting_reply || 0,
+        closed: (src.closed || 0) + (src.resolved || 0)
+      };
     });
-
-    const grievancePlatforms = platformIds.filter(p => p !== 'youtube');
-    const grievanceEntries = await Promise.all(
-      grievancePlatforms.map(async (platformId) => {
-        const platform = platformId === 'all' ? undefined : getApiPlatform(platformId);
-        const [pending, resolved] = await Promise.all([
-          fetchAlertsTotal({ status: 'active', platform, alert_type: 'risk' }),
-          fetchAlertsTotal({ status: 'resolved', platform, alert_type: 'risk' })
-        ]);
-        return [platformId, { total: pending + resolved, pending, resolved }];
-      })
-    );
 
     setAlertData(nextAlertData);
     setAlertPendingReportData(Object.fromEntries(pendingReportEntries));
@@ -1296,19 +1294,31 @@ const Dashboard = () => {
   };
 
   const fetchData = async () => {
+    // First batch: overview + recent alerts — unblocks first paint of the dashboard shell.
+    // Second batch: per-platform counts — runs in parallel and fills metrics in-place.
+    const firstBatch = Promise.all([
+      api.get('/analytics/overview'),
+      api.get('/alerts?status=active')
+    ])
+      .then(([overviewRes, alertsRes]) => {
+        setOverview(overviewRes.data);
+        setRecentAlerts((alertsRes.data.alerts || alertsRes.data).slice(0, 8));
+      })
+      .catch((error) => {
+        console.error(error);
+        toast.error('Failed to load dashboard data');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+
+    const secondBatch = buildDashboardCounts().catch((error) => {
+      console.error('Dashboard counts failed', error);
+    });
+
     try {
-      const [overviewRes, alertsRes] = await Promise.all([
-        api.get('/analytics/overview'),
-        api.get('/alerts?status=active')
-      ]);
-      setOverview(overviewRes.data);
-      setRecentAlerts((alertsRes.data.alerts || alertsRes.data).slice(0, 8));
-      await buildDashboardCounts();
-    } catch (error) {
-      toast.error('Failed to load dashboard data');
-      console.error(error);
+      await Promise.all([firstBatch, secondBatch]);
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
   };

@@ -1,20 +1,16 @@
 import React, { useState, useMemo } from 'react';
 import {
-    ChevronDown, X as XIcon, Globe, Plus, MapPin, Search, Trash2, Calendar as CalendarIcon
+    ChevronDown, X as XIcon, Facebook,
+    Globe, BarChart3, Plus, Trash2, Calendar, User, Building2, BadgeCheck, Download, Loader2, MapPin, Rss
 } from 'lucide-react';
 import { Button } from '../ui/button';
-import { Input } from '../ui/input';
 import {
     DropdownMenu, DropdownMenuContent, DropdownMenuItem,
     DropdownMenuTrigger, DropdownMenuLabel, DropdownMenuSeparator
 } from '../ui/dropdown-menu';
-import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
-import { Calendar as CalendarComponent } from '../ui/calendar';
-import { format } from 'date-fns';
+import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
 import { cn } from '../../lib/utils';
-
-// Display filters may only look back this many days
-const DATE_FILTER_MAX_RANGE_DAYS = 90;
+import { Card } from '../ui/card';
 
 /* ═══════════════════════════════════════════════════════════════ */
 /*                  PLATFORM ICONS & COMPONENTS                   */
@@ -34,6 +30,13 @@ const FacebookLogo = ({ className }) => (
     </svg>
 );
 
+// Instagram Logo
+const InstagramLogo = ({ className }) => (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+        <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.881z" />
+    </svg>
+);
+
 // YouTube Logo
 const YouTubeLogo = ({ className }) => (
     <svg viewBox="0 0 24 24" className={className} fill="currentColor">
@@ -50,338 +53,259 @@ export const GrievanceTopNavbar = ({
     onPlatformChange,
     selectedHandle = null,
     onHandleChange,
+    stats = {},
+    grievances = [],
     sources = [],
-    onDeleteSource,
     onAddSource,
+    onRemoveSource,
+    onFetchSourceHistory,
+    onFetchKeywords,
+    fetchingSource,
     locationFilter = null,
     onLocationChange,
     uniqueLocations = [],
-    dateRange = { from: null, to: null },
-    onDateRangeChange,
 }) => {
     const [isHandleDropdownOpen, setIsHandleDropdownOpen] = useState(false);
     const [isLocationDropdownOpen, setIsLocationDropdownOpen] = useState(false);
-    const [locationSearch, setLocationSearch] = useState('');
-
-    const { fromDate: dateFilterFromDate, toDate: dateFilterToDate } = useMemo(() => {
-        const today = new Date();
-        const earliest = new Date(today);
-        earliest.setDate(earliest.getDate() - DATE_FILTER_MAX_RANGE_DAYS);
-        return { fromDate: earliest, toDate: today };
-    }, []);
 
     // Platform tabs
     const PLATFORMS = [
         { id: 'all', label: 'All', icon: null, color: 'text-slate-600' },
         { id: 'x', label: 'X', icon: XLogo, color: 'text-black' },
         { id: 'facebook', label: 'Facebook', icon: FacebookLogo, color: 'text-[#1877F2]' },
+        { id: 'instagram', label: 'Instagram', icon: InstagramLogo, color: 'text-[#E4405F]' },
         { id: 'youtube', label: 'YouTube', icon: YouTubeLogo, color: 'text-[#FF0000]' },
+        { id: 'rss',     label: 'Web Articles', icon: Rss,        color: 'text-violet-600' },
     ];
 
     const selectedHandleData = sources.find(h => h.handle === selectedHandle || h.id === selectedHandle);
-    const normalizedLocationSearch = locationSearch.trim().toLowerCase();
-    const filteredLocations = normalizedLocationSearch
-        ? uniqueLocations.filter((loc) => (
-            [loc.city, loc.district, loc.constituency]
-                .filter(Boolean)
-                .some((value) => String(value).toLowerCase().includes(normalizedLocationSearch))
-        ))
-        : uniqueLocations;
 
     return (
-        <div className="w-full bg-white border-b border-slate-200">
-            <div className="w-full px-3 sm:px-4 lg:px-6 py-3">
-                <div className="flex w-full flex-col gap-3 xl:flex-row xl:items-center xl:gap-4">
-                    <div className="min-w-0 flex-1">
-                        <div className="overflow-x-auto scrollbar-hide">
-                            <div className="flex min-w-max items-center gap-2 border-b border-slate-100 pb-2 xl:min-w-0">
-                                {PLATFORMS.map((platform) => {
-                                    const isActive = activePlatform === platform.id;
-                                    const Icon = platform.icon;
+        <div className="bg-white border-b border-slate-200 flex flex-col">
+            <div className="px-6 py-0">
+                {/* ─────────────────────────────────────────────────── */
+                /*              SECTION 1: PLATFORM TABS                */
+                /* ─────────────────────────────────────────────────── */}
+                <div className="flex items-center gap-3 border-b border-slate-100 overflow-x-auto scrollbar-hide py-1">
+                    {PLATFORMS.map((platform) => {
+                        const isActive = activePlatform === platform.id;
+                        const Icon = platform.icon;
 
-                                    return (
-                                        <button
-                                            key={platform.id}
-                                            onClick={() => onPlatformChange?.(platform.id)}
-                                            className={cn(
-                                                'flex min-w-[92px] items-center justify-center gap-2 px-4 py-3 text-sm sm:text-base font-semibold transition-all duration-200 relative whitespace-nowrap rounded-lg active:scale-95 active:translate-y-[1px]',
-                                                'hover:bg-slate-50',
-                                                isActive
-                                                    ? 'text-slate-900 font-semibold border-b-2 border-blue-500'
-                                                    : 'text-slate-600 hover:text-slate-900'
-                                            )}
-                                        >
-                                            {Icon ? (
-                                                <Icon className={cn('h-4 w-4 sm:h-5 sm:w-5', platform.color)} />
-                                            ) : (
-                                                <Globe className="h-4 w-4 sm:h-5 sm:w-5 text-slate-600" />
-                                            )}
-                                            <span>{platform.label}</span>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:flex-nowrap xl:justify-end">
-                        <div className="min-w-0 flex-1 sm:flex-none">
-                            <DropdownMenu
-                                open={isLocationDropdownOpen}
-                                onOpenChange={(open) => {
-                                    setIsLocationDropdownOpen(open);
-                                    if (!open) setLocationSearch('');
-                                }}
+                        return (
+                            <button
+                                key={platform.id}
+                                onClick={() => onPlatformChange?.(platform.id)}
+                                className={cn(
+                                    'flex items-center gap-3 px-6 py-4 text-base font-semibold transition-all duration-200 relative whitespace-nowrap rounded-lg active:scale-95 active:translate-y-[1px]',
+                                    'hover:bg-slate-50',
+                                    isActive
+                                        ? 'text-slate-900 font-semibold'
+                                        : 'text-slate-600 hover:text-slate-900',
+                                    isActive && 'border-b-2 border-blue-500'
+                                )}
                             >
-                                <DropdownMenuTrigger asChild>
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className={cn(
-                                            'flex w-full sm:w-auto max-w-full items-center justify-between gap-2 font-medium',
-                                            locationFilter ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : ''
-                                        )}
-                                    >
-                                        <MapPin className="h-3.5 w-3.5 shrink-0" />
-                                        <span className="truncate max-w-[160px]">
-                                            {locationFilter || 'Location'}
-                                        </span>
-                                        <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
-                                    </Button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end" className="w-56 max-h-72 overflow-y-auto">
-                                    <DropdownMenuLabel className="text-slate-700 font-semibold">
-                                        Filter by Location
-                                    </DropdownMenuLabel>
-                                    <DropdownMenuSeparator />
+                                {Icon ? (
+                                    <Icon className={cn('h-5 w-5', platform.color)} />
+                                ) : (
+                                    <Globe className="h-5 w-5 text-slate-600" />
+                                )}
+                                <span>{platform.label}</span>
+                            </button>
+                        );
+                    })}
+                </div>
 
-                                    <div className="px-2 py-2">
-                                        <div className="relative">
-                                            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-                                            <Input
-                                                value={locationSearch}
-                                                onChange={(e) => setLocationSearch(e.target.value)}
-                                                onKeyDown={(e) => e.stopPropagation()}
-                                                placeholder="Search location..."
-                                                className="h-8 border-slate-200 bg-white pl-8 text-xs"
-                                                autoComplete="off"
-                                            />
-                                        </div>
-                                    </div>
-                                    <DropdownMenuSeparator />
-
-                                    {locationFilter && (
-                                        <>
-                                            <DropdownMenuItem
-                                                onClick={() => {
-                                                    onLocationChange?.(null);
-                                                    setIsLocationDropdownOpen(false);
-                                                }}
-                                                className="cursor-pointer text-slate-600 hover:bg-slate-100"
-                                            >
-                                                <span className="flex items-center gap-2">
-                                                    <XIcon className="h-3.5 w-3.5" />
-                                                    Clear Selection
-                                                </span>
-                                            </DropdownMenuItem>
-                                            <DropdownMenuSeparator />
-                                        </>
-                                    )}
-
-                                    {filteredLocations.length > 0 ? (
-                                        filteredLocations.map((loc) => (
-                                            <DropdownMenuItem
-                                                key={loc.city}
-                                                onClick={() => {
-                                                    onLocationChange?.(loc.city);
-                                                    setIsLocationDropdownOpen(false);
-                                                }}
-                                                className={cn(
-                                                    'cursor-pointer transition-colors',
-                                                    locationFilter === loc.city
-                                                        ? 'bg-emerald-50 text-emerald-700 font-semibold'
-                                                        : 'text-slate-700 hover:bg-slate-100'
-                                                )}
-                                            >
-                                                <div className="flex items-center justify-between w-full gap-2">
-                                                    <span className="flex min-w-0 items-center gap-2">
-                                                        <MapPin className="h-3 w-3 shrink-0 text-slate-400" />
-                                                        <span className="truncate">{loc.city}</span>
-                                                    </span>
-                                                    <span className={cn(
-                                                        'text-xs font-medium ml-2 shrink-0',
-                                                        locationFilter === loc.city ? 'text-emerald-600' : 'text-slate-400'
-                                                    )}>
-                                                        {loc.count}
-                                                    </span>
-                                                </div>
-                                            </DropdownMenuItem>
-                                        ))
-                                    ) : (
-                                        <div className="px-3 py-2 text-xs text-slate-400 text-center">
-                                            {uniqueLocations.length > 0 ? 'No matching locations' : 'No locations detected'}
-                                        </div>
-                                    )}
-                                </DropdownMenuContent>
-                            </DropdownMenu>
-                        </div>
-
-                        <div className="min-w-0 flex-1 sm:flex-none">
-                            <Popover>
-                                <PopoverTrigger asChild>
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className={cn(
-                                            'flex w-full sm:w-auto max-w-full items-center justify-between gap-2 font-medium',
-                                            dateRange?.from ? 'bg-indigo-50 text-indigo-700 border-indigo-300' : ''
-                                        )}
-                                    >
-                                        <CalendarIcon className="h-3.5 w-3.5 shrink-0" />
-                                        <span className="truncate max-w-[180px]">
-                                            {dateRange?.from ? (
-                                                dateRange?.to ? (
-                                                    <>{format(dateRange.from, 'LLL dd')} - {format(dateRange.to, 'LLL dd, y')}</>
-                                                ) : (
-                                                    format(dateRange.from, 'LLL dd, y')
-                                                )
-                                            ) : (
-                                                'Date range'
-                                            )}
-                                        </span>
-                                        <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
-                                    </Button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-auto p-0" align="end">
-                                    <div className="flex items-center justify-between px-3 pt-3">
-                                        <span className="text-xs font-semibold text-slate-700">Filter by Date (last {DATE_FILTER_MAX_RANGE_DAYS} days)</span>
-                                        {dateRange?.from && (
-                                            <button
-                                                type="button"
-                                                onClick={() => onDateRangeChange?.({ from: null, to: null })}
-                                                className="text-xs text-slate-500 hover:text-slate-800"
-                                            >
-                                                Clear
-                                            </button>
-                                        )}
-                                    </div>
-                                    <CalendarComponent
-                                        initialFocus
-                                        mode="range"
-                                        defaultMonth={dateRange?.from || dateFilterToDate}
-                                        selected={{ from: dateRange?.from || undefined, to: dateRange?.to || undefined }}
-                                        onSelect={(range) => onDateRangeChange?.({ from: range?.from || null, to: range?.to || null })}
-                                        fromDate={dateFilterFromDate}
-                                        toDate={dateFilterToDate}
-                                        disabled={{ before: dateFilterFromDate, after: dateFilterToDate }}
-                                        numberOfMonths={2}
-                                    />
-                                </PopoverContent>
-                            </Popover>
-                        </div>
-
-                        {activePlatform === 'all' && (
-                            <div className="min-w-0 flex-1 sm:flex-none">
-                                <DropdownMenu open={isHandleDropdownOpen} onOpenChange={setIsHandleDropdownOpen}>
-                                    <DropdownMenuTrigger asChild>
-                                        <Button
-                                            variant="outline"
-                                            size="sm"
-                                            className={cn(
-                                                'flex w-full sm:w-auto max-w-full items-center justify-between gap-2 font-medium',
-                                                selectedHandle ? 'bg-blue-50 text-blue-700 border-blue-300' : ''
-                                            )}
-                                        >
-                                            <span className="truncate max-w-[180px]">
-                                                {selectedHandleData?.display_name || selectedHandleData?.handle || 'Select Handle'}
-                                            </span>
-                                            <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
-                                        </Button>
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent align="end" className="w-56">
-                                        <DropdownMenuLabel className="text-slate-700 font-semibold">
-                                            Filter by Account
-                                        </DropdownMenuLabel>
-                                        <DropdownMenuSeparator />
-
-                                        {selectedHandle && (
-                                            <>
-                                                <DropdownMenuItem
-                                                    onClick={() => {
-                                                        onHandleChange?.(null);
-                                                        setIsHandleDropdownOpen(false);
-                                                    }}
-                                                    className="cursor-pointer text-slate-600 hover:bg-slate-100"
-                                                >
-                                                    <span className="flex items-center gap-2">
-                                                        <XIcon className="h-3.5 w-3.5" />
-                                                        Clear Selection
-                                                    </span>
-                                                </DropdownMenuItem>
-                                                <DropdownMenuSeparator />
-                                            </>
-                                        )}
-
-                                        {sources.map((source) => (
-                                            <DropdownMenuItem
-                                                key={source.id || source.handle}
-                                                onClick={() => {
-                                                    onHandleChange?.(source.handle);
-                                                    setIsHandleDropdownOpen(false);
-                                                }}
-                                                className={cn(
-                                                    'cursor-pointer transition-colors',
-                                                    selectedHandle === source.handle
-                                                        ? 'bg-blue-50 text-blue-700 font-semibold'
-                                                        : 'text-slate-700 hover:bg-slate-100'
-                                                )}
-                                            >
-                                                <div className="flex w-full min-w-0 items-center justify-between gap-2">
-                                                    <div className="flex min-w-0 flex-col gap-1">
-                                                        <span className="truncate font-medium">{source.display_name || source.handle}</span>
-                                                        <span className="truncate text-xs text-slate-500">@{source.handle}</span>
-                                                    </div>
-                                                    <button
-                                                        type="button"
-                                                        onClick={(e) => {
-                                                            e.preventDefault();
-                                                            e.stopPropagation();
-                                                            onDeleteSource?.(source);
-                                                            setIsHandleDropdownOpen(false);
-                                                        }}
-                                                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
-                                                        title={`Delete ${source.handle}`}
-                                                        aria-label={`Delete ${source.handle}`}
-                                                    >
-                                                        <Trash2 className="h-3.5 w-3.5" />
-                                                    </button>
-                                                </div>
-                                            </DropdownMenuItem>
-                                        ))}
-                                    </DropdownMenuContent>
-                                </DropdownMenu>
-                            </div>
-                        )}
-
-                        {activePlatform !== 'whatsapp' && (
-                            <div className="flex-1 sm:flex-none">
+                {activePlatform !== 'rss' && (
+                <div className="flex items-center justify-end gap-4 py-3">
+                    {/* Location Filter Dropdown */}
+                    <div className="flex items-center gap-2">
+                        <DropdownMenu open={isLocationDropdownOpen} onOpenChange={setIsLocationDropdownOpen}>
+                            <DropdownMenuTrigger asChild>
                                 <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={onAddSource}
-                                    className="w-full sm:w-auto gap-2 font-medium text-blue-600 border-blue-200 hover:bg-blue-50 hover:border-blue-300"
+                                    className={cn(
+                                        'flex items-center gap-2 font-medium',
+                                        locationFilter ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : ''
+                                    )}
                                 >
-                                    <Plus className="h-3.5 w-3.5" />
-                                    Add Account
+                                    <MapPin className="h-3.5 w-3.5" />
+                                    <span className="truncate max-w-[130px]">
+                                        {locationFilter || 'Location'}
+                                    </span>
+                                    <ChevronDown className="h-4 w-4 opacity-50" />
                                 </Button>
-                            </div>
-                        )}
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-56 max-h-72 overflow-y-auto">
+                                <DropdownMenuLabel className="text-slate-700 font-semibold">
+                                    Filter by Location
+                                </DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+
+                                {/* Clear selection */}
+                                {locationFilter && (
+                                    <>
+                                        <DropdownMenuItem
+                                            onClick={() => {
+                                                onLocationChange?.(null);
+                                                setIsLocationDropdownOpen(false);
+                                            }}
+                                            className="cursor-pointer text-slate-600 hover:bg-slate-100"
+                                        >
+                                            <span className="flex items-center gap-2">
+                                                <XIcon className="h-3.5 w-3.5" />
+                                                Clear Selection
+                                            </span>
+                                        </DropdownMenuItem>
+                                        <DropdownMenuSeparator />
+                                    </>
+                                )}
+
+                                {/* Location options */}
+                                {uniqueLocations.length > 0 ? (
+                                    uniqueLocations.map((loc) => (
+                                        <DropdownMenuItem
+                                            key={loc.city}
+                                            onClick={() => {
+                                                onLocationChange?.(loc.city);
+                                                setIsLocationDropdownOpen(false);
+                                            }}
+                                            className={cn(
+                                                'cursor-pointer transition-colors',
+                                                locationFilter === loc.city
+                                                    ? 'bg-emerald-50 text-emerald-700 font-semibold'
+                                                    : 'text-slate-700 hover:bg-slate-100'
+                                            )}
+                                        >
+                                            <div className="flex items-center justify-between w-full">
+                                                <span className="flex items-center gap-2">
+                                                    <MapPin className="h-3 w-3 text-slate-400" />
+                                                    {loc.city}
+                                                </span>
+                                                <span className={cn(
+                                                    'text-xs font-medium ml-2',
+                                                    locationFilter === loc.city ? 'text-emerald-600' : 'text-slate-400'
+                                                )}>
+                                                    {loc.count}
+                                                </span>
+                                            </div>
+                                        </DropdownMenuItem>
+                                    ))
+                                ) : (
+                                    <div className="px-3 py-2 text-xs text-slate-400 text-center">
+                                        No locations detected
+                                    </div>
+                                )}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    </div>
+
+                    {/* Official Handles Dropdown - Only show if All platforms selected or as fallback */}
+                   {activePlatform === 'all' && (
+                        <div className="flex items-center gap-2 pl-4 border-l border-slate-200">
+                        <span className="text-xs font-medium text-slate-600 hidden sm:inline">
+                            Official Handle:
+                        </span>
+                        <DropdownMenu open={isHandleDropdownOpen} onOpenChange={setIsHandleDropdownOpen}>
+                            <DropdownMenuTrigger asChild>
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className={cn(
+                                        'flex items-center gap-2 font-medium',
+                                        selectedHandle ? 'bg-blue-50 text-blue-700 border-blue-300' : ''
+                                    )}
+                                >
+                                    <span className="truncate max-w-[150px]">
+                                        {selectedHandleData?.display_name || selectedHandleData?.handle || 'Select Handle'}
+                                    </span>
+                                    <ChevronDown className="h-4 w-4 opacity-50" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-56">
+                                <DropdownMenuLabel className="text-slate-700 font-semibold">
+                                    Filter by Account
+                                </DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+
+                                {/* Clear selection */}
+                                {selectedHandle && (
+                                    <>
+                                        <DropdownMenuItem
+                                            onClick={() => {
+                                                onHandleChange?.(null);
+                                                setIsHandleDropdownOpen(false);
+                                            }}
+                                            className="cursor-pointer text-slate-600 hover:bg-slate-100"
+                                        >
+                                            <span className="flex items-center gap-2">
+                                                <XIcon className="h-3.5 w-3.5" />
+                                                Clear Selection
+                                            </span>
+                                        </DropdownMenuItem>
+                                        <DropdownMenuSeparator />
+                                    </>
+                                )}
+
+                                {/* Handle options */}
+                                {sources.map((source) => (
+                                    <DropdownMenuItem
+                                        key={source.id || source.handle}
+                                        onClick={() => {
+                                            onHandleChange?.(source.handle);
+                                            setIsHandleDropdownOpen(false);
+                                        }}
+                                        className={cn(
+                                            'cursor-pointer transition-colors pr-1',
+                                            selectedHandle === source.handle
+                                                ? 'bg-blue-50 text-blue-700 font-semibold'
+                                                : 'text-slate-700 hover:bg-slate-100'
+                                        )}
+                                    >
+                                        <div className="flex items-center justify-between w-full gap-2">
+                                            <div className="flex flex-col gap-0.5 min-w-0">
+                                                <span className="font-medium truncate">{source.display_name || source.handle}</span>
+                                                <span className="text-xs text-slate-500">@{source.handle}</span>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    onRemoveSource?.(source);
+                                                    setIsHandleDropdownOpen(false);
+                                                }}
+                                                className="shrink-0 p-1 rounded hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors"
+                                                title="Delete account"
+                                            >
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                            </button>
+                                        </div>
+                                    </DropdownMenuItem>
+                                ))}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    </div>
+                   )}
+
+                    {/* Add Account Button */}
+                    <div className="flex items-center gap-2 pl-4 border-l border-slate-200">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={onAddSource}
+                            className="gap-2 font-medium text-blue-600 border-blue-200 hover:bg-blue-50 hover:border-blue-300"
+                        >
+                            <Plus className="h-3.5 w-3.5" />
+                            Add Account
+                        </Button>
                     </div>
                 </div>
+                )}
             </div>
+
+            {/* Monitored accounts section hidden — Add Account button moved to top right */}
         </div>
     );
-
 };
 
 export default GrievanceTopNavbar;

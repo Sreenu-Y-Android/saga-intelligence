@@ -20,7 +20,7 @@ const APConstituencyPanel = ({ constituencyName, onClose, fromDate, toDate }) =>
             location: constituencyName,
             from: fromDate,
             to: toDate,
-            bsk_only: 'false'
+            target_only: 'false'
           }
         });
         setDetails(res.data);
@@ -157,7 +157,7 @@ const APConstituencyPanel = ({ constituencyName, onClose, fromDate, toDate }) =>
                         {details.mla.name}
                       </div>
                       <div className="text-[9px] font-medium text-slate-500">
-                        Party: {details.mla.party || '—'} &middot; Term: 2023-2028
+                        Party: {details.mla.party || 'INC'} &middot; Term: 2023-2028
                       </div>
                     </div>
                   </div>

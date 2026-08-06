@@ -52,11 +52,11 @@ const CATEGORIES = [
 
 const EXAMPLES = [
   'Revanth Reddy',
-  'KCR',
+  'Bhatti Vikramarka',
+  'INC',
+  'Hyderabad',
   'BRS',
-  'Rythu Bharosa',
-  'Telangana Congress',
-  'Hyderabad rains'
+  'telangana floods'
 ];
 
 const ChipRow = ({ icon: Icon, label, options, value, onChange, valueKey = 'value' }) => (
@@ -117,7 +117,7 @@ const SearchControls = ({
             <Input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder='Enter a keyword — e.g. "revanth reddy", "rythu bharosa"'
+              placeholder='Enter a keyword — e.g. "revanth reddy", "hyderabad"'
               className="pl-10 h-11"
             />
           </div>

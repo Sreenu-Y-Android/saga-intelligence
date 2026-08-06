@@ -51,14 +51,21 @@ def main():
         print("  python backfill_sentiment.py --confirm" + (" --all" if do_all else ""))
         return
 
-    cursor = col.find(query, {'title': 1, 'title_english': 1, 'summary': 1, 'summary_english': 1})
+    cursor = col.find(query, {'title': 1, 'title_english': 1, 'summary': 1, 'summary_english': 1, 'content': 1})
     counts = {'positive': 0, 'negative': 0, 'moderate': 0}
     updated = 0
     for a in cursor:
         title = a.get('title_english') or a.get('title') or ''
         summary = a.get('summary_english') or a.get('summary') or ''
-        sent = detect_sentiment(title, summary)
-        col.update_one({'_id': a['_id']}, {'$set': {'sentiment': sent}})
+        content = a.get('content') or ''
+        result = detect_sentiment(title, summary, content)
+        sent = result['sentiment']
+        col.update_one({'_id': a['_id']}, {'$set': {
+            'sentiment': sent,
+            'sentiment_target': result['dominant_actor'],
+            'sentiment_target_alignment': result['actor_alignment'],
+            'sentiment_reasoning': result['reasoning'],
+        }})
         counts[sent] = counts.get(sent, 0) + 1
         updated += 1
         if updated % 50 == 0:

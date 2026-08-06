@@ -54,6 +54,7 @@ const ReportsContent = ({ platformFilter: sharedPlatform, dateRange: sharedDateR
     const [keywordFilter, setKeywordFilter] = useState('all');
     const [alertCategory, setAlertCategory] = useState('all');
     const [sourceCategoryFilter, setSourceCategoryFilter] = useState('all');
+    const [viewMode, setViewMode] = useState('all_posts'); // 'all_posts' or 'profiles_only'
 
     // Status change confirmation dialog
     const [confirmDialog, setConfirmDialog] = useState({
@@ -292,7 +293,8 @@ const ReportsContent = ({ platformFilter: sharedPlatform, dateRange: sharedDateR
                 keyword: keywordFilter !== 'all' ? keywordFilter : undefined,
                 category: sourceCategoryFilter !== 'all' ? sourceCategoryFilter : undefined,
                 startDate: dateRange.from ? dateRange.from.toISOString() : undefined,
-                endDate: dateRange.to ? dateRange.to.toISOString() : undefined
+                endDate: dateRange.to ? dateRange.to.toISOString() : undefined,
+                viewMode: viewMode === 'profiles_only' ? 'profiles_only' : undefined
             };
 
             // Map alertCategory to risk_level or alert_type
@@ -317,7 +319,7 @@ const ReportsContent = ({ platformFilter: sharedPlatform, dateRange: sharedDateR
 
     useEffect(() => {
         fetchReports();
-    }, [platformFilter, statusFilter, searchQuery, dateRange, keywordFilter, alertCategory, sourceCategoryFilter, viewHandle]);
+    }, [platformFilter, statusFilter, searchQuery, dateRange, keywordFilter, alertCategory, sourceCategoryFilter, viewHandle, viewMode]);
 
     // Auto-select profile if viewHandle is present and matches a report
     useEffect(() => {
@@ -763,6 +765,27 @@ const ReportsContent = ({ platformFilter: sharedPlatform, dateRange: sharedDateR
                     </div>
                 </CardContent>
             </Card>
+
+            {/* View Toggle */}
+            <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-gray-600 dark:text-gray-400">View:</span>
+                <Button
+                    variant={viewMode === 'all_posts' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setViewMode('all_posts')}
+                    className="gap-2"
+                >
+                    All Posts
+                </Button>
+                <Button
+                    variant={viewMode === 'profiles_only' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setViewMode('profiles_only')}
+                    className="gap-2"
+                >
+                    Profiles Only
+                </Button>
+            </div>
 
             {loading ? (
                 <div className="grid gap-4">

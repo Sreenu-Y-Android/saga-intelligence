@@ -1,4 +1,3 @@
-const axios = require('axios');
 const TempContent = require('../models/TempContent');
 const Source = require('../models/Source');
 const Content = require('../models/Content');
@@ -8,7 +7,7 @@ const Settings = require('../models/Settings');
 const Keyword = require('../models/Keyword');
 const { performFullAnalysis } = require('./monitorService');
 const { generateComplaintCode } = require('./complaintCodeService');
-const { analyzeGrievanceContent, textMatchesAnyKeyword, getRelevanceTerms } = require('./grievanceService');
+const { analyzeGrievanceContent, extractAndSaveLocation, textMatchesAnyKeyword, getActiveKeywordsCached } = require('./grievanceService');
 const { syncLegacyFieldsFromWorkflow } = require('./grievanceWorkflowService');
 
 const BATCH_SIZE = Number(process.env.ENGINE_TEMP_BATCH_SIZE || 40);
@@ -16,28 +15,9 @@ const POLL_MS = Number(process.env.ENGINE_TEMP_POLL_MS || 30000);
 const PROCESS_CONCURRENCY = Math.max(1, Number(process.env.ENGINE_TEMP_CONCURRENCY || 4));
 const FAST_DRAIN = String(process.env.ENGINE_TEMP_FAST_DRAIN || 'true').toLowerCase() === 'true';
 const PROCESSING_TIMEOUT_MS = Math.max(60000, Number(process.env.ENGINE_TEMP_PROCESSING_TIMEOUT_MS || 15 * 60 * 1000));
-const ONPREM_HEALTH_TIMEOUT = 5000;
 
 let running = false;
 let timer = null;
-let onPremReachable = null;
-let onPremCheckedAt = 0;
-const ONPREM_CHECK_INTERVAL = 60000;
-
-async function isOnPremReachable() {
-  if (Date.now() - onPremCheckedAt < ONPREM_CHECK_INTERVAL && onPremReachable !== null) {
-    return onPremReachable;
-  }
-  const baseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-  try {
-    await axios.get(baseUrl, { timeout: ONPREM_HEALTH_TIMEOUT });
-    onPremReachable = true;
-  } catch {
-    onPremReachable = false;
-  }
-  onPremCheckedAt = Date.now();
-  return onPremReachable;
-}
 
 const toDate = (v) => {
   if (!v) return new Date();
@@ -228,7 +208,7 @@ function normalizeGrievanceRaw(item) {
   const grievanceMode = asString(engineMeta.grievance_mode || 'handle');
 
   const idCandidate = asString(
-    raw.id || raw.id_str || raw.tweet_id || raw.post_id || raw.videoId || raw.pk || raw.code
+    raw.id || raw.tweet_id || raw.post_id || raw.videoId || raw.pk || raw.code
   );
   const canonicalId = platform === 'x'
     ? idCandidate
@@ -307,16 +287,6 @@ function normalizeGrievanceRaw(item) {
     media = [{ type: 'video', url }];
   }
 
-  const extractMentions = () => {
-    if (platform === 'x') {
-      const xMentions = raw.entities?.user_mentions || [];
-      return xMentions.map(m => m.screen_name).filter(Boolean);
-    }
-    const textToScan = text || '';
-    const found = textToScan.match(/@(\w+)/g);
-    return found ? found.map(m => m.substring(1)) : [];
-  };
-
   return {
     canonicalId,
     text: text || '(no text)',
@@ -326,8 +296,7 @@ function normalizeGrievanceRaw(item) {
     createdAt,
     media,
     taggedAccount: asString(item.source_identifier || engineMeta.grievance_keyword || item.source_display_name || 'keyword_grievance'),
-    grievanceMode,
-    mentions: extractMentions()
+    grievanceMode
   };
 }
 
@@ -362,9 +331,9 @@ async function upsertGrievanceFromTemp(item) {
   const existing = await Grievance.findOne({ tweet_id: n.canonicalId });
   if (existing) return existing;
 
-  const relevanceTerms = await getRelevanceTerms();
-  if (!textMatchesAnyKeyword(n.text, relevanceTerms)) {
-    console.log(`[TempProcessor] Skipping irrelevant grievance ${n.canonicalId} — no known keyword/candidate found in text`);
+  const keywords = await getActiveKeywordsCached();
+  if (!textMatchesAnyKeyword(n.text, keywords)) {
+    console.log(`[TempProcessor] Skipping grievance ${n.canonicalId}: no keyword match in "${String(n.text).substring(0, 80)}..."`);
     return null;
   }
 
@@ -407,14 +376,12 @@ async function upsertGrievanceFromTemp(item) {
 
   syncLegacyFieldsFromWorkflow(grievance, 'received');
   await grievance.save();
-  await analyzeGrievanceContent(grievance.id, n.text, item.platform, {
+  await analyzeGrievanceContent(grievance.id, n.text, item.platform);
+  await extractAndSaveLocation(grievance.id, n.text, {
     handle: n.authorHandle,
     display_name: n.authorName,
     location: '',
     bio: ''
-  }, {
-    mentions: n.mentions,
-    taggedAccount: n.taggedAccount
   });
   await updateGrievanceSourceStats(grievanceSource);
   return grievance;
@@ -519,12 +486,6 @@ async function runCycle() {
     if (!settings) return 0;
     const keywords = await Keyword.find({ is_active: true });
 
-    const modelsUp = await isOnPremReachable();
-    if (!modelsUp) {
-      console.log('[TempProcessor] On-prem models unreachable — items stay in temp DB (will retry next cycle)');
-      return 0;
-    }
-
     await TempContent.updateMany(
       { status: 'failed' },
       { $set: { status: 'pending' } }
@@ -613,6 +574,5 @@ function startTempContentProcessor() {
 
 module.exports = {
   startTempContentProcessor,
-  runCycle,
-  upsertGrievanceFromTemp
+  runCycle
 };

@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 
 /* Party visual identity — used to colour every "side" of the comparison so
    the two candidates stay readable even without labels. */
-// Matches MLA_PARTY_META in data/telanganaMlaDirectory.js.
 export const PARTY_COLORS = {
-  INC: { main: '#2563eb', soft: '#dbeafe', text: '#1e40af', ring: '#3b82f6', grad: 'from-blue-500 to-indigo-600' },
-  BRS: { main: '#ec4899', soft: '#fce7f3', text: '#9d174d', ring: '#f472b6', grad: 'from-pink-500 to-rose-600' },
+  // INC's real identity is the saffron/white/green tricolor, not a flat hue — `grad` (the
+  // only one of these tokens that renders as an actual gradient swatch) carries that; the
+  // solid tokens use a saffron-family amber since BJP already owns the brighter orange.
+  INC: { main: '#CA8A04', soft: '#fef3c7', text: '#92400e', ring: '#f59e0b', grad: 'from-orange-500 via-white to-green-600' },
+  BRS: { main: '#ec4899', soft: '#fce7f3', text: '#9d174d', ring: '#f472b6', grad: 'from-pink-400 to-rose-500' },
   BJP: { main: '#f97316', soft: '#ffedd5', text: '#9a3412', ring: '#fb923c', grad: 'from-orange-400 to-orange-600' },
-  AIMIM: { main: '#059669', soft: '#d1fae5', text: '#065f46', ring: '#34d399', grad: 'from-emerald-500 to-green-600' },
-  CPI: { main: '#dc2626', soft: '#fee2e2', text: '#991b1b', ring: '#ef4444', grad: 'from-red-500 to-rose-600' },
+  AIMIM: { main: '#16a34a', soft: '#dcfce7', text: '#166534', ring: '#4ade80', grad: 'from-green-500 to-emerald-600' },
   DEFAULT: { main: '#64748b', soft: '#f1f5f9', text: '#334155', ring: '#94a3b8', grad: 'from-slate-400 to-slate-600' },
 };
 

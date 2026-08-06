@@ -304,7 +304,7 @@ const fetchUserPosts = async (username, maxId = "") => {
         }
     }
 
-    console.warn(`[Instagram] ⚠️ All endpoints failed for posts of ${username} — returning null (key exhaustion or shape change?)`);
+    //console.error(`[Instagram] ❌ All endpoints failed for posts of ${username}`);
     return null;
 };
 
@@ -335,7 +335,7 @@ const fetchUserProfile = async (username) => {
         }
     }
 
-    console.warn(`[Instagram] ⚠️ All endpoints failed for profile of ${username} — returning null`);
+    //console.error(`[Instagram] ❌ All endpoints failed for profile of ${username}`);
     return null;
 };
 
@@ -368,7 +368,7 @@ const fetchUserStories = async (username) => {
         }
     }
 
-    console.warn(`[Instagram] ⚠️ All endpoints failed for stories of ${username} — returning null`);
+    //console.error(`[Instagram] ❌ All endpoints failed for stories of ${username}`);
     return null;
 };
 
@@ -455,113 +455,49 @@ const searchUsers = async (query) => {
 };
 
 /**
- * Normalize a raw post node (from any endpoint) into a standard content object.
+ * Search Instagram posts by keyword.
+ * Tries hashtag/tag search endpoints, which is the closest to keyword search on Instagram.
  */
-const normalizePostNode = (node, fallbackAuthor = 'Instagram User') => {
-    if (!node) return null;
-    const id = node.id || node.pk || node.code || node.shortcode || node.media_id || '';
-    if (!id) return null;
-
-    const shortcode = node.shortcode || node.code || node.share_link?.split('/p/')?.[1]?.replace(/\/$/, '') || '';
-    const mediaType = node.media_type === 2 || node.is_video ? 'video' : 'photo';
-    let media = [];
-
-    if (node.video_url) {
-        media = [{ url: node.video_url, type: 'video', preview: node.display_url || node.thumbnail_url || '' }];
-    } else if (node.image_versions2?.candidates?.length) {
-        media = [{ url: node.image_versions2.candidates[0].url, type: 'photo' }];
-    } else if (node.display_url) {
-        media = [{ url: node.display_url, type: mediaType }];
-    } else if (node.thumbnail_src) {
-        media = [{ url: node.thumbnail_src, type: 'photo' }];
-    }
-
-    // carousel
-    if (node.carousel_media?.length) {
-        media = node.carousel_media.map(cm => {
-            if (cm.video_url) return { url: cm.video_url, type: 'video' };
-            const candidate = cm.image_versions2?.candidates?.[0]?.url || cm.display_url;
-            return candidate ? { url: candidate, type: 'photo' } : null;
-        }).filter(Boolean);
-    }
-
-    return {
-        id,
-        text: node.caption?.text || node.edge_media_to_caption?.edges?.[0]?.node?.text || node.text || node.accessibility_caption || '',
-        author: node.user?.full_name || node.owner?.full_name || fallbackAuthor,
-        author_handle: node.user?.username || node.owner?.username || fallbackAuthor,
-        author_avatar: node.user?.profile_pic_url || node.owner?.profile_pic_url || '',
-        url: shortcode ? `https://www.instagram.com/p/${shortcode}/` : '',
-        created_at: node.taken_at
-            ? new Date(node.taken_at * 1000).toISOString()
-            : (node.taken_at_timestamp ? new Date(node.taken_at_timestamp * 1000).toISOString() : new Date().toISOString()),
-        media,
-        metrics: {
-            likes: node.like_count || node.edge_liked_by?.count || node.edge_media_preview_like?.count || 0,
-            comments: node.comment_count || node.edge_media_to_comment?.count || 0,
-            views: node.view_count || node.play_count || node.video_view_count || node.play_count || 0
-        },
-        platform: 'instagram'
-    };
-};
-
-/**
- * Search Instagram posts by keyword/hashtag.
- * Tries hashtag endpoints first, then falls back to username lookup.
- */
-const searchPosts = async (query, limit = 20) => {
+const IG_DEFAULT_LIMIT = Math.max(1, Math.min(100, parseInt(process.env.IG_SEARCH_PAGE_SIZE || '50', 10)));
+const searchPosts = async (query, limit = IG_DEFAULT_LIMIT) => {
     const cleanQuery = String(query || '').trim().replace(/^#/, '');
     if (!cleanQuery) return [];
 
-    // 1. Try hashtag endpoints (most appropriate for keyword search)
-    const hashtagEndpoints = [
-        { method: 'GET',  path: `/api/instagram/hashtag`, params: { hashtag: cleanQuery } },
-        { method: 'POST', path: '/api/instagram/hashtag/posts', data: { hashtag: cleanQuery } },
-        { method: 'POST', path: '/api/instagram/explore/hashtag', data: { hashtag: cleanQuery } },
-        { method: 'GET',  path: `/api/instagram/explore/hashtags`, params: { hashtag: cleanQuery } },
-        { method: 'POST', path: '/api/instagram/tag/info', data: { name: cleanQuery } },
-    ];
-
-    for (const ep of hashtagEndpoints) {
-        try {
-            const response = ep.method === 'POST'
-                ? await rapidPost(ep.path, ep.data)
-                : await rapidGet(ep.path, ep.params);
-
-            if (!response?.data) continue;
-
-            const raw = response.data;
-            const edges = raw.result?.edges || raw.data?.edges || raw.edges ||
-                raw.media?.edges || raw.top_posts?.edges || raw.recent_posts?.edges ||
-                raw.items || raw.data?.media?.nodes || (Array.isArray(raw) ? raw : []);
-
-            if (!Array.isArray(edges) || edges.length === 0) continue;
-
-            const normalized = edges.slice(0, limit)
-                .map(p => normalizePostNode(p.node || p))
-                .filter(Boolean);
-
-            if (normalized.length > 0) {
-                console.log(`[Instagram] Found ${normalized.length} hashtag posts for '#${cleanQuery}' via ${ep.path}`);
-                return normalized;
-            }
-        } catch {
-            // continue to next endpoint
-        }
-    }
-
-    // 2. Fallback: fetch posts from a user whose handle matches the query
-    //    (only useful if the keyword happens to be an Instagram handle)
+    // instagram120 API has no hashtag/search endpoint — fetch posts from the user matching the query
     try {
         const rawPosts = await fetchUserPosts(cleanQuery);
         if (!rawPosts) return [];
 
+        // Response nests posts under .result.edges or .items
         const edges = rawPosts.result?.edges || rawPosts.edges || rawPosts.items || (Array.isArray(rawPosts) ? rawPosts : []);
         if (!Array.isArray(edges) || edges.length === 0) return [];
 
-        const normalized = edges.slice(0, limit)
-            .map(p => normalizePostNode(p.node || p, cleanQuery))
-            .filter(Boolean);
+        const normalized = edges.slice(0, limit).map(p => {
+            const node = p.node || p;
+            return {
+                id: node.id || node.pk || node.code || node.shortcode || '',
+                text: node.caption?.text || node.edge_media_to_caption?.edges?.[0]?.node?.text || node.text || '',
+                author: node.user?.full_name || node.owner?.full_name || cleanQuery,
+                author_handle: node.user?.username || node.owner?.username || cleanQuery,
+                author_avatar: node.user?.profile_pic_url || node.owner?.profile_pic_url || '',
+                url: (node.shortcode || node.code)
+                    ? `https://www.instagram.com/p/${node.shortcode || node.code}/`
+                    : '',
+                created_at: node.taken_at
+                    ? new Date(node.taken_at * 1000).toISOString()
+                    : (node.taken_at_timestamp ? new Date(node.taken_at_timestamp * 1000).toISOString() : new Date().toISOString()),
+                media: node.image_versions2
+                    ? [{ url: node.image_versions2.candidates?.[0]?.url, type: 'photo' }]
+                    : (node.display_url ? [{ url: node.display_url, type: 'photo' }]
+                    : (node.thumbnail_src ? [{ url: node.thumbnail_src, type: 'photo' }] : [])),
+                metrics: {
+                    likes: node.like_count || node.edge_liked_by?.count || node.edge_media_preview_like?.count || 0,
+                    comments: node.comment_count || node.edge_media_to_comment?.count || 0,
+                    views: node.view_count || node.play_count || node.video_view_count || 0
+                },
+                platform: 'instagram'
+            };
+        }).filter(p => p.id);
 
         if (normalized.length > 0) {
             console.log(`[Instagram] Found ${normalized.length} posts for user '${cleanQuery}'`);

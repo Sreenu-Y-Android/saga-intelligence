@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { geoMercator, geoPath } from 'd3-geo';
 import { Loader2, Search, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import { Card } from '../../ui/card';
-import { getMlaByConstituency } from '../../../data/tgMLAs';
+import { getMlaByConstituency, getMlasByDistrict } from '../../../data/tgMLAs';
 import { getMpByLsId, getMpByLsName } from '../../../data/tgMPs';
 
 // Tried in order; the first that loads wins. Both layers share borders because
@@ -50,9 +50,13 @@ const getAcName = (props = {}) => {
 };
 
 // Matches MLA_PARTY_META in data/telanganaMlaDirectory.js so a party reads the
-// same colour on the map, the directory and the compare view.
+// same colour on the map, the directory and the compare view. INC uses a
+// single solid amber (not blue — BJP already owns the brighter orange) rather
+// than a tricolor swatch: a saffron/white/green fill reads fine as a small
+// dot but turns into visual noise once it's tiling dozens of irregular,
+// differently-sized constituency shapes across the map.
 const PARTY_FILLS = {
-  INC: '#2563eb',
+  INC: '#CA8A04',
   BRS: '#ec4899',
   BJP: '#f97316',
   AIMIM: '#059669',
@@ -60,6 +64,19 @@ const PARTY_FILLS = {
 };
 
 const getPartyFill = (party) => PARTY_FILLS[String(party || '').toUpperCase()] || '#cbd5e1';
+
+// A district has many constituencies, which can go to different parties — there's no
+// single "winning party" the way there is for one seat. `getMlaByConstituency` only
+// ever matched a district by accident (when the district's name happened to equal one
+// of its own constituencies' names), leaving every other district blank. This instead
+// colors a district by whichever party holds the most seats within it.
+const getDominantPartyForDistrict = (districtName) => {
+  const members = getMlasByDistrict(String(districtName || '').toUpperCase().trim());
+  if (!members.length) return null;
+  const counts = {};
+  members.forEach((m) => { counts[m.party] = (counts[m.party] || 0) + 1; });
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+};
 
 /**
  * APMap Component
@@ -147,6 +164,9 @@ const APMap = ({ mapData, loading: statsLoading, onConstituencyClick, filters })
   // Color matching formulas based on view modes
   const getFillColor = useCallback((name, stats) => {
     if (viewMode === 'party') {
+      if (viewLevel === 'district') {
+        return getPartyFill(getDominantPartyForDistrict(name));
+      }
       const mla = getMlaByConstituency(name);
       return getPartyFill(mla?.party);
     }
@@ -176,7 +196,7 @@ const APMap = ({ mapData, loading: statsLoading, onConstituencyClick, filters })
     }
 
     return '#e2e8f0';
-  }, [viewMode]);
+  }, [viewMode, viewLevel]);
 
   // Map mouse handlers
   const handleMouseMove = (e, name) => {
@@ -369,10 +389,11 @@ const APMap = ({ mapData, loading: statsLoading, onConstituencyClick, filters })
             )}
             {viewMode === 'party' && (
               <>
-                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-[#2563eb]" />INC</div>
+                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-[#CA8A04]" />INC</div>
                 <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-[#ec4899]" />BRS</div>
                 <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-[#f97316]" />BJP</div>
                 <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-[#059669]" />AIMIM</div>
+                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded bg-[#dc2626]" />CPI</div>
               </>
             )}
           </div>
